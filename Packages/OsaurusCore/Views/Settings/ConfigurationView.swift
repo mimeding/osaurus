@@ -87,6 +87,7 @@ struct ConfigurationView: View {
     @State private var tempChatMaxToolAttempts: String = ""
     @State private var tempPreflightSearchMode: PreflightSearchMode = .balanced
     @State private var tempDisableTools: Bool = true
+    @State private var tempShowChatBarToolsChip: Bool = true
     @State private var tempMemoryEnabled: Bool = false
     @State private var tempCoreModelProvider: String = ""
     @State private var tempCoreModelName: String = ""
@@ -394,13 +395,24 @@ struct ConfigurationView: View {
                                     SettingsDivider()
 
                                     SettingsSubsection(label: "Tools") {
-                                        VStack(alignment: .leading, spacing: 8) {
+                                        VStack(alignment: .leading, spacing: 10) {
                                             Toggle(isOn: $tempDisableTools) {
                                                 Text("Disable tools", bundle: .module)
                                                     .font(.system(size: 12))
                                             }
                                             Text(
                                                 "Send messages directly to the model with no tool specs or capability injection. Tools are off by default — enable them here or via the chat bar to let agents use built-in and plugin tools.",
+                                                bundle: .module
+                                            )
+                                            .font(.system(size: 11))
+                                            .foregroundColor(theme.tertiaryText)
+
+                                            Toggle(isOn: $tempShowChatBarToolsChip) {
+                                                Text("Show Tools chip in chat bar", bundle: .module)
+                                                    .font(.system(size: 12))
+                                            }
+                                            Text(
+                                                "Render a per-conversation Tools toggle chip in the chat input bar. Turn off for a cleaner chat UI when you manage tools exclusively from Settings.",
                                                 bundle: .module
                                             )
                                             .font(.system(size: 11))
@@ -795,6 +807,7 @@ struct ConfigurationView: View {
         tempChatMaxToolAttempts = chat.maxToolAttempts.map(String.init) ?? ""
         tempPreflightSearchMode = chat.preflightSearchMode ?? .balanced
         tempDisableTools = chat.disableTools
+        tempShowChatBarToolsChip = chat.showChatBarToolsChip
         tempMemoryEnabled = MemoryConfigurationStore.load().enabled
         tempCoreModelProvider = chat.coreModelProvider ?? ""
         tempCoreModelName = chat.coreModelName ?? ""
@@ -863,6 +876,7 @@ struct ConfigurationView: View {
         tempChatMaxToolAttempts = ""
         tempPreflightSearchMode = .balanced
         tempDisableTools = true
+        tempShowChatBarToolsChip = true
         tempMemoryEnabled = false
         tempCoreModelProvider = ""
         tempCoreModelName = ""
@@ -1053,6 +1067,7 @@ struct ConfigurationView: View {
             workMaxIterations: parsedAgentMaxIterations,
             preflightSearchMode: tempPreflightSearchMode,
             disableTools: tempDisableTools,
+            showChatBarToolsChip: tempShowChatBarToolsChip,
             enableClipboardMonitoring: tempEnableClipboardMonitoring
         )
         // ChatConfigurationStore.save() delegates to

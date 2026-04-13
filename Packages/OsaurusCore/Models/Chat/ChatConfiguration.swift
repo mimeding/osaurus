@@ -78,6 +78,16 @@ public struct ChatConfiguration: Codable, Equatable, Sendable {
     /// when osaurus is acting as a plain LLM backend for an external agent (e.g. Claude via API).
     public var disableTools: Bool
 
+    // MARK: - Chat UI Settings
+    /// When true, the per-window "Tools" chip renders in the chat input bar,
+    /// letting users override `disableTools` per conversation. When false,
+    /// tool configuration is only reachable from Settings → Chat → Tools,
+    /// which keeps the chat bar cleaner for users who don't want the extra
+    /// affordance. Defaults to `true` to preserve the Phase C design where
+    /// the chip is the in-chat escape hatch for the `disableTools: true`
+    /// default flip. Power users who prefer a minimal chat bar can disable it.
+    public var showChatBarToolsChip: Bool
+
     // MARK: - Clipboard Settings
     /// When true, Osaurus will monitor the clipboard for new text content to offer as context.
     public var enableClipboardMonitoring: Bool
@@ -100,6 +110,7 @@ public struct ChatConfiguration: Codable, Equatable, Sendable {
         defaultAutonomousExec: AutonomousExecConfig? = nil,
         preflightSearchMode: PreflightSearchMode? = nil,
         disableTools: Bool = true,
+        showChatBarToolsChip: Bool = true,
         enableClipboardMonitoring: Bool = true
     ) {
         self.hotkey = hotkey
@@ -119,6 +130,7 @@ public struct ChatConfiguration: Codable, Equatable, Sendable {
         self.defaultAutonomousExec = defaultAutonomousExec
         self.preflightSearchMode = preflightSearchMode
         self.disableTools = disableTools
+        self.showChatBarToolsChip = showChatBarToolsChip
         self.enableClipboardMonitoring = enableClipboardMonitoring
     }
 
@@ -152,6 +164,11 @@ public struct ChatConfiguration: Codable, Equatable, Sendable {
         // off by default), matching the new behavior. Users who explicitly
         // set `"disableTools": false` in their config keep tools on.
         disableTools = try container.decodeIfPresent(Bool.self, forKey: .disableTools) ?? true
+        // Default to true so existing chat.json files without this key
+        // continue showing the Tools chip — preserves the Phase C design
+        // goal where the chip is the in-chat escape hatch.
+        showChatBarToolsChip =
+            try container.decodeIfPresent(Bool.self, forKey: .showChatBarToolsChip) ?? true
         enableClipboardMonitoring = try container.decodeIfPresent(Bool.self, forKey: .enableClipboardMonitoring) ?? true
     }
 

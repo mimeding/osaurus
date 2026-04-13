@@ -1148,8 +1148,11 @@ extension FloatingInputCard {
                 clipboardToggleChip
             }
 
-            // Tools chip (chat mode only) — cycles per-window override for ChatConfiguration.disableTools
-            if workInputState == nil {
+            // Tools chip (chat mode only) — cycles per-window override for
+            // ChatConfiguration.disableTools. Render-gated on
+            // ChatConfiguration.showChatBarToolsChip so users who prefer a
+            // minimal chat bar can hide it from Settings → Chat → Tools.
+            if workInputState == nil && appConfig.chatConfig.showChatBarToolsChip {
                 toolsToggleChip
             }
 
