@@ -1,5 +1,5 @@
 {
-  "originHash" : "aff0b0b3cc1e49b83530d7c7e310a795ecc138855e759bdd328ca8bebbbcf0a8",
+  "originHash" : "5fa9e2b3cff2a22d96db10a6abe83cde50aed25e26a55b4403b58861d95db10c",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -386,6 +386,15 @@
       "state" : {
         "branch" : "main",
         "revision" : "a1b93774d16d8a6e7fc39b7cda9449b719f07f48"
+      }
+    },
+    {
+      "identity" : "vmlx-swift-lm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/osaurus-ai/vmlx-swift-lm",
+      "state" : {
+        "branch" : "main",
+        "revision" : "731e31f932a1bc7166534ee943f1a42e45324aea"
       }
     },
     {
