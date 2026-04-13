@@ -816,6 +816,21 @@ struct ConfigurationView: View {
         }
     }
 
+    /// Surface a save failure to the user as a red toast via ToastManager.
+    /// Logs the error as well so it shows up in Console.app for post-mortem.
+    /// Called from `saveConfiguration` when any of the throwing store
+    /// writes fail (disk full, permissions, lock conflicts, etc.).
+    /// See `05-CONFIGURABILITY-AUDIT.md` Issue 10 — silently swallowing
+    /// these errors lets users believe their settings saved when they
+    /// didn't.
+    private func showSaveError(_ message: String, error: Error) {
+        print("[Osaurus] \(message): \(error)")
+        ToastManager.shared.error(
+            message,
+            message: error.localizedDescription
+        )
+    }
+
     // MARK: - Header View
 
     private var headerView: some View {
@@ -1072,7 +1087,12 @@ struct ConfigurationView: View {
             previousServerCfg.genTopP != configuration.genTopP
             || previousServerCfg.genMaxKVSize != configuration.genMaxKVSize
 
-        ServerConfigurationStore.save(configuration)
+        do {
+            try ServerConfigurationStore.saveThrowing(configuration)
+        } catch {
+            showSaveError("Failed to save server settings", error: error)
+            return
+        }
 
         let trimmedTemp = tempChatTemperature.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsedTemp: Float? = {
@@ -1149,14 +1169,18 @@ struct ConfigurationView: View {
             showChatBarToolsChip: tempShowChatBarToolsChip,
             enableClipboardMonitoring: tempEnableClipboardMonitoring
         )
-        // ChatConfigurationStore.save() delegates to
-        // AppConfiguration.shared.updateChatConfig() which updates the
-        // @Published chatConfig AND posts .appConfigurationChanged in a
-        // single step. That means every view observing
-        // `@ObservedObject appConfig = AppConfiguration.shared` re-renders
-        // immediately — including the chat-bar Tools chip. No extra reload
-        // call needed here; verified on rebased main.
-        ChatConfigurationStore.save(chatCfg)
+        // ChatConfigurationStore.saveThrowing() delegates to
+        // AppConfiguration.shared.updateChatConfigThrowing() which updates
+        // the @Published chatConfig AND posts .appConfigurationChanged on
+        // successful write. On failure the in-memory cache is rolled back
+        // to the previous value and the error bubbles up here so we can
+        // toast. See 05-CONFIGURABILITY-AUDIT.md Issue 10 for why we care.
+        do {
+            try ChatConfigurationStore.saveThrowing(chatCfg)
+        } catch {
+            showSaveError("Failed to save chat settings", error: error)
+            return
+        }
 
         // If disableTools actually changed, every open session's preflight
         // cache is holding tool specs computed under the old flag. Bulk-
@@ -1176,7 +1200,12 @@ struct ConfigurationView: View {
         var memoryCfg = MemoryConfigurationStore.load()
         if memoryCfg.enabled != tempMemoryEnabled {
             memoryCfg.enabled = tempMemoryEnabled
-            MemoryConfigurationStore.save(memoryCfg)
+            do {
+                try MemoryConfigurationStore.saveThrowing(memoryCfg)
+            } catch {
+                showSaveError("Failed to save memory settings", error: error)
+                return
+            }
             // Drop the 10-second TTL cache so the next prompt reflects the new
             // enabled state immediately instead of waiting for entries to expire.
             Task { await MemoryContextAssembler.invalidateAll() }

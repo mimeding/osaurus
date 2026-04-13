@@ -224,18 +224,29 @@ public enum MemoryConfigurationStore: Sendable {
         }
     }
 
+    /// Persist MemoryConfiguration to disk. Errors are logged but swallowed
+    /// to keep the API convenient for background callers. UI callers that
+    /// want to surface failures should use `saveThrowing` instead.
     public static func save(_ config: MemoryConfiguration) {
-        let validated = config.validated()
-        let url = OsaurusPaths.memoryConfigFile()
-        OsaurusPaths.ensureExistsSilent(url.deletingLastPathComponent())
         do {
-            let data = try encoder.encode(validated)
-            try data.write(to: url, options: .atomic)
-            lock.withLock { $0 = validated }
-            NotificationCenter.default.post(name: .memoryConfigurationChanged, object: nil)
+            try saveThrowing(config)
         } catch {
             MemoryLogger.config.error("Failed to save config: \(error)")
         }
+    }
+
+    /// Throwing variant of `save`. Propagates encode/write errors so a
+    /// UI caller can catch them and fire a toast. Posts
+    /// `.memoryConfigurationChanged` only on successful write.
+    /// See `05-CONFIGURABILITY-AUDIT.md` Issue 10.
+    public static func saveThrowing(_ config: MemoryConfiguration) throws {
+        let validated = config.validated()
+        let url = OsaurusPaths.memoryConfigFile()
+        OsaurusPaths.ensureExistsSilent(url.deletingLastPathComponent())
+        let data = try encoder.encode(validated)
+        try data.write(to: url, options: .atomic)
+        lock.withLock { $0 = validated }
+        NotificationCenter.default.post(name: .memoryConfigurationChanged, object: nil)
     }
 
     public static func invalidateCache() {

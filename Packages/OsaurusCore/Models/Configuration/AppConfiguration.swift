@@ -38,6 +38,26 @@ public final class AppConfiguration: ObservableObject {
         NotificationCenter.default.post(name: .appConfigurationChanged, object: nil)
     }
 
+    /// Throwing variant of `updateChatConfig`. Same as the non-throwing
+    /// version except encode/write errors propagate to the caller so a
+    /// UI save path can toast on failure. See
+    /// `05-CONFIGURABILITY-AUDIT.md` Issue 10. Updates the in-memory
+    /// cache and posts the change notification only on a successful
+    /// write — if the write throws, the `@Published chatConfig` is
+    /// reverted to its previous value so observers don't see a state
+    /// that isn't on disk.
+    public func updateChatConfigThrowing(_ config: ChatConfiguration) throws {
+        let previous = chatConfig
+        chatConfig = config
+        do {
+            try Self.saveToDiskThrowing(config)
+            NotificationCenter.default.post(name: .appConfigurationChanged, object: nil)
+        } catch {
+            chatConfig = previous
+            throw error
+        }
+    }
+
     public func refreshFoundationModelAvailable() {
         foundationModelAvailable = FoundationModelService.isDefaultModelAvailable()
     }
@@ -91,18 +111,24 @@ public final class AppConfiguration: ObservableObject {
     }
 
     private static func saveToDisk(_ config: ChatConfiguration) {
-        let url = configFileURL()
         do {
-            let dir = url.deletingLastPathComponent()
-            if !FileManager.default.fileExists(atPath: dir.path) {
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(config).write(to: url, options: .atomic)
+            try saveToDiskThrowing(config)
         } catch {
             print("[Osaurus] Failed to save ChatConfiguration: \(error)")
         }
+    }
+
+    /// Throwing variant of `saveToDisk`. Used by `updateChatConfigThrowing`
+    /// so UI callers can react to write failures.
+    fileprivate static func saveToDiskThrowing(_ config: ChatConfiguration) throws {
+        let url = configFileURL()
+        let dir = url.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(config).write(to: url, options: .atomic)
     }
 
     private static func configFileURL() -> URL {
