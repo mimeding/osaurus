@@ -2,6 +2,15 @@
   "originHash" : "5fa9e2b3cff2a22d96db10a6abe83cde50aed25e26a55b4403b58861d95db10c",
   "pins" : [
     {
+      "identity" : "aachartkit-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/AAChartModel/AAChartKit-Swift.git",
+      "state" : {
+        "revision" : "b51e53c3b04372c1ed1906b0ec3ba45733953ef4",
+        "version" : "9.5.0"
+      }
+    },
+    {
       "identity" : "async-http-client",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-server/async-http-client.git",
