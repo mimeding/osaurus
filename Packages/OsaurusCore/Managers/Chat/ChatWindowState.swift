@@ -32,6 +32,17 @@ final class ChatWindowState: ObservableObject {
     @Published var mode: ChatMode = .chat
     @Published var showSidebar: Bool = false
 
+    /// Per-window, ephemeral override for the global `ChatConfiguration.disableTools`
+    /// flag. Cycled by the Tools chip in the chat bar.
+    ///
+    /// - `nil` — follow the global setting
+    /// - `true`  — disable tools for this window only
+    /// - `false` — enable tools for this window only
+    ///
+    /// Resets on window close; never persisted. See
+    /// `docs/internal/memory-tools-defaults/02-VERIFIED-ISSUES.md` Issue 3.
+    @Published var toolsDisabledOverride: Bool?
+
     /// When non-nil, ChatView should present a close confirmation for active work execution.
     @Published var workCloseConfirmation: WorkCloseConfirmation?
 

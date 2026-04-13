@@ -790,4 +790,345 @@ because every resolver/fallback path still lands on the existing
 
 ---
 
+### M-09 — `ChatWindowState.toolsDisabledOverride`
+
+- **Phase**: C
+- **File**: `Packages/OsaurusCore/Managers/Chat/ChatWindowState.swift`
+- **Kind**: `add` — new `@Published` property
+- **Severity**: P1
+- **Depends on**: None
+- **Doc ref**: `02-VERIFIED-ISSUES.md` Issue 3
+- **Why**: The chat-bar Tools chip needs a place to store its per-window
+  state. `ChatWindowState` is the per-window ObservableObject that
+  already holds every window-scoped piece of state (mode, sidebar,
+  agent, theme). This is the natural home.
+
+**New property** (inserted after `showSidebar`):
+
+```swift
+/// Per-window, ephemeral override for `ChatConfiguration.disableTools`.
+/// - nil: follow global
+/// - true: disable tools for this window only
+/// - false: enable tools for this window only
+@Published var toolsDisabledOverride: Bool?
+```
+
+**Design choices**:
+1. **`Bool?`, not `Bool`** — the three-state (follow-global / explicit-on
+   / explicit-off) model is what makes the chip actually useful. A
+   two-state `Bool` would force the user to re-toggle whenever the
+   global default flipped.
+2. **Not persisted** — the override lives only as long as the window.
+   Closing and reopening a window resets it. This matches the mental
+   model of a per-conversation toggle and avoids persistence overhead
+   for an ephemeral UI affordance.
+3. **`@Published`** — SwiftUI binding from `FloatingInputCard` needs
+   the property to be observable so the chip re-renders when cycled.
+
+**Blast radius**: Purely additive. No existing caller affected.
+
+**Audit focus**: Verify the property is `@Published` so SwiftUI
+bindings work, and that it's `var` not `let`.
+
+---
+
+### M-10 — `FloatingInputCard.toolsToggleChip` + selector row integration
+
+- **Phase**: C
+- **File**: `Packages/OsaurusCore/Views/Chat/FloatingInputCard.swift`
+- **Kind**: `add` — new `@Binding`, helpers, chip view, init threading
+- **Severity**: P1
+- **Depends on**: M-09
+- **Doc ref**: `02-VERIFIED-ISSUES.md` Issue 3
+- **Why**: The user-facing surface for the per-window tools override.
+  Users need a visible, discoverable control in the chat bar to toggle
+  tools on/off without diving into Settings — especially after Phase D
+  flips the global default to off.
+
+**New bindings** on the struct (after `pendingSkillId`):
+
+```swift
+@Binding var toolsDisabledOverride: Bool?
+var sessionId: UUID? = nil
+```
+
+Both are additive with defaults (`.constant(nil)` and `nil`) so every
+existing call site compiles unchanged. `sessionId` is threaded
+through for M-11's cache invalidation hook, not for the chip's visual
+state.
+
+**Init threading**: Added two new parameters to the memberwise init
+with defaults, plus matching assignments in the init body.
+
+**Chip insertion** in `selectorRow` after the clipboard chip, gated on
+`workInputState == nil` so it only appears in chat mode:
+
+```swift
+if workInputState == nil {
+    toolsToggleChip
+}
+```
+
+**Helper accessors**:
+
+- `effectiveToolsDisabled: Bool` — resolves override → global, matching
+  the same rule used in `ChatView.sendMessage`. Single source of truth
+  for the chip's visual state.
+- `toolsChipEnabled: Bool` — inverse of `effectiveToolsDisabled`, used
+  for color/icon emphasis. A chip feels "active" when tools are on.
+- `toolsChipBadge: String?` — returns `"on"` or `"off"` when the user
+  has set an override that differs from global. When the override
+  matches global (or is nil), the badge is hidden. This is the key
+  affordance that tells the user "I've overridden this" without
+  requiring a hover tooltip.
+- `toolsChipHelpText: String` — full tooltip showing current state and
+  global default.
+- `cycleToolsOverride()` — see M-11 below.
+
+**Chip view** (`toolsToggleChip`): Follows the same shape pattern as
+`sandboxToggleChip` (capsule, padding, border) but lighter — no
+animations, no async state. Uses `wrench.and.screwdriver` SF symbol
+filled/unfilled based on `toolsChipEnabled`. Context menu offers
+"Open Tools Settings" that jumps to `ManagementTab.tools`.
+
+**Styling decisions**:
+1. **Uses `theme.accentColor` for the enabled state**, matching the
+   app's accent surface. The sandbox chip uses green because it's a
+   system state (running/not), but tools are a user preference so
+   accent color is more appropriate.
+2. **No pulse animation**. The sandbox chip pulses while provisioning
+   because it's genuinely async. The tools chip flips instantly.
+3. **No disable state**. The chip is always tappable.
+
+**Blast radius**:
+- Adds one chip to every chat window's input bar. Hidden in work mode.
+- New init params default to nil/constant, so existing callers
+  (including `WorkView` and the preview) compile unchanged.
+- No behavior change until the user actually taps the chip.
+
+**Audit focus**:
+- Verify `workInputState == nil` gating so the chip doesn't appear in
+  work mode (where tools semantics are different — work has its own
+  permission model).
+- Verify all three chip states render correctly: follow-global-on,
+  follow-global-off, override-on, override-off. The badge should only
+  appear when the override differs from global.
+- Verify the init param order — `toolsDisabledOverride` and `sessionId`
+  come after `pendingSkillId` so positional call sites (if any) still
+  work. Our call-site audit found none; all call sites use keyword args.
+
+---
+
+### M-11 — `cycleToolsOverride` invalidates session preflight cache
+
+- **Phase**: C
+- **File**: `Packages/OsaurusCore/Views/Chat/FloatingInputCard.swift`
+  (part of the `toolsToggleChip` infrastructure from M-10)
+- **Kind**: `add` — the tap handler method
+- **Severity**: P1
+- **Depends on**: M-03 (batch + single preflight cache hooks), M-10
+- **Doc ref**: `02-VERIFIED-ISSUES.md` Issues 3 + 8
+- **Why**: `PluginHostContext.preflightCache` holds per-session tool
+  specs that are computed once from `ChatConfiguration.disableTools`
+  and reused for subsequent requests. If the user cycles the chip
+  without invalidating this cache, the next request in that session
+  keeps serving the old tool specs — the chip visibly toggled but
+  nothing actually changed. This is Issue 8 reincarnated at the
+  per-chip level instead of the per-settings-save level.
+
+**The method**:
+
+```swift
+private func cycleToolsOverride() {
+    let globalDisabled = appConfig.chatConfig.disableTools
+    switch toolsDisabledOverride {
+    case .none:
+        // First tap: override to the opposite of global
+        toolsDisabledOverride = !globalDisabled
+    case .some(let current):
+        if current != globalDisabled {
+            // Second tap: flip to match global (explicit, user may want to re-override)
+            toolsDisabledOverride = globalDisabled
+        } else {
+            // Third tap: clear override entirely, return to follow-global
+            toolsDisabledOverride = nil
+        }
+    }
+    if let sid = sessionId {
+        PluginHostContext.invalidatePreflightCache(sessionId: sid.uuidString)
+    }
+}
+```
+
+**Cycle design**:
+
+The three-state cycle walks:
+- `nil` (follow global) → opposite of global (visibly overridden)
+- opposite of global → same as global (explicit, no-op semantically
+  but the user can tell they've chosen it)
+- same as global → `nil` (back to follow-global, badge disappears)
+
+This gives the user a way to both quickly flip and eventually return
+to the "no opinion" state. An alternative two-state cycle would stick
+at "explicit override" forever once tapped — less good UX because the
+badge never goes away.
+
+**Invalidation**: After every state transition, we call the existing
+`PluginHostContext.invalidatePreflightCache(sessionId:)` hook (not
+the batch variant — only this session needs it). The call is a no-op
+if `sessionId` is nil (e.g. a freshly created window that hasn't
+attached to a session yet), which is the correct behavior: no session
+means no cache entry exists yet.
+
+**Blast radius**:
+- Only fires on chip tap. No passive impact.
+- The invalidation is scoped to one session — other windows are
+  untouched, which is what we want (per-window override means per-window
+  cache effect).
+
+**Audit focus**:
+- Verify the three-state cycle matches the spec in the doc comment.
+  Easy off-by-one territory.
+- Verify the `invalidatePreflightCache` call is **outside** the switch
+  but **inside** the method body — it must fire on every tap,
+  regardless of which branch ran.
+- Verify `sessionId` is optional and the invalidation is conditionally
+  called with `if let sid` — otherwise the chip would crash during
+  window construction.
+- Cross-check: does `ChatView.sendMessage` also honor the override?
+  Yes, via M-12 below — otherwise the chip would be cosmetic only.
+
+---
+
+### M-12 — `ChatView.sendMessage` resolves the override
+
+- **Phase**: C
+- **File**: `Packages/OsaurusCore/Views/Chat/ChatView.swift`
+- **Kind**: `edit` — passes resolved value to `composeChatContext`
+- **Severity**: P1
+- **Depends on**: M-09
+- **Doc ref**: `02-VERIFIED-ISSUES.md` Issue 3
+- **Why**: Without this edit, the chip is decorative — the per-window
+  state gets updated but the send path still reads
+  `chatCfg.disableTools` directly. This wires the override into the
+  actual prompt composition call.
+
+**Before** (line 831-838):
+
+```swift
+let context = await SystemPromptComposer.composeChatContext(
+    agentId: effectiveAgentId,
+    executionMode: executionMode,
+    model: selectedModel,
+    query: trimmed,
+    toolsDisabled: chatCfg.disableTools,
+    trace: ttftTrace
+)
+```
+
+**After**:
+
+```swift
+// Per-window override from the Tools chip wins over the global flag.
+let effectiveToolsDisabled = windowState?.toolsDisabledOverride ?? chatCfg.disableTools
+let context = await SystemPromptComposer.composeChatContext(
+    agentId: effectiveAgentId,
+    executionMode: executionMode,
+    model: selectedModel,
+    query: trimmed,
+    toolsDisabled: effectiveToolsDisabled,
+    trace: ttftTrace
+)
+```
+
+**`windowState` is Optional**: The property is `ChatWindowState?` on
+the view, not `ChatWindowState`. The optional chain (`?.`) falls
+through to `chatCfg.disableTools` when the window state hasn't been
+attached yet (rare, but valid during construction).
+
+**Blast radius**:
+- Only one call site changed.
+- No behavior change when `toolsDisabledOverride` is nil (the default),
+  so existing users see the same send path.
+
+**Audit focus**:
+- Verify the override resolution matches the chip's `effectiveToolsDisabled`
+  helper — both reach for `windowState.toolsDisabledOverride ?? chatCfg.disableTools`.
+  If these drift apart, the chip lies to the user.
+- Verify the optional chain on `windowState?.` — without it, the
+  compiler rejects because `windowState` is declared optional in the
+  enclosing scope.
+
+---
+
+### M-13 — Pass binding + sessionId to `FloatingInputCard`
+
+- **Phase**: C
+- **File**: `Packages/OsaurusCore/Views/Chat/ChatView.swift`
+- **Kind**: `edit` — adds two keyword args to the existing init call
+- **Severity**: P1
+- **Depends on**: M-09, M-10
+- **Doc ref**: `02-VERIFIED-ISSUES.md` Issue 3
+- **Why**: Connects the per-window state to the chip UI. Without this,
+  the chip would render but its binding would point at the constant
+  default (`.constant(nil)`), so taps would be silently dropped.
+
+**Edit** (appended to the existing `FloatingInputCard(...)` call):
+
+```swift
+FloatingInputCard(
+    // ... existing args unchanged ...
+    pendingSkillId: $observedSession.pendingOneOffSkillId,
+    toolsDisabledOverride: $windowState.toolsDisabledOverride,
+    sessionId: windowState.session.sessionId
+)
+```
+
+**`windowState.session.sessionId`** is `UUID?` — `ChatSession.sessionId`
+is optional (see `ChatWindowManager.swift:17` — `public let sessionId: UUID?`).
+The chip handles nil gracefully in `cycleToolsOverride` (see M-11).
+
+**WorkView call site**: Intentionally NOT edited. `WorkView` also
+instantiates `FloatingInputCard` (line 65) but the chip is hidden by
+the `workInputState == nil` gate in `selectorRow`, so passing the
+binding would be dead weight. The new init params default to
+`.constant(nil)` / `nil`, so WorkView compiles unchanged.
+
+**Blast radius**:
+- Only the ChatView call site gets the new args.
+- Existing preview (if any) uses positional/keyword args; param
+  defaults keep them compiling.
+
+**Audit focus**:
+- Verify `$windowState.toolsDisabledOverride` is a valid binding — it
+  is, because `windowState` is an `@ObservedObject` and
+  `toolsDisabledOverride` is `@Published var`.
+- Verify `windowState.session.sessionId` is reachable — yes, `session`
+  is a `let` property on `ChatWindowState`.
+- Verify WorkView compiles without edits (confirmed: default values
+  handle it).
+
+---
+
+### Phase C wrap-up
+
+All five Phase C changes (M-09 through M-13) land the chat-bar Tools
+chip end-to-end:
+1. State model (M-09) — per-window override property
+2. UI control (M-10) — the chip view + helpers
+3. Cache hygiene (M-11) — invalidate preflight on every chip tap
+4. Resolution at send time (M-12) — chip actually affects prompt composition
+5. Binding wiring (M-13) — connects UI to state
+
+The chip appears in chat mode only. Its cycle is nil → opposite-of-global
+→ same-as-global → nil, with a badge indicator when the override differs
+from global.
+
+Phase C is again a pure no-op until the user actually taps the chip.
+Existing users see a new capsule in the chat bar — nothing else changes
+until they engage with it. Phase D flip gives the chip its reason to
+exist.
+
+---
+
 

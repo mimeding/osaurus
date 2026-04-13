@@ -59,6 +59,12 @@ struct FloatingInputCard: View {
     var onSkillSelected: ((UUID) -> Void)? = nil
     /// Binding to the session's pending one-off skill. Non-nil shows a dismissable skill chip.
     @Binding var pendingSkillId: UUID?
+    /// Per-window override for `ChatConfiguration.disableTools`. Cycled by the Tools chip
+    /// in the selector row. nil = follow global, true = disable, false = enable.
+    @Binding var toolsDisabledOverride: Bool?
+    /// Session ID for the current chat window, used to invalidate the preflight tool cache
+    /// when the Tools chip is toggled so the next request reflects the new state.
+    var sessionId: UUID? = nil
 
     init(
         text: Binding<String>,
@@ -89,7 +95,9 @@ struct FloatingInputCard: View {
         isCompact: Bool = false,
         onClearChat: (() -> Void)? = nil,
         onSkillSelected: ((UUID) -> Void)? = nil,
-        pendingSkillId: Binding<UUID?> = .constant(nil)
+        pendingSkillId: Binding<UUID?> = .constant(nil),
+        toolsDisabledOverride: Binding<Bool?> = .constant(nil),
+        sessionId: UUID? = nil
     ) {
         self._text = text
         self._selectedModel = selectedModel
@@ -120,6 +128,8 @@ struct FloatingInputCard: View {
         self.onClearChat = onClearChat
         self.onSkillSelected = onSkillSelected
         self._pendingSkillId = pendingSkillId
+        self._toolsDisabledOverride = toolsDisabledOverride
+        self.sessionId = sessionId
     }
 
     // Observe managers for reactive updates
@@ -1138,6 +1148,11 @@ extension FloatingInputCard {
                 clipboardToggleChip
             }
 
+            // Tools chip (chat mode only) — cycles per-window override for ChatConfiguration.disableTools
+            if workInputState == nil {
+                toolsToggleChip
+            }
+
             // Folder context selector (work mode only, hidden when sandbox is enabled)
             if workInputState != nil && (folderContextService.hasActiveFolder || isAgentEmptyMode) && !isSandboxEnabled
             {
@@ -1395,6 +1410,103 @@ extension FloatingInputCard {
                 profileName: selectedModel.flatMap { ModelProfileRegistry.profile(for: $0)?.displayName } ?? "",
                 thinkingOptionId: selectedModel.flatMap { ModelProfileRegistry.profile(for: $0)?.thinkingOption?.id }
             )
+        }
+    }
+
+    // MARK: - Tools Toggle Chip
+
+    /// Effective tools-disabled state: per-window override wins over global.
+    private var effectiveToolsDisabled: Bool {
+        toolsDisabledOverride ?? appConfig.chatConfig.disableTools
+    }
+
+    /// Chip is "active" (visually emphasized) whenever tools are currently enabled.
+    private var toolsChipEnabled: Bool {
+        !effectiveToolsDisabled
+    }
+
+    /// Short label shown when the user has set a per-window override that differs from global.
+    private var toolsChipBadge: String? {
+        guard let override = toolsDisabledOverride,
+            override != appConfig.chatConfig.disableTools
+        else { return nil }
+        return override ? "off" : "on"
+    }
+
+    private var toolsChipHelpText: String {
+        let global = appConfig.chatConfig.disableTools ? "off" : "on"
+        if let override = toolsDisabledOverride {
+            let state = override ? "disabled" : "enabled"
+            return "Tools \(state) for this window (global: \(global)). Click to cycle."
+        }
+        return "Tools follow global setting (\(global)). Click to override for this window."
+    }
+
+    /// Cycle the per-window override: nil → opposite-of-global → back to nil.
+    /// Invalidates this session's preflight cache so the next request sees the new state.
+    private func cycleToolsOverride() {
+        let globalDisabled = appConfig.chatConfig.disableTools
+        switch toolsDisabledOverride {
+        case .none:
+            // First tap: override to the opposite of global
+            toolsDisabledOverride = !globalDisabled
+        case .some(let current):
+            // Second tap: either flip to the other explicit state, or clear back to follow-global
+            if current != globalDisabled {
+                toolsDisabledOverride = globalDisabled
+            } else {
+                toolsDisabledOverride = nil
+            }
+        }
+        // Drop the session's cached tool specs so the next preflight reflects the new state.
+        if let sid = sessionId {
+            PluginHostContext.invalidatePreflightCache(sessionId: sid.uuidString)
+        }
+    }
+
+    private var toolsToggleChip: some View {
+        Button(action: cycleToolsOverride) {
+            HStack(spacing: 5) {
+                Image(systemName: toolsChipEnabled ? "wrench.and.screwdriver.fill" : "wrench.and.screwdriver")
+                    .font(.system(size: CGFloat(theme.captionSize) - 2, weight: .medium))
+                    .foregroundColor(toolsChipEnabled ? theme.accentColor : theme.tertiaryText)
+
+                Text("Tools", bundle: .module)
+                    .font(theme.font(size: CGFloat(theme.captionSize), weight: .medium))
+                    .foregroundColor(toolsChipEnabled ? theme.primaryText : theme.tertiaryText)
+                    .lineLimit(1)
+
+                if let badge = toolsChipBadge {
+                    Text(badge)
+                        .font(theme.font(size: CGFloat(theme.captionSize) - 2, weight: .semibold))
+                        .foregroundColor(theme.accentColor)
+                        .padding(.horizontal, 4)
+                        .background(Capsule().fill(theme.accentColor.opacity(0.15)))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                Capsule()
+                    .fill(theme.secondaryBackground.opacity(toolsChipEnabled ? 0.95 : 0.8))
+            )
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        toolsChipEnabled ? theme.accentColor.opacity(0.25) : Color.clear,
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .help(toolsChipHelpText)
+        .contextMenu {
+            Button {
+                AppDelegate.shared?.showManagementWindow(initialTab: .tools)
+            } label: {
+                Text("Open Tools Settings", bundle: .module)
+            }
         }
     }
 
