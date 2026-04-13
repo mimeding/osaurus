@@ -1460,21 +1460,39 @@ extension FloatingInputCard {
     /// Invalidates this session's preflight cache so the next request sees the new state.
     private func cycleToolsOverride() {
         let globalDisabled = appConfig.chatConfig.disableTools
-        switch toolsDisabledOverride {
-        case .none:
-            // First tap: override to the opposite of global
-            toolsDisabledOverride = !globalDisabled
-        case .some(let current):
-            // Second tap: either flip to the other explicit state, or clear back to follow-global
-            if current != globalDisabled {
-                toolsDisabledOverride = globalDisabled
-            } else {
-                toolsDisabledOverride = nil
-            }
-        }
+        toolsDisabledOverride = Self.nextToolsOverrideState(
+            current: toolsDisabledOverride,
+            globalDisabled: globalDisabled
+        )
         // Drop the session's cached tool specs so the next preflight reflects the new state.
         if let sid = sessionId {
             PluginHostContext.invalidatePreflightCache(sessionId: sid.uuidString)
+        }
+    }
+
+    /// Pure state-machine transition for the Tools chip cycle, exposed as
+    /// a `static` helper so the three-state logic can be unit-tested without
+    /// instantiating a SwiftUI view. Given the current override and the
+    /// current global `disableTools` flag, returns the next override state:
+    ///
+    /// - `nil` → opposite of global (first tap enters an explicit override)
+    /// - explicit override differing from global → match global (second tap
+    ///   moves to a different explicit state so the user can see it toggled)
+    /// - explicit override matching global → `nil` (third tap clears back
+    ///   to follow-global)
+    ///
+    /// See `02-VERIFIED-ISSUES.md` Issue 3 for the chip design rationale.
+    static func nextToolsOverrideState(
+        current: Bool?,
+        globalDisabled: Bool
+    ) -> Bool? {
+        switch current {
+        case .none:
+            return !globalDisabled
+        case .some(let c) where c != globalDisabled:
+            return globalDisabled
+        case .some:
+            return nil
         }
     }
 
