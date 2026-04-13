@@ -35,7 +35,7 @@ KNOWN_LICENSES: Dict[str, tuple] = {
     
     # MLX packages (MIT)
     "mlx-swift": ("MIT", "https://github.com/ml-explore/mlx-swift/blob/main/LICENSE", "https://github.com/ml-explore/mlx-swift"),
-    "mlx-swift-lm": ("MIT", "https://github.com/ml-explore/mlx-swift-lm/blob/main/LICENSE", "https://github.com/ml-explore/mlx-swift-lm"),
+    "vmlx-swift-lm": ("MIT", "https://github.com/osaurus-ai/vmlx-swift-lm/blob/main/LICENSE", "https://github.com/osaurus-ai/vmlx-swift-lm"),
     
     # Other packages
     "sparkle": ("MIT", "https://github.com/sparkle-project/Sparkle/blob/2.x/LICENSE", "https://github.com/sparkle-project/Sparkle"),
@@ -57,7 +57,7 @@ PACKAGE_NAMES: Dict[str, str] = {
     "swift-transformers": "Swift Transformers",
     "swift-jinja": "Swift Jinja",
     "mlx-swift": "MLX Swift",
-    "mlx-swift-lm": "MLX Swift LM",
+    "vmlx-swift-lm": "VMLX Swift LM",
     "sparkle": "Sparkle",
     "fluidaudio": "FluidAudio",
     "swift-sdk": "MCP Swift SDK",

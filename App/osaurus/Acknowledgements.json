@@ -27,12 +27,12 @@
       "licenseUrl": "https://github.com/ml-explore/mlx-swift/blob/main/LICENSE"
     },
     {
-      "name": "MLX Swift LM",
-      "identity": "mlx-swift-lm",
-      "version": "74f85d95",
-      "repository": "https://github.com/ml-explore/mlx-swift-lm",
+      "name": "VMLX Swift LM",
+      "identity": "vmlx-swift-lm",
+      "version": "2.31.3",
+      "repository": "https://github.com/osaurus-ai/vmlx-swift-lm",
       "license": "MIT",
-      "licenseUrl": "https://github.com/ml-explore/mlx-swift-lm/blob/main/LICENSE"
+      "licenseUrl": "https://github.com/osaurus-ai/vmlx-swift-lm/blob/main/LICENSE"
     },
     {
       "name": "Sparkle",

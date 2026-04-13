@@ -4,7 +4,7 @@
 //
 //  Tests that StreamAccumulator correctly detects tool calls across all
 //  supported ToolCallFormat variants by delegating to the upstream
-//  ToolCallProcessor (mlx-swift-lm / MLXLMCommon).
+//  ToolCallProcessor (vmlx-swift-lm / MLXLMCommon).
 //
 //  Previously this file tested the now-deleted ToolDetection.swift helper.
 //  Detection logic now lives entirely in the upstream library and is exercised

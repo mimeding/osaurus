@@ -6,7 +6,7 @@ alwaysApply: false
 
 # Building OsaurusCore
 
-The xcode workspace has pre-existing build failures in external dependencies (`mlx-swift-lm`, `IkigaJSON`). Never use `xcodebuild` to verify changes — it will always fail on those deps and waste tokens.
+The xcode workspace has pre-existing build failures in external dependencies (`vmlx-swift-lm`, `IkigaJSON`). Never use `xcodebuild` to verify changes — it will always fail on those deps and waste tokens.
 
 Instead, compile only the OsaurusCore package sources (no linking) to verify your changes:
 

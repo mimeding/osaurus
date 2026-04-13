@@ -3,7 +3,7 @@
 //  osaurus
 //
 //  Bridges the swift-transformers AutoTokenizer to the MLXLMCommon
-//  TokenizerLoader protocol introduced in mlx-swift-lm 3.x.
+//  TokenizerLoader protocol introduced in vmlx-swift-lm 3.x.
 //
 
 import Foundation

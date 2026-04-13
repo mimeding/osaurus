@@ -232,6 +232,7 @@
 				F0F4E2992ED1209200BEFA4D /* XCLocalSwiftPackageReference "../Packages/OsaurusRepository" */,
 				F0AA7F342ED20D2E00672B07 /* XCLocalSwiftPackageReference "../Packages/OsaurusCLI" */,
 				F0AA7F3B2ED20DA700672B07 /* XCLocalSwiftPackageReference "../Packages/OsaurusCore" */,
+				F02B5C282F8C5530003E024C /* XCRemoteSwiftPackageReference "vmlx-swift-lm" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = F0BB3C272E51FBCC00895593 /* Products */;
@@ -684,6 +685,17 @@
 			relativePath = ../Packages/OsaurusRepository;
 		};
 /* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F02B5C282F8C5530003E024C /* XCRemoteSwiftPackageReference "vmlx-swift-lm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/osaurus-ai/vmlx-swift-lm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.31.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		05576F742F72E7D800EF3CD3 /* OsaurusCore */ = {

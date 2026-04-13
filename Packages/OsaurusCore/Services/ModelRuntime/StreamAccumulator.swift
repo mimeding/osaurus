@@ -6,11 +6,11 @@
 //  token slicing, stop-sequence handling, and tool-call signaling.
 //
 //  Tool-call parsing is fully delegated to the upstream ToolCallProcessor
-//  (mlx-swift-lm / MLXLMCommon).  The ToolCallFormat is auto-detected by
-//  mlx-swift-lm's model-loading pipeline from config.json's `model_type`
+//  (vmlx-swift-lm / MLXLMCommon).  The ToolCallFormat is auto-detected by
+//  vmlx-swift-lm's model-loading pipeline from config.json's `model_type`
 //  field and plumbed here via StreamAccumulator.accumulate(…toolCallFormat:).
 //  This means new model families (Gemma, LFM2, Mistral, GLM4, Kimi K2, …)
-//  are supported automatically as mlx-swift-lm adds parsers for them,
+//  are supported automatically as vmlx-swift-lm adds parsers for them,
 //  without any changes required in osaurus.
 //
 
@@ -53,7 +53,7 @@ struct StreamAccumulator: AsyncSequence, Sendable {
     ///   - toolCallFormat: The format the model uses to encode tool calls.
     ///     Defaults to `.json` (Qwen2/3 `<tool_call>{json}</tool_call>` style).
     ///     Should be sourced from `ModelConfiguration.toolCallFormat` as
-    ///     auto-detected by mlx-swift-lm's model-loading pipeline.
+    ///     auto-detected by vmlx-swift-lm's model-loading pipeline.
     ///   - toolsSpec: Raw tool-spec dictionaries forwarded to `ToolCallProcessor`
     ///     for type-aware argument coercion (e.g. string→int for LFM2/XML formats).
     ///   - generationTask: Backing generation task; cancelled on early exit.
