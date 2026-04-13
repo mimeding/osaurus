@@ -1454,4 +1454,81 @@ be added below as gaps are found and closed.
 
 ---
 
+## External coordination — tpae's preflight TTFT fix
+
+tpae flagged on 2026-04-13 that `PreflightCapabilitySearch.search` is
+currently called synchronously from `SystemPromptComposer.finalizeContext`
+(line ~139) and adds to measured TTFT, which is why the
+`&& !isLocalModel` gate exists at that line (local models pay the
+biggest relative TTFT penalty for the ~50-150ms preflight cost). Quote:
+
+> "preflight shouldn't impact TTFT, let me change it so it doesn't add
+> to that time… rcn added load models… which doesn't extend TTFT so
+> i'll add in extra step for preflight search so it doesn't impact
+> the actual model TTFT"
+
+**Expected change**: preflight moves to a pre-load step that runs in
+parallel with model loading, similar to rcn's load-models step.
+Synchronous composer callers then await an already-resolved
+`PreflightResult` (~0ms), so there's no TTFT penalty.
+
+This is a vmlx/osaurus-integration-layer change outside the scope of
+this branch. tpae owns it.
+
+### Compatibility audit — our branch vs. tpae's change
+
+Every one of our preflight-touching changes is **invalidation-based,
+not timing-dependent**. We never assume when preflight runs — we just
+make sure the cache is correct when state changes.
+
+| Our change | File | Behavior under tpae's new timing |
+|-----------|------|----------------------------------|
+| M-01 `resolveTools` reads `preflight: PreflightResult` | `SystemPromptComposer.swift:196` | No change. The function takes a resolved `PreflightResult`; whether that came from synchronous compute or a pre-loaded cache hit is opaque to `resolveTools`. |
+| M-03 `PluginHostContext.invalidatePreflightCaches(sessionIds:)` | `PluginHostAPI.swift` | No change. Lock-based invalidation works regardless of when the next compute runs. |
+| M-11 chat-bar chip cycle invalidates session cache | `FloatingInputCard.swift` `cycleToolsOverride()` | Works. After a chip toggle, the session's cache entry is dropped; the next request triggers a fresh preflight. If tpae's pre-load step has already cached the result from session start, this invalidation forces a re-run on the next message — a one-shot TTFT cost per chip toggle. Acceptable. |
+| M-16 Settings save bulk-invalidates all sessions | `ConfigurationView.swift:saveConfiguration` | Works. Same as M-11 but across every open session. First request after a settings-save pays the preflight cost; subsequent requests benefit from the fresh cache. Acceptable. |
+
+### Required action on our side
+
+**None.** Our code is forward-compatible.
+
+### Things to coordinate with tpae
+
+1. **`!isLocalModel` gate removal.** Once preflight is off the
+   critical path, the gate at `SystemPromptComposer.swift:139`
+   (`if !toolsDisabled && toolMode == .auto && !query.isEmpty && !isLocalModel`)
+   should drop the `!isLocalModel` clause. This is the "local models
+   can't see tools" bug tpae is chasing in a separate thread. He'll
+   almost certainly handle this as part of the same change.
+
+2. **Cache keying by session ID stays stable.** Our invalidation
+   hooks all key off `sessionId.uuidString`. As long as tpae's
+   pre-load step caches by the same key (and sessions exist before
+   pre-load fires — which they do, sessions are created when a chat
+   window opens), our invalidation continues to work untouched.
+
+3. **Order of operations on Settings save.** M-16 invalidates
+   preflight caches AFTER `ChatConfigurationStore.save()` returns.
+   If tpae introduces a background preflight re-prime (e.g. "after
+   Settings save, re-run preflight for every open session in
+   parallel"), he should consume the same `allActiveSessionIds()`
+   accessor we added in M-02. No code change needed on either side.
+
+4. **Don't reinstate the gate downstream.** Once tpae drops the
+   `!isLocalModel` clause, subsequent patches in this file shouldn't
+   re-add it. If we ever rebase and see it back, that's a sign a
+   merge went wrong.
+
+### Pinning this for the team reviewer
+
+When tpae's preflight-TTFT fix lands on main and we rebase, the
+**only** merge conflict risk is the area around line 139 of
+`SystemPromptComposer.swift` if both sides edit it. Our branch
+doesn't edit line 139 (we only edit `resolveTools` at line ~196),
+so the rebase should be clean. If a conflict does appear, it's
+almost certainly cosmetic — both sides are editing around the gate,
+not the gate logic itself.
+
+---
+
 
