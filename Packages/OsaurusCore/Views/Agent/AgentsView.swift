@@ -659,11 +659,11 @@ enum AgentMemoryOverride: String, CaseIterable, Identifiable {
     var helpText: String {
         switch self {
         case .followGlobal:
-            return "Memory follows the global Settings → Chat → Memory toggle. If global is off, this agent gets no memory injection."
+            return L("Memory follows the global Settings → Chat → Memory toggle. If global is off, this agent gets no memory injection.")
         case .forceOn:
-            return "Memory is always injected for this agent, even when the global toggle is off."
+            return L("Memory is always injected for this agent, even when the global toggle is off.")
         case .forceOff:
-            return "Memory is never injected for this agent, even when the global toggle is on."
+            return L("Memory is never injected for this agent, even when the global toggle is on.")
         }
     }
 }
@@ -1153,10 +1153,7 @@ struct AgentDetailView: View {
             subtitle: memoryOverride == .followGlobal ? nil : memoryOverride.rawValue
         ) {
             VStack(alignment: .leading, spacing: 10) {
-                Text(
-                    "Override the global memory setting for this agent. Most users should leave this on Follow Global — use Force On only if you want this specific agent to keep memory when the global toggle is off, or Force Off to exclude memory for a specific agent even when global memory is on.",
-                    bundle: .module
-                )
+                Text(L("Override the global memory setting for this agent. Most users should leave this on Follow Global — use Force On only if you want this specific agent to keep memory when the global toggle is off, or Force Off to exclude memory for a specific agent even when global memory is on."))
                 .font(.system(size: 11))
                 .foregroundColor(theme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
