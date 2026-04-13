@@ -74,15 +74,6 @@
       }
     },
     {
-      "identity" : "mlx-swift-lm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/osaurus-ai/mlx-swift-lm",
-      "state" : {
-        "branch" : "main",
-        "revision" : "10d547ee65e16e9e9c20197623b29ab7c4952100"
-      }
-    },
-    {
       "identity" : "sparkle",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sparkle-project/Sparkle",

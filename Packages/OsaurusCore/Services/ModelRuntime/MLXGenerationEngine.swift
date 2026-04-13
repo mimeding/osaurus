@@ -83,7 +83,8 @@ struct MLXGenerationEngine {
         runtime: RuntimeConfig,
         existingCache: [any KVCache]?,
         cachedTokens: [Int]?,
-        wiredMemoryTicket: WiredMemoryTicket?
+        wiredMemoryTicket: WiredMemoryTicket?,
+        cacheCoordinator: CacheCoordinator? = nil
     ) async throws -> (
         stream: AsyncStream<MLXLMCommon.TokenGeneration>,
         tokenizer: any Tokenizer,
@@ -521,7 +522,8 @@ struct MLXGenerationEngine {
                     input: effectiveInput,
                     model: contextWithEOS.model,
                     cache: cache,
-                    parameters: parameters
+                    parameters: parameters,
+                    cacheCoordinator: cacheCoordinator
                 )
             }
             let postPrefillOffset = effectiveCacheOffset(cache)

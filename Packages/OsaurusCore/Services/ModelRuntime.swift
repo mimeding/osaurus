@@ -328,6 +328,27 @@ actor ModelRuntime {
                 from: localURL,
                 using: tokenizerLoader
             )
+            // Enable multi-tier KV caching: paged (L1) + disk (L2) + SSM companion.
+            let cacheConfig = CacheCoordinatorConfig(
+                usePagedCache: true,
+                enableDiskCache: true,
+                pagedBlockSize: 64,
+                maxCacheBlocks: 1000,
+                diskCacheMaxGB: 10.0,
+                ssmMaxEntries: 50,
+                modelKey: name
+            )
+            container.enableCaching(config: cacheConfig)
+            // Auto-detect hybrid models (attention + SSM layers) and flag the coordinator.
+            if let coordinator = container.cacheCoordinator {
+                let isHybrid = await container.perform { ctx -> Bool in
+                    let testCache = ctx.model.newCache(parameters: nil)
+                    return testCache.contains { $0 is MambaCache || $0 is ArraysCache }
+                }
+                coordinator.setHybrid(isHybrid)
+                genLog.info("CacheCoordinator enabled for \(name, privacy: .public): paged=true disk=true hybrid=\(isHybrid, privacy: .public)")
+            }
+
             let isVLM = await container.isVLM
             let weightsBytes = Self.computeWeightsSizeBytes(at: localURL)
             return SessionHolder(
@@ -403,7 +424,8 @@ actor ModelRuntime {
                 runtime: runtimeConfig,
                 existingCache: nil,
                 cachedTokens: nil,
-                wiredMemoryTicket: nil
+                wiredMemoryTicket: nil,
+                cacheCoordinator: holder.container.cacheCoordinator
             )
             let (stream, cache, newTokens, genTask) = (
                 prefixResult.stream, prefixResult.cache, prefixResult.promptTokens, prefixResult.genTask
@@ -544,7 +566,8 @@ actor ModelRuntime {
                 runtime: cfg,
                 existingCache: existingCache,
                 cachedTokens: cachedTokens,
-                wiredMemoryTicket: wiredTicket
+                wiredMemoryTicket: wiredTicket,
+                cacheCoordinator: holder.container.cacheCoordinator
             )
             (rawStream, tokenizer, cache, newTokens, genTask, toolCallFormat) = (
                 genResult.stream, genResult.tokenizer, genResult.cache,
@@ -576,7 +599,8 @@ actor ModelRuntime {
                     runtime: cfg,
                     existingCache: nil,
                     cachedTokens: nil,
-                    wiredMemoryTicket: wiredTicket
+                    wiredMemoryTicket: wiredTicket,
+                    cacheCoordinator: holder.container.cacheCoordinator
                 )
                 (rawStream, tokenizer, cache, newTokens, genTask, toolCallFormat) = (
                     retryResult.stream, retryResult.tokenizer, retryResult.cache,
