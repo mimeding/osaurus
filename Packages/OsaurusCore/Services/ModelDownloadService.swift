@@ -454,17 +454,22 @@ final class ModelDownloadService: ObservableObject {
 
         let downloader = DirectDownloader()
         defer { downloader.invalidate() }
+        var allSucceeded = true
         for file in missing {
             guard let url = resolveURL(repoId: model.id, path: file.path) else { continue }
             let dest = directory.appendingPathComponent(file.path)
-            try? await downloader.download(
-                from: url,
-                to: dest,
-                expectedSize: file.size,
-                onProgress: { _, _ in }
-            )
+            do {
+                try await downloader.download(
+                    from: url,
+                    to: dest,
+                    expectedSize: file.size,
+                    onProgress: { _, _ in }
+                )
+            } catch {
+                allSucceeded = false
+            }
         }
-        return true
+        return allSucceeded
     }
 
     /// Silently downloads missing config/tokenizer files for models that are

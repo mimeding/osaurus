@@ -505,32 +505,34 @@ struct ModelDetailView: View, Identifiable {
             }
             .buttonStyle(PlainButtonStyle())
 
-            Button(action: {
-                repairResult = nil
-                isRepairing = true
-                Task {
-                    await repairModel()
-                    isRepairing = false
-                }
-            }) {
-                HStack(spacing: 4) {
-                    if isRepairing {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle())
-                            .scaleEffect(0.5)
-                            .frame(width: 12, height: 12)
-                    } else if let result = repairResult {
-                        Image(systemName: result ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(result ? theme.successColor : theme.errorColor)
+            if model.isJANG {
+                Button(action: {
+                    repairResult = nil
+                    isRepairing = true
+                    Task {
+                        await repairModel()
+                        isRepairing = false
                     }
-                    Text("Repair", bundle: .module)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(theme.accentColor)
+                }) {
+                    HStack(spacing: 4) {
+                        if isRepairing {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle())
+                                .scaleEffect(0.5)
+                                .frame(width: 12, height: 12)
+                        } else if let result = repairResult {
+                            Image(systemName: result ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .font(.system(size: 11))
+                                .foregroundColor(result ? theme.successColor : theme.errorColor)
+                        }
+                        Text("Repair", bundle: .module)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(theme.accentColor)
+                    }
                 }
+                .buttonStyle(PlainButtonStyle())
+                .disabled(isRepairing)
             }
-            .buttonStyle(PlainButtonStyle())
-            .disabled(isRepairing)
 
             Spacer()
 
