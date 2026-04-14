@@ -244,6 +244,11 @@ UI coverage on this branch. No gaps in these:
 ---
 
 **Document status**: awaiting team review.
-**Branch**: `feat/memory-tools-defaults` at commit `66eeb7fe` (Phase D).
+**Branch**: `feat/memory-tools-defaults`.
+**Audit captured at**: Phase D (`dab594f7` post-rebase, originally
+`66eeb7fe` pre-rebase — this doc's findings still apply verbatim).
+**Gap 1.1 (Agent.memoryEnabled editor UI) closed in Phase E.4 (`3992f50d`).**
+**Issue 10 (silent save failures) closed in Phases E.5 + E.7
+(`d10f9f64` + `8a4db2e2`).**
 **Next step after approval**: Phase E implements whichever gaps land
 on "close on this branch" and the branch opens for PR review.

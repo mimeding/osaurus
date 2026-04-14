@@ -1,8 +1,66 @@
-# Memory/Tools Defaults + Chat-bar Override — Review Package
+# Memory/Tools Defaults + Chat-bar Override + Cache Engine — Review Package
 
 > **Branch**: `feat/memory-tools-defaults`
-> **Base**: `main` @ `82faed57` (fresh, post-tpae's VMLX migration PR #849)
-> **Status**: Design + fix-plan before code. Nothing applied yet.
+> **Base**: `origin/main` @ `1327e479` (rebased 2026-04-13)
+> **Head**: Phase E.10 at `da4d0f48`
+> **Status**: ✅ **Code complete. 39 tests passing. Ready for team review.**
+>
+> Original scope was five fixes (D-1 through D-5) around memory/tools
+> defaults + per-agent overrides + chat-bar chip. Scope expanded during
+> execution to include the **full 6-stack cache engine configurability
+> surface** that tpae/rcn wanted, plus a set of hazard fixes surfaced
+> by a deep interaction audit. The original five are all closed.
+
+## Current state — quick jump
+
+| You want... | Read |
+|------------|------|
+| To understand what this branch is doing | `01-README.md` (this file) |
+| To see every issue verified against main's code | `02-VERIFIED-ISSUES.md` |
+| To see the execution plan (historical) | `03-FIX-PLAN.md` |
+| To see every single change with before/after, blast radius, audit focus | `04-CHANGE-AUDIT.md` |
+| To see which settings are user-configurable vs JSON-only | `05-CONFIGURABILITY-AUDIT.md` |
+| To cherry-pick only part of this branch | `06-REVERT-GUIDE.md` |
+| To see the deferred follow-up items with cohesive fix designs | `07-DEFERRED-FIXES.md` |
+| To see cross-system interaction hazards + stop/stats/eviction trace | `08-INTERACTION-AUDIT.md` |
+| To run the changes locally against your own models | `09-TEAM-REVIEW-PROMPT.md` |
+
+## Branch contents at a glance
+
+**22 commits ahead of `origin/main` at `1327e479`.**
+
+| Phase | Commit | What |
+|-------|--------|------|
+| A | `7416dd5d` | Tool safety nets — `resolveTools` mode-aware short-circuit, `allActiveSessionIds()`, batch preflight invalidation |
+| B | `956465ed` | Memory safety nets — per-agent `memoryEnabled`, resolver, composer gating, change notification, TTL cache wipe |
+| C | `ba860b96` | Chat-bar Tools chip with per-window three-state override + cache invalidation |
+| D | `dab594f7` | Flip `MemoryConfiguration.enabled` + `ChatConfiguration.disableTools` defaults to off; runtime preflight invalidation on save |
+| E.1 | `80baca9a` | Cache Engine Settings subsection with disk usage readout + Clear button (initial 4/6 stacks) |
+| E.2 | `49e9b9ca` | `showChatBarToolsChip` opt-out toggle |
+| E.3 | `f0d7fb56` | Full 6-stack cache engine surface (+stacks 1 & 5 via `GenerateParameters`) + TurboQuant as osaurus default |
+| E.4 | `3992f50d` | `Agent.memoryEnabled` editor UI toggle (closes configurability gap 1.1) |
+| E.5 | `d10f9f64` | Settings save failure → error toast (closes Issue 10) |
+| E.6 | `79d85755` | Migration-compat tests (13 tests) |
+| E.7 | `8a4db2e2` | Chip override clearing on hide, partial-save messaging, cache subsection width constraint |
+| E.8 | `53132792` | Core-logic unit tests (19 more) + `nextToolsOverrideState` pure helper |
+| E.9 | `6d766836` | Deferred-fixes design doc (`07-DEFERRED-FIXES.md`) + localization consistency (DF-4) |
+| E.10 | `da4d0f48` | Hazard fixes — cacheConfig decoder isolation, override clamping, disk downsize eviction + interaction audit doc (`08-INTERACTION-AUDIT.md`) |
+
+Plus doc-only commits for `CONFIGURATION_KNOBS.md` (user-facing),
+`05-CONFIGURABILITY-AUDIT.md`, `06-REVERT-GUIDE.md`, and the preflight
+TTFT coordination note for tpae.
+
+## Test coverage
+
+**39 tests passing** in `Packages/OsaurusCore/Tests/Configuration/`:
+
+- 13 migration-compat tests (old JSON files decode as expected post-flip)
+- 8 tools chip cycle state machine tests (pure state transitions)
+- 14 `makeGenerateParameters` TurboQuant substitution + clamping tests
+- 2 `effectiveMemoryEnabled` resolver precedence tests
+- 2 `ServerConfiguration` decoder isolation tests (hazard regression)
+
+Run: `swift test --package-path Packages/OsaurusCore --filter Configuration`
 
 ---
 
@@ -57,8 +115,18 @@ Read in order.
 - **BatchEngine migration** — the concurrent-request architecture change. Too big, deserves its own branch
 - **Experience Mode presets** (Simple / Balanced / Power / Developer) — a separate UX feature
 - **First-launch onboarding modal** — depends on Experience Mode
-- **Cache settings hot-reload** — not needed, cache settings don't exist anymore
-- **Any package changes** — vmlx-swift-lm stays where it is
+- **Any package changes to vmlx-swift-lm** — stays where it is. One
+  exception: we confirmed with tpae that the preflight TTFT fix and
+  the `!isLocalModel` gate removal are his work to land on main.
+  Coordination note in `04-CHANGE-AUDIT.md` under "External
+  coordination — tpae's preflight TTFT fix".
+
+**Note**: The original plan had "Cache settings hot-reload — not
+needed, cache settings don't exist anymore" in this list. That's
+now obsolete. The branch scope expanded during execution to build
+the full 6-stack cache engine Settings surface, with hot-reload
+behavior documented explicitly (stacks 1+5 hot, stacks 2+3+4+6 on
+next model load). See Phase E.1/E.3 entries in `04-CHANGE-AUDIT.md`.
 
 ---
 
@@ -142,13 +210,30 @@ Each of these is reversible. Call out in review if you disagree.
 
 ---
 
-## Starting point
+## Reviewing this branch
 
 Worktree at `/Users/eric/osaurus-feat` on branch `feat/memory-tools-defaults`
-branched clean from `origin/main` (commit `82faed57`). No changes applied yet.
+rebased onto `origin/main` at `1327e479`. Head at `da4d0f48` (Phase E.10).
+Not yet pushed to remote.
 
-Review:
-- `02-VERIFIED-ISSUES.md` for the list of issues cross-confirmed against actual
-  code on main
-- `03-FIX-PLAN.md` for the phased execution plan
-- `04-CHANGE-AUDIT.md` for the per-change log that will grow as fixes land
+**For the team reviewer**: see `09-TEAM-REVIEW-PROMPT.md` for a
+copy-pasteable prompt you can use to audit this branch against your
+own models, verify defaults, and run the test suite. It walks through
+checkout, build, tests, and the manual-check checklist from
+`08-INTERACTION-AUDIT.md` §"Checklist for the team reviewer".
+
+**For decision review** (before approving merge), focus on:
+- `04-CHANGE-AUDIT.md` — every single change with before/after,
+  blast radius, audit focus. This is the most important doc.
+- `08-INTERACTION-AUDIT.md` — cross-system interactions, edge cases,
+  hazards found + fixed, stop/stats/eviction trace
+- `06-REVERT-GUIDE.md` — decision tree if you want to land only part
+  of this branch (e.g. keep cache engine work, drop chat-bar UI)
+- `07-DEFERRED-FIXES.md` — follow-up PR designs for the four minor
+  items that didn't make this branch (three with full designs, one
+  already closed)
+
+**For historical context** (why this branch exists at all):
+- `02-VERIFIED-ISSUES.md` — the original 10 issues verified against main
+- `03-FIX-PLAN.md` — the original phased plan (superseded by the
+  actual progress table in `04-CHANGE-AUDIT.md`)

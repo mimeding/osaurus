@@ -6,8 +6,9 @@
 > Complements `07-DEFERRED-FIXES.md` (quality-of-life items) — this doc
 > is about correctness.
 >
-> **Branch**: `feat/memory-tools-defaults` at commit `6d766836` plus the
-> Phase E.10 hazard fixes landed in the same session as this doc.
+> **Branch**: `feat/memory-tools-defaults` at commit `da4d0f48` (Phase E.10).
+> This doc captures the interaction audit plus the three hazard fixes
+> that landed in the same Phase E.10 commit.
 >
 > Investigation scope: stop button, stats measurement, disk L2 eviction,
 > JSON decoder robustness, runtime parameter forwarding, actor

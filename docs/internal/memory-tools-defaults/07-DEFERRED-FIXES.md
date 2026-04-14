@@ -13,7 +13,10 @@
 > (chip override persistence, partial-save messaging, cache width
 > constraint) already shipped as Phases E.7 and E.8.
 >
-> **Branch**: `feat/memory-tools-defaults` at commit `53132792`.
+> **Branch**: `feat/memory-tools-defaults`.
+> **Doc captured at**: Phase E.8 (`53132792`). Still valid at Phase
+> E.10 (`da4d0f48`) — DF-1 through DF-3 are all still deferred with
+> the fix designs below. DF-4 was closed in-branch in Phase E.9.
 > **Audit source**: the edge-case pass summarized at the end of the
 > Phase E.8 commit message and in the conversation transcript.
 
@@ -674,7 +677,10 @@ next time someone edits the Agent Memory tab for any reason.
 **Document status**: ready for team review alongside the other
 `docs/internal/memory-tools-defaults/` team docs.
 
-**Last updated**: at Phase E.8 commit `53132792` on branch
-`feat/memory-tools-defaults`, after the deep edge-case audit pass
-landed fixes for chip override persistence, partial-save messaging,
-cache width constraint, and core logic test coverage.
+**Last updated**: Phase E.8 commit `53132792`, with a branch-pointer
+refresh at Phase E.10 (`da4d0f48`). Since this doc was written:
+- DF-4 was closed in-branch in Phase E.9 (`6d766836`)
+- Three additional correctness hazards were found and fixed in
+  Phase E.10 (`da4d0f48`) — decoder isolation, override clamping,
+  disk L2 downsize eviction. See `08-INTERACTION-AUDIT.md` for those.
+- DF-1 through DF-3 are still deferred with the fix designs above.

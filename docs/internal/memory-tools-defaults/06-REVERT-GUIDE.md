@@ -477,4 +477,12 @@ These stay on the branch regardless of which commits you drop:
 
 **Document status**: ready for team review alongside
 `05-CONFIGURABILITY-AUDIT.md`.
-**Branch**: `feat/memory-tools-defaults` at commit `f0d7fb56` (Phase E.3).
+
+**Branch**: `feat/memory-tools-defaults`.
+**Doc captured at**: Phase E.3 (`f0d7fb56`). Still valid at Phase E.10
+(`da4d0f48`) — the revert/opt-out options below all still apply.
+Phases E.4 through E.10 added `Agent.memoryEnabled` editor UI, unit
+tests, hazard fixes, and documentation. None of those change the
+cherry-pick math in this guide; add the newer commits to whichever
+group you're cherry-picking. See `04-CHANGE-AUDIT.md` for the full
+per-phase commit map.

@@ -1425,7 +1425,7 @@ All subsequent phase work should be based on the rebased commits.
 
 ---
 
-## Progress status — as of rebase
+## Progress status — as of Phase E.10
 
 | Phase | Status | Commit |
 |-------|--------|--------|
@@ -1434,26 +1434,47 @@ All subsequent phase work should be based on the rebased commits.
 | B — memory safety nets (M-04..M-08) | ✅ done, committed, built clean | `956465ed` |
 | C — chat-bar Tools chip (M-09..M-13) | ✅ done, committed, built clean | `ba860b96` |
 | D — default flip + runtime invalidation (M-14..M-16) | ✅ done, committed, built clean | `dab594f7` |
-| E — cleanup, error handling, tests, audit closure (M-18..M-21) | ⏳ not started | — |
-| E.1 — cache engine settings UI (6-stack, 4 reachable stacks) | ✅ done, committed, built clean | `80baca9a` |
-| E.2 — Tools chip opt-out toggle | ✅ done, committed, built clean | `49e9b9ca` |
-| E.3 — full 6-stack surface + TurboQuant default (M-22) | ✅ done, committed, built clean | `f0d7fb56` |
+| E.1 — cache engine settings UI (initial 4 stacks) | ✅ done | `80baca9a` |
+| E.2 — Tools chip opt-out toggle (`showChatBarToolsChip`) | ✅ done | `49e9b9ca` |
+| E.3 — full 6-stack cache surface + TurboQuant default (M-22) | ✅ done | `f0d7fb56` |
+| E.4 — `Agent.memoryEnabled` editor UI toggle (closes gap 1.1) | ✅ done | `3992f50d` |
+| E.5 — Settings save error toast (Issue 10) | ✅ done | `d10f9f64` |
+| E.6 — migration-compat tests (13 tests) | ✅ done | `79d85755` |
+| E.7 — chip override clearing, partial-save messaging, cache width | ✅ done | `8a4db2e2` |
+| E.8 — core-logic unit tests + `nextToolsOverrideState` helper | ✅ done | `53132792` |
+| E.9 — deferred-fixes design doc (`07-DEFERRED-FIXES.md`) + DF-4 closed | ✅ done | `6d766836` |
+| E.10 — hazard fixes (decoder isolation, override clamping, disk downsize) + interaction audit doc (`08-INTERACTION-AUDIT.md`) | ✅ done | `da4d0f48` |
 | Configurability audit (team review) | ✅ done | `93a84f2c` |
 | CONFIGURATION_KNOBS user guide | ✅ done | `499993a6` |
-| Rebase onto latest main | ✅ done | — |
-| Cache-settings audit + close gaps | ✅ done (M-22 closed stack 1/5 gap) | `f0d7fb56` |
+| Rebase onto latest main (`1327e479`) | ✅ done | — |
+| Test suite: 39 tests passing | ✅ | Configuration/MigrationCompatTests.swift, CoreLogicTests.swift |
 | Push to remote | ⏳ not done | — |
 
-**Confirmed hard gaps still open** (from
-`05-CONFIGURABILITY-AUDIT.md`):
-- Gap 1.1 — `Agent.memoryEnabled` editor UI toggle (recommended to
-  close on this branch; blocks the Phase D escape hatch design goal)
-- Gaps 1.2, 1.3, 1.4, 1.5, 1.6, 1.7 — deferred to follow-up PRs per
-  audit recommendation
+### Gap closure status
 
-**New scope added on rebase**: Cache-related settings surface must
-be verified configurable end-to-end. Audit in flight — entries will
-be added below as gaps are found and closed.
+| Gap / Item | Source | Status |
+|------------|--------|--------|
+| Gap 1.1 — `Agent.memoryEnabled` editor toggle | `05-CONFIGURABILITY-AUDIT.md` | ✅ closed in E.4 |
+| Gaps 1.2, 1.3, 1.4, 1.5, 1.6, 1.7 | `05-CONFIGURABILITY-AUDIT.md` | Deferred per audit recommendation (pre-existing gaps on main) |
+| Issue 10 — silent save failures | `05-CONFIGURABILITY-AUDIT.md` | ✅ closed in E.5 + E.7 (error toast + partial-save context) |
+| DF-1 — disk cache readout staleness | `07-DEFERRED-FIXES.md` | Deferred with full design (`feat/cache-readout-polish` PR) |
+| DF-2 — mid-generation cache changes | `07-DEFERRED-FIXES.md` | Deferred with full design (bundle with DF-1) |
+| DF-3 — `SettingsValidatedField` component | `07-DEFERRED-FIXES.md` | Deferred with full design (dedicated PR, cross-cutting) |
+| DF-4 — localization consistency in `memorySettingsSection` | `07-DEFERRED-FIXES.md` | ✅ closed in E.9 |
+| Hazard 1 — `cacheConfig` decoder isolation | `08-INTERACTION-AUDIT.md` | ✅ closed in E.10 |
+| Hazard 2 — out-of-range overrides | `08-INTERACTION-AUDIT.md` | ✅ closed in E.10 |
+| Hazard 3 — disk L2 downsize eviction | `08-INTERACTION-AUDIT.md` | ✅ closed in E.10 |
+
+### Test coverage
+
+| Suite | Tests | File |
+|-------|-------|------|
+| `Configuration migration compat` | 13 | `Tests/Configuration/MigrationCompatTests.swift` |
+| `Tools chip cycle state machine` | 8 | `Tests/Configuration/CoreLogicTests.swift` |
+| `makeGenerateParameters TurboQuant substitution` | 14 | `Tests/Configuration/CoreLogicTests.swift` (includes clamping) |
+| `AgentManager.effectiveMemoryEnabled precedence` | 2 | `Tests/Configuration/CoreLogicTests.swift` |
+| `ServerConfiguration decoder isolation` | 2 | `Tests/Configuration/CoreLogicTests.swift` |
+| **Total** | **39** | — |
 
 ---
 
