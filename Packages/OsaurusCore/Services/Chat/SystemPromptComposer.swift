@@ -47,19 +47,25 @@ public struct SystemPromptComposer: Sendable {
         append(.static(id: "base", label: "Base Prompt", content: effective))
     }
 
-    public mutating func appendMemory(agentId: String, query: String? = nil) async {
+    public mutating func appendMemory(
+        agentId: String,
+        query: String? = nil,
+        toolsAvailable: Bool = true
+    ) async {
         let config = MemoryConfigurationStore.load()
         let context: String
         if let query, !query.isEmpty {
             context = await MemoryContextAssembler.assembleContext(
                 agentId: agentId,
                 config: config,
-                query: query
+                query: query,
+                toolsAvailable: toolsAvailable
             )
         } else {
             context = await MemoryContextAssembler.assembleContext(
                 agentId: agentId,
-                config: config
+                config: config,
+                toolsAvailable: toolsAvailable
             )
         }
         append(.dynamic(id: "memory", label: "Memory", content: context))
@@ -110,7 +116,10 @@ public struct SystemPromptComposer: Sendable {
 
         trace?.mark("memory_start")
         if !memoryOff {
-            await comp.appendMemory(agentId: agentId.uuidString)
+            await comp.appendMemory(
+                agentId: agentId.uuidString,
+                toolsAvailable: !effectiveToolsOff
+            )
         }
         trace?.mark("memory_done")
 
@@ -279,7 +288,12 @@ public struct SystemPromptComposer: Sendable {
         into messages: inout [ChatMessage]
     ) async -> (cacheHint: String, staticPrefix: String) {
         var composer = forChat(agentId: agentId, executionMode: .none)
-        await composer.appendMemory(agentId: agentId.uuidString, query: query.isEmpty ? nil : query)
+        let toolsOff = AgentManager.shared.effectiveToolsDisabled(for: agentId)
+        await composer.appendMemory(
+            agentId: agentId.uuidString,
+            query: query.isEmpty ? nil : query,
+            toolsAvailable: !toolsOff
+        )
         let manifest = composer.manifest()
         let rendered = composer.render()
         debugLog("[Context:inject] \(manifest.debugDescription)")
