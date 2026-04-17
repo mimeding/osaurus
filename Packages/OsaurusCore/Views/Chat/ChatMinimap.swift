@@ -67,21 +67,15 @@ struct ChatMinimap: View {
 
     private func row(for marker: Marker) -> some View {
         let isActive = marker.id == activeMarkerId
-        let index = (markers.firstIndex(where: { $0.id == marker.id }) ?? 0) + 1
 
         return Button {
             guard isExpanded else { return }
             onSelect(marker.id)
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 handle(isActive: isActive)
 
                 if isExpanded {
-                    Text("\(index)")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(theme.secondaryText)
-                        .frame(width: 16, alignment: .trailing)
-
                     Text(displayText(for: marker))
                         .font(.system(size: 12))
                         .foregroundColor(isActive ? theme.primaryText : theme.secondaryText)

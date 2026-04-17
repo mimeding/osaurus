@@ -1086,6 +1086,14 @@ extension MessageTableRepresentable {
 
         /// Scroll the thread so the given user-message turn is near the top
         /// of the visible area. Used by the minimap row-click handler.
+        ///
+        /// Two auto-scroll behaviors fight this if left alone:
+        ///   1. `wasPinnedToBottom` → `scrollToBottom()` inside
+        ///      `handlePostSnapshotScroll` snaps back to bottom on the next
+        ///      streaming delta.
+        ///   2. New turn auto scroll (different `lastAssistantTurnId`) jumps
+        ///      to the new assistant header while the model is still streaming.
+        /// we neutralize both before kicking off our animation.
         func scrollToTurn(_ turnId: UUID) {
             guard let tableView, let scrollView else { return }
 
@@ -1095,6 +1103,14 @@ extension MessageTableRepresentable {
             let row = blockIds.firstIndex(of: userBlockId)
                 ?? blockIds.firstIndex(of: headerBlockId)
             guard let targetRow = row, targetRow < tableView.numberOfRows else { return }
+
+            // drop pinned to bottom so subsequent applyBlocks restore our
+            // anchor instead of snapping back to bottom
+            scrollAnchor.unpinFromBottom()
+            
+            // mark the current assistant turn as already handled so the
+            // new turn auto-scroll path doesn't fire mid-animation
+            lastScrolledToTurnId = ctx.lastAssistantTurnId
 
             let rowRect = tableView.rect(ofRow: targetRow)
             // Leave a little breathing room above the target.
