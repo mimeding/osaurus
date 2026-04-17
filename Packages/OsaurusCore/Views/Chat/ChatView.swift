@@ -1316,6 +1316,10 @@ struct ChatView: View {
     @State private var userImagePreview: NSImage?
     // Bonjour agent connection
     @State private var pendingDiscoveredAgent: DiscoveredAgent? = nil
+    // Minimap
+    @State private var activeMinimapTurnId: UUID?
+    @State private var scrollToTurnId: UUID?
+    @State private var scrollToTurnTrigger: Int = 0
 
     /// Convenience accessor for the window's theme
     private var theme: ThemeProtocol { windowState.theme }
@@ -1806,6 +1810,7 @@ struct ChatView: View {
         let groupHeaderMap = session.visibleBlocksGroupHeaderMap
         let displayName = windowState.cachedAgentDisplayName
         let lastAssistantTurnId = session.lastAssistantTurnIdForThread
+        let minimapMarkers = buildMinimapMarkers(from: blocks)
 
         return ZStack {
             MessageThreadView(
@@ -1827,10 +1832,32 @@ struct ChatView: View {
                 editText: $editText,
                 onConfirmEdit: confirmEditAndRegenerate,
                 onCancelEdit: cancelEditing,
-                onUserImagePreview: openUserAttachmentPreview(attachmentId:)
+                onUserImagePreview: openUserAttachmentPreview(attachmentId:),
+                onVisibleTopUserTurnChanged: { turnId in
+                    activeMinimapTurnId = turnId
+                },
+                scrollToTurnId: scrollToTurnId,
+                scrollToTurnTrigger: scrollToTurnTrigger
             )
             .onReceive(NotificationCenter.default.publisher(for: .chatOverlayActivated)) { _ in
                 isPinnedToBottom = true
+            }
+
+            // Minimap overlay — sits at vertical center, right edge
+            if minimapMarkers.count >= 2 {
+                HStack {
+                    Spacer()
+                    ChatMinimap(
+                        markers: minimapMarkers,
+                        activeMarkerId: activeMinimapTurnId,
+                        onSelect: { turnId in
+                            scrollToTurnId = turnId
+                            scrollToTurnTrigger &+= 1
+                        }
+                    )
+                    .padding(.trailing, 22)
+                }
+                .allowsHitTesting(true)
             }
 
             // Scroll button overlay - isolated from content
@@ -1890,6 +1917,18 @@ struct ChatView: View {
             return URL(fileURLWithPath: art.hostPath)
         }
         return nil
+    }
+
+    /// Build minimap markers from the current block stream (one per user message)
+    private func buildMinimapMarkers(from blocks: [ContentBlock]) -> [ChatMinimap.Marker] {
+        var markers: [ChatMinimap.Marker] = []
+        markers.reserveCapacity(8)
+        for block in blocks {
+            if case let .userMessage(text, _) = block.kind {
+                markers.append(ChatMinimap.Marker(id: block.turnId, preview: text))
+            }
+        }
+        return markers
     }
 
     /// Copy a turn's thinking + content to the clipboard
