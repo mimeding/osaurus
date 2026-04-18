@@ -338,7 +338,9 @@ final class ChatSession: ObservableObject {
         var parts: [String] = []
         for doc in docs {
             if let name = doc.filename, let text = doc.documentContent {
-                parts.append("<attached_document name=\"\(name)\">\n\(text)\n</attached_document>")
+                let safeName = escapeAttachmentWrapperText(sanitizeAttachmentWrapperFilename(name))
+                let safeText = escapeAttachmentWrapperText(text)
+                parts.append("<attached_document name=\"\(safeName)\">\n\(safeText)\n</attached_document>")
             }
         }
 
@@ -347,6 +349,25 @@ final class ChatSession: ObservableObject {
         }
 
         return parts.joined(separator: "\n\n")
+    }
+
+    private static func sanitizeAttachmentWrapperFilename(_ rawName: String) -> String {
+        let normalized = rawName.replacingOccurrences(of: "\\", with: "/")
+        let basename = (normalized as NSString).lastPathComponent
+        let withoutControls = basename.unicodeScalars.map { scalar in
+            CharacterSet.controlCharacters.contains(scalar) ? " " : String(scalar)
+        }.joined()
+        let trimmed = withoutControls.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "attached-document" : trimmed
+    }
+
+    private static func escapeAttachmentWrapperText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
     }
 
     /// Format token count for display (e.g., "1.2K", "15K")

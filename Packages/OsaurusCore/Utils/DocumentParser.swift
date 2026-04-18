@@ -14,6 +14,7 @@ import UniformTypeIdentifiers
 enum DocumentParser {
 
     static let maxParsedTextLength = 500_000  // ~500KB of text
+    static let maxFileSizeBytes = 10 * 1024 * 1024  // 10MB pre-parse cap
 
     enum ParseError: LocalizedError {
         case unsupportedFormat(String)
@@ -47,6 +48,10 @@ enum DocumentParser {
         let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         let ext = url.pathExtension.lowercased()
         let filename = url.lastPathComponent
+
+        guard fileSize <= 0 || fileSize <= maxFileSizeBytes else {
+            throw ParseError.fileTooLarge
+        }
 
         // PDF may fall back to image rendering if text extraction yields nothing
         if ext == "pdf" {
