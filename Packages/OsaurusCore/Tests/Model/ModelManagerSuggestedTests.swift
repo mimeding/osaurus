@@ -15,6 +15,11 @@ struct ModelManagerSuggestedTests {
 
     // MARK: - Curated catalog
 
+    @Test func adHocManager_doesNotAutoLoadOrgModelsOnInit() async {
+        let autoLoads = await MainActor.run { ModelManager().autoLoadsOsaurusOrgModelsOnInit }
+        #expect(autoLoads == false)
+    }
+
     @Test func curatedSuggestedIds_includesNewMiniMaxEntries() {
         let ids = ModelManager.curatedSuggestedIds
         #expect(ids.contains("osaurusai/minimax-m2.7-jangtq4"))
@@ -25,8 +30,8 @@ struct ModelManagerSuggestedTests {
         let suggested = await MainActor.run { ModelManager().suggestedModels }
         let curatedIds = ModelManager.curatedSuggestedIds
         let suggestedIds = Set(suggested.map { $0.id.lowercased() })
-        // On a fresh manager (before any HF fetch resolves), `suggestedModels`
-        // is exactly the curated catalog.
+        // Ad-hoc managers stay on the curated catalog until code explicitly
+        // asks for the OsaurusAI org refresh.
         #expect(suggestedIds == curatedIds)
     }
 

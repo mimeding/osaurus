@@ -39,7 +39,7 @@ enum ModelListTab: String, CaseIterable, AnimatedTabItem {
 /// Download orchestration is handled by ModelDownloadService.
 @MainActor
 final class ModelManager: NSObject, ObservableObject {
-    static let shared = ModelManager()
+    static let shared = ModelManager(autoLoadOsaurusOrgModelsOnInit: true)
 
     let downloadService = ModelDownloadService.shared
 
@@ -165,11 +165,23 @@ final class ModelManager: NSObject, ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var remoteSearchTask: Task<Void, Never>? = nil
+    private let autoLoadOsaurusOrgModelsOnInit: Bool
+    var autoLoadsOsaurusOrgModelsOnInit: Bool { autoLoadOsaurusOrgModelsOnInit }
 
     // MARK: - Initialization
     override init() {
+        autoLoadOsaurusOrgModelsOnInit = false
         super.init()
+        configure()
+    }
 
+    private init(autoLoadOsaurusOrgModelsOnInit: Bool) {
+        self.autoLoadOsaurusOrgModelsOnInit = autoLoadOsaurusOrgModelsOnInit
+        super.init()
+        configure()
+    }
+
+    private func configure() {
         loadAvailableModels()
 
         NotificationCenter.default.publisher(for: .localModelsChanged)
@@ -186,8 +198,11 @@ final class ModelManager: NSObject, ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Pull the OsaurusAI HF org listing once on launch so newly published
-        // models surface in the Recommended tab without requiring a code push.
+        guard autoLoadOsaurusOrgModelsOnInit else { return }
+
+        // Only the shared production manager should kick off a background
+        // org refresh on construction. Ad-hoc instances are used heavily in
+        // tests and should remain deterministic until explicitly refreshed.
         Task { [weak self] in await self?.loadOsaurusAIOrgModels() }
     }
 
