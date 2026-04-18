@@ -7,127 +7,110 @@ import Testing
 struct SharedArtifactSecurityTests {
 
     @Test func processToolResult_sanitizesDestinationFilename() throws {
-        try withIsolatedOsaurusRoot { _ in
-            let contextId = "artifact-dest-\(UUID().uuidString)"
-            let toolResult = try makeToolResult(
-                metadata: [
-                    "filename": "../exports/../../quarterly.md",
-                    "mime_type": "text/plain",
-                    "has_content": true,
-                ],
-                contentLines: ["safe payload"]
+        try WorkDatabase.shared.open()
+
+        let contextId = "artifact-dest-\(UUID().uuidString)"
+        defer { try? IssueStore.deleteSharedArtifacts(contextId: contextId) }
+
+        let toolResult = try makeToolResult(
+            metadata: [
+                "filename": "../exports/../../quarterly.md",
+                "mime_type": "text/plain",
+                "has_content": true,
+            ],
+            contentLines: ["safe payload"]
+        )
+
+        let processed = try #require(
+            SharedArtifact.processToolResult(
+                toolResult,
+                contextId: contextId,
+                contextType: .chat,
+                executionMode: .none
             )
+        )
 
-            let processed = try #require(
-                SharedArtifact.processToolResult(
-                    toolResult,
-                    contextId: contextId,
-                    contextType: .chat,
-                    executionMode: .none
-                )
-            )
+        let contextDir = OsaurusPaths.contextArtifactsDir(contextId: contextId).resolvingSymlinksInPath()
+        let artifactURL = URL(fileURLWithPath: processed.artifact.hostPath).resolvingSymlinksInPath()
 
-            let contextDir = OsaurusPaths.contextArtifactsDir(contextId: contextId).resolvingSymlinksInPath()
-            let artifactURL = URL(fileURLWithPath: processed.artifact.hostPath).resolvingSymlinksInPath()
+        #expect(processed.artifact.filename == "quarterly.md")
+        #expect(artifactURL.deletingLastPathComponent().path == contextDir.path)
+        #expect(FileManager.default.fileExists(atPath: artifactURL.path))
 
-            #expect(processed.artifact.filename == "quarterly.md")
-            #expect(artifactURL.deletingLastPathComponent().path == contextDir.path)
-            #expect(FileManager.default.fileExists(atPath: artifactURL.path))
-
-            let enrichedArtifact = try #require(SharedArtifact.fromEnrichedToolResult(processed.enrichedToolResult))
-            #expect(enrichedArtifact.filename == "quarterly.md")
-        }
+        let enrichedArtifact = try #require(SharedArtifact.fromEnrichedToolResult(processed.enrichedToolResult))
+        #expect(enrichedArtifact.filename == "quarterly.md")
     }
 
     @Test func processToolResult_rejectsHostFolderPathTraversal() throws {
-        try withIsolatedOsaurusRoot { root in
-            let fm = FileManager.default
-            let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
-            let outsideFile = root.appendingPathComponent("outside.txt")
-            try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
-            try Data("outside".utf8).write(to: outsideFile)
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("osaurus-artifact-host-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
 
-            let context = WorkFolderContext(
-                rootPath: workspaceRoot,
-                projectType: .unknown,
-                tree: "",
-                manifest: nil,
-                gitStatus: nil,
-                isGitRepo: false
-            )
-            let toolResult = try makeToolResult(
-                metadata: [
-                    "filename": "artifact.txt",
-                    "mime_type": "text/plain",
-                    "path": "../outside.txt",
-                    "has_content": false,
-                ]
-            )
+        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
+        let outsideFile = root.appendingPathComponent("outside.txt")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try Data("outside".utf8).write(to: outsideFile)
 
-            let processed = SharedArtifact.processToolResult(
-                toolResult,
-                contextId: "artifact-host-\(UUID().uuidString)",
-                contextType: .work,
-                executionMode: .hostFolder(context)
-            )
+        let context = WorkFolderContext(
+            rootPath: workspaceRoot,
+            projectType: .unknown,
+            tree: "",
+            manifest: nil,
+            gitStatus: nil,
+            isGitRepo: false
+        )
+        let toolResult = try makeToolResult(
+            metadata: [
+                "filename": "artifact.txt",
+                "mime_type": "text/plain",
+                "path": "../outside.txt",
+                "has_content": false,
+            ]
+        )
 
-            #expect(processed == nil)
-        }
+        let processed = SharedArtifact.processToolResult(
+            toolResult,
+            contextId: "artifact-host-\(UUID().uuidString)",
+            contextType: .work,
+            executionMode: .hostFolder(context)
+        )
+
+        #expect(processed == nil)
     }
 
     @Test func processToolResult_rejectsSandboxPathTraversal() throws {
-        try withIsolatedOsaurusRoot { _ in
-            let fm = FileManager.default
-            let agentName = "artifact-security-agent"
-            let agentDir = OsaurusPaths.containerAgentDir(agentName)
-            try fm.createDirectory(at: agentDir, withIntermediateDirectories: true)
-            let outsideFile = OsaurusPaths.container().appendingPathComponent("outside.txt")
-            try fm.createDirectory(at: outsideFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data("outside".utf8).write(to: outsideFile)
-
-            let toolResult = try makeToolResult(
-                metadata: [
-                    "filename": "artifact.txt",
-                    "mime_type": "text/plain",
-                    "path": "/workspace/agents/\(agentName)/../../../outside.txt",
-                    "has_content": false,
-                ]
-            )
-
-            let processed = SharedArtifact.processToolResult(
-                toolResult,
-                contextId: "artifact-sandbox-\(UUID().uuidString)",
-                contextType: .work,
-                executionMode: .sandbox,
-                sandboxAgentName: agentName
-            )
-
-            #expect(processed == nil)
-        }
-    }
-
-    private func withIsolatedOsaurusRoot(_ body: (URL) throws -> Void) throws {
         let fm = FileManager.default
-        let originalRoot = OsaurusPaths.overrideRoot
-        let wasOpen = WorkDatabase.shared.isOpen
-        let isolatedRoot = fm.temporaryDirectory
-            .appendingPathComponent("osaurus-artifact-security-\(UUID().uuidString)", isDirectory: true)
-
-        WorkDatabase.shared.close()
-        try fm.createDirectory(at: isolatedRoot, withIntermediateDirectories: true)
-        OsaurusPaths.overrideRoot = isolatedRoot
-        try WorkDatabase.shared.open()
-
+        let agentName = "artifact-security-agent-\(UUID().uuidString)"
+        let agentDir = OsaurusPaths.containerAgentDir(agentName)
+        let outsideFile = OsaurusPaths.container().appendingPathComponent("outside-\(UUID().uuidString).txt")
         defer {
-            WorkDatabase.shared.close()
-            OsaurusPaths.overrideRoot = originalRoot
-            if wasOpen {
-                try? WorkDatabase.shared.open()
-            }
-            try? fm.removeItem(at: isolatedRoot)
+            try? fm.removeItem(at: agentDir)
+            try? fm.removeItem(at: outsideFile)
         }
 
-        try body(isolatedRoot)
+        try fm.createDirectory(at: agentDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: outsideFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("outside".utf8).write(to: outsideFile)
+
+        let toolResult = try makeToolResult(
+            metadata: [
+                "filename": "artifact.txt",
+                "mime_type": "text/plain",
+                "path": "/workspace/agents/\(agentName)/../../../\(outsideFile.lastPathComponent)",
+                "has_content": false,
+            ]
+        )
+
+        let processed = SharedArtifact.processToolResult(
+            toolResult,
+            contextId: "artifact-sandbox-\(UUID().uuidString)",
+            contextType: .work,
+            executionMode: .sandbox,
+            sandboxAgentName: agentName
+        )
+
+        #expect(processed == nil)
     }
 
     private func makeToolResult(
