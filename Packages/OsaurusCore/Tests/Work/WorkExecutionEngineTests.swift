@@ -332,8 +332,8 @@ struct WorkExecutionEngineTests {
         }
 
         #expect(iteration == 1)
-        #expect(toolCalls == 1)
-        #expect(preservedMessages.contains(where: { $0.role == "tool" && $0.content == "{}" }))
+        #expect(toolCalls == 0)
+        #expect(preservedMessages.isEmpty)
     }
 
     @Test @MainActor
@@ -373,6 +373,76 @@ struct WorkExecutionEngineTests {
         #expect(iteration == 1)
         #expect(toolCalls == 1)
         #expect(preservedMessages.first?.content == "Build it")
+    }
+
+    @Test @MainActor
+    func executeLoop_consumesTypedInferenceEvents_forHintsAndToolExecution() async throws {
+        let registry = ToolRegistry.shared
+        registry.register(NoopTestTool())
+        registry.setEnabled(true, for: "noop_test")
+        defer { registry.unregister(names: ["noop_test"]) }
+
+        let engine = WorkExecutionEngine(
+            chatEngine: SequencedWorkChatEngine(
+                steps: [
+                    .streamThenTool(
+                        deltas: [
+                            "Planning the next action.",
+                            StreamingToolHint.encode("noop_test"),
+                            StreamingToolHint.encodeArgs("{}"),
+                            StreamingStatsHint.encode(tokenCount: 8, tokensPerSecond: 42.0),
+                        ],
+                        tool: "noop_test",
+                        args: "{}"
+                    ),
+                    .tool(
+                        "complete_task",
+                        #"{"status":"verified","summary":"done","verification_performed":"Ran the no-op tool and confirmed the expected empty JSON result.","remaining_risks":"none","remaining_work":"none"}"#
+                    ),
+                ]
+            )
+        )
+        let issue = Issue(taskId: "task-typed-events", title: "Use the typed seam")
+        var messages = [ChatMessage(role: "user", content: "Finish the task")]
+        var toolHints: [String] = []
+        var argumentHints: [String] = []
+        var streamedText = ""
+        var executedToolNames: [String] = []
+
+        let result = try await engine.executeLoop(
+            issue: issue,
+            messages: &messages,
+            systemPrompt: "Base",
+            model: "mock",
+            tools: [noopToolSpec(), completeTaskToolSpec()],
+            maxIterations: 4,
+            onIterationStart: { _ in },
+            onDelta: { delta, _ in streamedText += delta },
+            onToolHint: { toolHints.append($0) },
+            onToolArgHint: { argumentHints.append($0) },
+            onToolCall: { toolName, _, _ in executedToolNames.append(toolName) },
+            onStatusUpdate: { _ in },
+            onArtifact: { _ in },
+            onTokensConsumed: { _, _ in }
+        )
+
+        guard case .completed(let summary, _, let status) = result else {
+            Issue.record("Expected typed-event loop completion")
+            return
+        }
+
+        #expect(status == .verified)
+        #expect(summary.contains("Completion status: VERIFIED"))
+        #expect(streamedText == "Planning the next action.")
+        #expect(toolHints == ["noop_test"])
+        #expect(argumentHints == ["{}"])
+        #expect(executedToolNames == ["noop_test"])
+        #expect(
+            messages.contains(where: {
+                $0.role == "assistant"
+                    && ($0.content?.contains("Planning the next action.") == true)
+            })
+        )
     }
 }
 
@@ -427,6 +497,7 @@ private func completeTaskToolSpec() -> Tool {
 private actor SequencedWorkChatEngine: ChatEngineProtocol {
     enum Step {
         case tool(String, String)
+        case streamThenTool(deltas: [String], tool: String, args: String)
     }
 
     private var steps: [Step]
@@ -446,6 +517,15 @@ private actor SequencedWorkChatEngine: ChatEngineProtocol {
         switch step {
         case .tool(let name, let args):
             throw ServiceToolInvocation(toolName: name, jsonArguments: args)
+        case .streamThenTool(let deltas, let tool, let args):
+            return AsyncThrowingStream { continuation in
+                for delta in deltas {
+                    continuation.yield(delta)
+                }
+                continuation.finish(
+                    throwing: ServiceToolInvocation(toolName: tool, jsonArguments: args)
+                )
+            }
         }
     }
 

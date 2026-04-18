@@ -544,8 +544,8 @@ public actor WorkExecutionEngine {
             var toolInvoked: ServiceToolInvocation?
 
             do {
-                let stream = try await resolvedChatEngine().streamChat(request: request)
-                for try await delta in stream {
+                let stream = try await resolvedChatEngine().streamInferenceEvents(request: request)
+                for try await event in stream {
                     if await shouldInterrupt() {
                         return .interrupted(
                             messages: messages,
@@ -553,35 +553,22 @@ public actor WorkExecutionEngine {
                             totalToolCalls: totalToolCalls
                         )
                     }
-                    if let toolName = StreamingToolHint.decode(delta) {
+                    switch event {
+                    case .toolCallStarted(let toolName):
                         await onToolHint(toolName)
-                        continue
-                    }
-                    if let argFragment = StreamingToolHint.decodeArgs(delta) {
+                    case .toolCallArgumentsDelta(let argFragment):
                         await onToolArgHint(argFragment)
+                    case .stats:
+                        // Benchmarking metadata is out-of-band and must
+                        // never be persisted into visible assistant text.
                         continue
+                    case .toolCallRequested(let toolCall):
+                        toolInvoked = toolCall.serviceInvocation
+                    case .textDelta(let delta):
+                        responseContent += delta
+                        await onDelta(delta, iteration)
                     }
-                    // Strip benchmarking sentinel (￾stats:N;TPS). Like
-                    // StreamingToolHint, the stats delta is its own
-                    // stream fragment — not part of the visible text —
-                    // so we must drop it rather than accumulate into
-                    // responseContent. Without this strip, the stats
-                    // sentinel was being persisted into the assistant's
-                    // message content and then rendered verbatim on
-                    // re-display, surfacing as the user-visible
-                    // "…￾stats:24;85.4607" string (issue #856).
-                    //
-                    // ChatView.swift:1064 already handles this for the
-                    // regular chat path; work mode uses a different
-                    // consumer (this file), which previously missed it.
-                    if StreamingStatsHint.decode(delta) != nil {
-                        continue
-                    }
-                    responseContent += delta
-                    await onDelta(delta, iteration)
                 }
-            } catch let invocation as ServiceToolInvocation {
-                toolInvoked = invocation
             } catch is CancellationError {
                 return .interrupted(
                     messages: messages,
