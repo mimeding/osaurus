@@ -22,6 +22,26 @@ public enum SystemPromptTemplates {
         return trimmed.isEmpty ? defaultIdentity : trimmed
     }
 
+    // MARK: - Capability Discovery Nudge
+
+    /// Static guidance appended to the system prompt when `capabilities_search`
+    /// / `capabilities_load` are in the active tool set (auto-selection mode).
+    /// Tells the model how to recover when its current tool kit is missing
+    /// something instead of inventing tool names — works hand-in-hand with
+    /// the `toolNotFound` self-heal envelope returned by `ToolRegistry`.
+    public static let capabilityDiscoveryNudge = """
+        ## Discovering more tools
+
+        Your current tool list is the most relevant subset for this task. \
+        If you need a capability that is not listed, call `capabilities_search` \
+        with a short description of what you need, then call `capabilities_load` \
+        with the returned IDs (e.g. `tool/sandbox_exec`, `skill/swift-best-practices`) \
+        to make those tools available for the rest of this session. \
+        Do not invent tool names — unknown tools return a `tool not found` \
+        error with `suggested_tools` IDs you can pass directly to \
+        `capabilities_load`.
+        """
+
     // MARK: - Work Mode
 
     public enum WorkModeVariant {

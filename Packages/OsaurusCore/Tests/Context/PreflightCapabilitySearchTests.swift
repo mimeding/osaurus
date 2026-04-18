@@ -8,13 +8,13 @@ struct PreflightCapabilitySearchTests {
     @Test func emptyQueryReturnsEmptyResult() async {
         let result = await PreflightCapabilitySearch.search(query: "", agentId: UUID())
         #expect(result.toolSpecs.isEmpty)
-        #expect(result.contextSnippet.isEmpty)
+        #expect(result.items.isEmpty)
     }
 
     @Test func whitespaceOnlyQueryReturnsEmptyResult() async {
         let result = await PreflightCapabilitySearch.search(query: "   \n  ", agentId: UUID())
         #expect(result.toolSpecs.isEmpty)
-        #expect(result.contextSnippet.isEmpty)
+        #expect(result.items.isEmpty)
     }
 
     @Test func nonsenseQueryReturnsGracefully() async {
@@ -51,7 +51,7 @@ struct PreflightCapabilitySearchTests {
     @Test func offModeReturnsEmptyResult() async {
         let result = await PreflightCapabilitySearch.search(query: "deploy build test", mode: .off, agentId: UUID())
         #expect(result.toolSpecs.isEmpty)
-        #expect(result.contextSnippet.isEmpty)
+        #expect(result.items.isEmpty)
     }
 
     @Test func narrowModeReturnsNoDuplicates() async {

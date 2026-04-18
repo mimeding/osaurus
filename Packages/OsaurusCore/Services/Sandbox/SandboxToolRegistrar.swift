@@ -167,15 +167,16 @@ public final class SandboxToolRegistrar {
                 return
             }
 
+            let preStartKind = unavailabilityKind(for: containerStatus)
+
             // After `maxStartupFailures` give up entirely until the user
             // takes explicit action (toggling autonomous off/on, restarting
             // the app, or hitting "Start" in the Sandbox settings panel).
-            // The recorded unavailability tells the model what happened.
             if startupFailureCount >= Self.maxStartupFailures {
                 if unavailability[agent.id] == nil {
                     recordUnavailability(
                         for: agent.id,
-                        kind: containerStatus == .notProvisioned ? .containerUnavailable : .startupFailed,
+                        kind: preStartKind,
                         message:
                             "Sandbox start has failed \(startupFailureCount) times this session — automatic retries disabled. Open the Sandbox settings panel to start it manually or check ~/.osaurus/container/containers/osaurus-sandbox for stale state."
                     )
@@ -186,13 +187,13 @@ public final class SandboxToolRegistrar {
             // Honor the failure cool-down so a misconfigured host (vmnet
             // collision, port-in-use, missing entitlement) doesn't get
             // hammered with a fresh provision attempt on every chat/work
-            // send. The previous failure reason is still in `unavailability`
+            // send. The previous failure reason stays in `unavailability`
             // so the model gets the same notice without us re-trying.
             if let retryAfter = nextStartupRetryAfter, retryAfter > Date() {
                 if unavailability[agent.id] == nil {
                     recordUnavailability(
                         for: agent.id,
-                        kind: containerStatus == .notProvisioned ? .containerUnavailable : .startupFailed,
+                        kind: preStartKind,
                         message: "Sandbox container start is in cool-down after a recent failure"
                     )
                 }
@@ -202,26 +203,16 @@ public final class SandboxToolRegistrar {
             do {
                 try await ensureContainerStartedCoalesced()
             } catch {
-                startupFailureCount += 1
-                nextStartupRetryAfter = Date().addingTimeInterval(Self.startupRetryCooldown)
-                // Clear any leftover container/bridge state so the next
-                // attempt starts from a clean slate. The SDK's own cleanup
-                // sometimes leaves the on-disk container directory behind
-                // (the source of "file ... already exists" errors).
-                await SandboxManager.shared.cleanupAfterFailure()
-                recordUnavailability(
+                await recordStartupFailure(
                     for: agent.id,
-                    kind: containerStatus == .notProvisioned ? .containerUnavailable : .startupFailed,
+                    kind: preStartKind,
                     message: "Sandbox container could not be started: \(error.localizedDescription)"
                 )
                 return
             }
 
             guard SandboxManager.State.shared.status == .running else {
-                startupFailureCount += 1
-                nextStartupRetryAfter = Date().addingTimeInterval(Self.startupRetryCooldown)
-                await SandboxManager.shared.cleanupAfterFailure()
-                recordUnavailability(
+                await recordStartupFailure(
                     for: agent.id,
                     kind: .startupFailed,
                     message: "Sandbox container did not reach running state"
@@ -271,6 +262,27 @@ public final class SandboxToolRegistrar {
         }
     }
 
+    /// Bumps the failure counter, arms the cool-down, scrubs any leftover
+    /// container/bridge state, and records the unavailability reason. The
+    /// SDK's own cleanup occasionally leaves the on-disk container directory
+    /// behind, which surfaces as the misleading "file already exists" error
+    /// on the next attempt — `cleanupAfterFailure()` makes the next start
+    /// idempotent.
+    private func recordStartupFailure(
+        for agentId: UUID,
+        kind: UnavailabilityReason.Kind,
+        message: String
+    ) async {
+        startupFailureCount += 1
+        nextStartupRetryAfter = Date().addingTimeInterval(Self.startupRetryCooldown)
+        await SandboxManager.shared.cleanupAfterFailure()
+        recordUnavailability(for: agentId, kind: kind, message: message)
+    }
+
+    private func unavailabilityKind(for status: ContainerStatus) -> UnavailabilityReason.Kind {
+        status == .notProvisioned ? .containerUnavailable : .startupFailed
+    }
+
     /// Coalesce concurrent `startContainer()` attempts so multiple sessions
     /// firing `registerTools` in parallel share one provision task instead
     /// of racing each other into "address already in use" / vmnet failures.
@@ -317,8 +329,21 @@ public final class SandboxToolRegistrar {
         ToolRegistry.shared.unregisterSandboxPluginTools(pluginId: pluginId)
     }
 
+    private var lastSeenStatus: ContainerStatus?
+
     private func handleContainerStatusChanged(_ newStatus: ContainerStatus) async {
-        if newStatus == .running {
+        // Tool registration only depends on whether the container is running.
+        // Skip the heavy plugin-verify + registerTools work for intermediate
+        // transitions (e.g. `.notProvisioned → .starting → .stopped` from a
+        // failing autostart) so flapping doesn't churn the registry. The
+        // very first event (lastSeenStatus == nil) always runs so launch-
+        // time registration still happens.
+        let prev = lastSeenStatus
+        lastSeenStatus = newStatus
+        let runningChanged = prev?.isRunning != newStatus.isRunning
+        guard prev == nil || runningChanged else { return }
+
+        if newStatus.isRunning {
             // Someone (UI, autoStart, agent provisioner) successfully
             // started the container — clear any prior failure tracking so
             // future hiccups can retry from scratch.

@@ -125,8 +125,10 @@ public actor WorkEngine {
         executionMode: WorkExecutionMode,
         cacheHint: String? = nil,
         staticPrefix: String? = nil,
+        memorySection: String? = nil,
         modelOptions: [String: ModelOptionValue] = [:],
-        onContextRefresh: WorkExecutionEngine.ContextRefreshCallback? = nil
+        onContextRefresh: WorkExecutionEngine.ContextRefreshCallback? = nil,
+        onToolsLoaded: WorkExecutionEngine.ToolsLoadedCallback? = nil
     ) async throws -> ExecutionResult {
         guard !isExecuting else {
             throw WorkEngineError.alreadyExecuting
@@ -145,8 +147,10 @@ public actor WorkEngine {
             attemptResume: true,
             cacheHint: cacheHint,
             staticPrefix: staticPrefix,
+            memorySection: memorySection,
             modelOptions: modelOptions,
-            onContextRefresh: onContextRefresh
+            onContextRefresh: onContextRefresh,
+            onToolsLoaded: onToolsLoaded
         )
     }
 
@@ -348,8 +352,10 @@ public actor WorkEngine {
         attemptResume: Bool = false,
         cacheHint: String? = nil,
         staticPrefix: String? = nil,
+        memorySection: String? = nil,
         modelOptions: [String: ModelOptionValue] = [:],
-        onContextRefresh: WorkExecutionEngine.ContextRefreshCallback? = nil
+        onContextRefresh: WorkExecutionEngine.ContextRefreshCallback? = nil,
+        onToolsLoaded: WorkExecutionEngine.ToolsLoadedCallback? = nil
     ) async throws -> ExecutionResult {
         isExecuting = true
         interruptRequested = false
@@ -456,6 +462,7 @@ public actor WorkEngine {
                 agentId: agentId,
                 cacheHint: agentCacheHint,
                 staticPrefix: agentStaticPrefix,
+                memorySection: memorySection,
                 modelOptions: modelOptions,
                 shouldInterrupt: { await self.shouldInterruptExecution(for: issue.id) },
                 onIterationStart: { [weak self] iteration in
@@ -516,7 +523,8 @@ public actor WorkEngine {
                     guard let self = self else { return nil }
                     return await self.delegate?.workEngine(self, needsSecret: prompt)
                 },
-                onContextRefresh: onContextRefresh
+                onContextRefresh: onContextRefresh,
+                onToolsLoaded: onToolsLoaded
             )
         } catch {
             if activeSession?.issueId == issue.id {
@@ -902,8 +910,10 @@ public actor WorkEngine {
         images: [Data] = [],
         cacheHint: String? = nil,
         staticPrefix: String? = nil,
+        memorySection: String? = nil,
         modelOptions: [String: ModelOptionValue] = [:],
-        onContextRefresh: WorkExecutionEngine.ContextRefreshCallback? = nil
+        onContextRefresh: WorkExecutionEngine.ContextRefreshCallback? = nil,
+        onToolsLoaded: WorkExecutionEngine.ToolsLoadedCallback? = nil
     ) async throws -> ExecutionResult {
         guard let issue = try IssueStore.getIssue(id: issueId) else {
             throw WorkEngineError.issueNotFound(issueId)
@@ -936,8 +946,10 @@ public actor WorkEngine {
                     attemptResume: attempt > 0,
                     cacheHint: cacheHint,
                     staticPrefix: staticPrefix,
+                    memorySection: memorySection,
                     modelOptions: modelOptions,
-                    onContextRefresh: onContextRefresh
+                    onContextRefresh: onContextRefresh,
+                    onToolsLoaded: onToolsLoaded
                 )
 
                 // Success - clear any error state

@@ -81,6 +81,14 @@ public final class WorkSession: ObservableObject {
     private var cachedManifest: PromptManifest?
     private var cachedToolTokens: Int = 0
 
+    /// Per-issue preflight + capabilities_load tool kit. The first compose
+    /// for an issue (executeIssue / resumeSelectedIssue) populates this
+    /// entry; subsequent composes (mid-loop refresh, retry resume) pass it
+    /// back via `cachedPreflight` so the LLM preflight call only ever runs
+    /// once per issue. Tool names added by `capabilities_load` mid-loop
+    /// accumulate in `loadedToolNames`.
+    private var issueToolStates: [String: SessionToolState] = [:]
+
     // MARK: - Block Caching
 
     private let blockMemoizer = BlockMemoizer()
@@ -835,24 +843,95 @@ public final class WorkSession: ObservableObject {
     /// The optional return shape lets the engine's `[weak self]` callback
     /// gracefully no-op when the session is torn down mid-execution; this
     /// implementation itself always returns a non-nil context.
+    /// Record tool names loaded mid-loop via `capabilities_load` /
+    /// `sandbox_plugin_register` into the per-issue cache so the next
+    /// recompose / resume includes them via `additionalToolNames` instead
+    /// of losing them on the next refresh.
     @MainActor
-    func recomposeWorkContext(
+    private func recordIssueToolsLoaded(issueId: String, names: [String]) {
+        guard !names.isEmpty else { return }
+        if var entry = issueToolStates[issueId] {
+            for name in names { entry.loadedToolNames.insert(name) }
+            issueToolStates[issueId] = entry
+        }
+    }
+
+    /// Build the (refresh, toolsLoaded) callback pair shared by every
+    /// `WorkExecutionEngine` entry point. Both handlers capture the issue
+    /// id so the per-issue cache stays the source of truth across
+    /// `recomposeWorkContext` and `recordIssueToolsLoaded`.
+    private nonisolated func makeWorkLoopCallbacks(
+        for issueId: String,
+        model: String?
+    ) -> (
+        refresh: WorkExecutionEngine.ContextRefreshCallback,
+        toolsLoaded: WorkExecutionEngine.ToolsLoadedCallback
+    ) {
+        let refresh: WorkExecutionEngine.ContextRefreshCallback = { @MainActor [weak self] query, mode in
+            await self?.recomposeWorkContext(
+                issueId: issueId,
+                query: query,
+                executionMode: mode,
+                model: model
+            )
+        }
+        let toolsLoaded: WorkExecutionEngine.ToolsLoadedCallback = { @MainActor [weak self] names in
+            self?.recordIssueToolsLoaded(issueId: issueId, names: names)
+        }
+        return (refresh, toolsLoaded)
+    }
+
+    /// Compose work context for `issue`, reusing the per-issue
+    /// `SessionToolState` so preflight only runs on the first compose for
+    /// this issue. The first compose populates the cache; subsequent ones
+    /// (mid-loop refresh, retry resume) reuse it.
+    @MainActor
+    private func composedWorkContext(
+        for issue: Issue,
         query: String,
         executionMode: WorkExecutionMode,
         model: String?
-    ) async -> WorkExecutionEngine.RefreshedWorkContext {
-        let workCtx = await SystemPromptComposer.composeWorkContext(
+    ) async -> ComposedContext {
+        let cached = issueToolStates[issue.id]
+        let ctx = await SystemPromptComposer.composeWorkContext(
             agentId: agentId,
             executionMode: executionMode,
             model: model,
             secretNames: Array(AgentSecretsKeychain.getAllSecrets(agentId: agentId).keys),
-            query: query
+            query: query,
+            cachedPreflight: cached?.initialPreflight,
+            additionalToolNames: cached?.loadedToolNames ?? []
+        )
+        if cached == nil {
+            issueToolStates[issue.id] = SessionToolState(initialPreflight: ctx.preflight)
+        }
+        return ctx
+    }
+
+    @MainActor
+    func recomposeWorkContext(
+        issueId: String,
+        query: String,
+        executionMode: WorkExecutionMode,
+        model: String?
+    ) async -> WorkExecutionEngine.RefreshedWorkContext {
+        guard let issue = issues.first(where: { $0.id == issueId }) ?? activeIssue else {
+            // Should be impossible — refresh callbacks fire from inside an
+            // active loop — but degrade gracefully rather than crashing.
+            return WorkExecutionEngine.RefreshedWorkContext(systemPrompt: "", tools: [])
+        }
+        let workCtx = await composedWorkContext(
+            for: issue,
+            query: query,
+            executionMode: executionMode,
+            model: model
         )
         return WorkExecutionEngine.RefreshedWorkContext(
             systemPrompt: workCtx.prompt,
             tools: workCtx.tools,
             cacheHint: workCtx.cacheHint,
-            staticPrefix: workCtx.staticPrefix
+            staticPrefix: workCtx.staticPrefix,
+            memorySection: workCtx.memorySection
         )
     }
 
@@ -866,12 +945,11 @@ public final class WorkSession: ObservableObject {
         let model = resolveModel()
         let issueQuery = [issue.title, issue.description].compactMap { $0 }.joined(separator: " ")
 
-        let workCtx = await SystemPromptComposer.composeWorkContext(
-            agentId: agentId,
+        let workCtx = await composedWorkContext(
+            for: issue,
+            query: issueQuery,
             executionMode: executionMode,
-            model: model,
-            secretNames: Array(AgentSecretsKeychain.getAllSecrets(agentId: agentId).keys),
-            query: issueQuery
+            model: model
         )
         pendingPreflightCapabilities = workCtx.preflightItems.isEmpty ? nil : workCtx.preflightItems
         cachedManifest = workCtx.manifest
@@ -880,12 +958,10 @@ public final class WorkSession: ObservableObject {
         budgetTracker.snapshot(manifest: workCtx.manifest, toolTokens: workCtx.toolTokens)
         objectWillChange.send()
 
+        let callbacks = makeWorkLoopCallbacks(for: issue.id, model: model)
         executionTask = Task { [weak self, engine] in
             do {
                 let capturedModelOptions = await MainActor.run { self?.activeModelOptions ?? [:] }
-                let refreshHandler: WorkExecutionEngine.ContextRefreshCallback = { @MainActor query, mode in
-                    await self?.recomposeWorkContext(query: query, executionMode: mode, model: model)
-                }
                 let result =
                     if withRetry {
                         try await engine.executeWithRetry(
@@ -897,8 +973,10 @@ public final class WorkSession: ObservableObject {
                             images: images,
                             cacheHint: workCtx.cacheHint,
                             staticPrefix: workCtx.staticPrefix,
+                            memorySection: workCtx.memorySection,
                             modelOptions: capturedModelOptions,
-                            onContextRefresh: refreshHandler
+                            onContextRefresh: callbacks.refresh,
+                            onToolsLoaded: callbacks.toolsLoaded
                         )
                     } else {
                         try await engine.resume(
@@ -909,8 +987,10 @@ public final class WorkSession: ObservableObject {
                             executionMode: executionMode,
                             cacheHint: workCtx.cacheHint,
                             staticPrefix: workCtx.staticPrefix,
+                            memorySection: workCtx.memorySection,
                             modelOptions: capturedModelOptions,
-                            onContextRefresh: refreshHandler
+                            onContextRefresh: callbacks.refresh,
+                            onToolsLoaded: callbacks.toolsLoaded
                         )
                     }
                 await MainActor.run { self?.handleExecutionResult(result) }
@@ -1388,12 +1468,11 @@ public final class WorkSession: ObservableObject {
         let model = resolveModel()
         let resumeQuery = [issue.title, issue.description].compactMap { $0 }.joined(separator: " ")
 
-        let resumeCtx = await SystemPromptComposer.composeWorkContext(
-            agentId: agentId,
+        let resumeCtx = await composedWorkContext(
+            for: issue,
+            query: resumeQuery,
             executionMode: executionMode,
-            model: model,
-            secretNames: Array(AgentSecretsKeychain.getAllSecrets(agentId: agentId).keys),
-            query: resumeQuery
+            model: model
         )
         pendingPreflightCapabilities = resumeCtx.preflightItems.isEmpty ? nil : resumeCtx.preflightItems
         cachedManifest = resumeCtx.manifest
@@ -1402,12 +1481,10 @@ public final class WorkSession: ObservableObject {
         budgetTracker.snapshot(manifest: resumeCtx.manifest, toolTokens: resumeCtx.toolTokens)
         objectWillChange.send()
 
+        let callbacks = makeWorkLoopCallbacks(for: issue.id, model: model)
         executionTask = Task { [weak self, engine] in
             do {
                 let capturedModelOptions = await MainActor.run { self?.activeModelOptions ?? [:] }
-                let refreshHandler: WorkExecutionEngine.ContextRefreshCallback = { @MainActor query, mode in
-                    await self?.recomposeWorkContext(query: query, executionMode: mode, model: model)
-                }
                 let result = try await engine.resume(
                     issueId: issue.id,
                     model: model,
@@ -1416,8 +1493,10 @@ public final class WorkSession: ObservableObject {
                     executionMode: executionMode,
                     cacheHint: resumeCtx.cacheHint,
                     staticPrefix: resumeCtx.staticPrefix,
+                    memorySection: resumeCtx.memorySection,
                     modelOptions: capturedModelOptions,
-                    onContextRefresh: refreshHandler
+                    onContextRefresh: callbacks.refresh,
+                    onToolsLoaded: callbacks.toolsLoaded
                 )
                 await MainActor.run { self?.handleExecutionResult(result) }
             } catch {

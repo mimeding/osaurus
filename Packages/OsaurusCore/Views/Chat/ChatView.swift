@@ -54,6 +54,14 @@ final class ChatSession: ObservableObject {
     private var cachedContext: ComposedContext?
     private let budgetTracker = ContextBudgetTracker()
 
+    /// Per-session preflight + capabilities_load tool kit. The first send of
+    /// a session populates this with the LLM-resolved preflight result;
+    /// subsequent sends pass it back in via `cachedPreflight` so the LLM
+    /// preflight call only runs once per conversation. Tool names added by
+    /// `capabilities_load` mid-session accumulate in `loadedToolNames` so
+    /// they survive across sends without re-discovery.
+    private var sessionToolStates: [UUID: SessionToolState] = [:]
+
     /// Callback when session needs to be saved (called after streaming completes)
     var onSessionChanged: (() -> Void)?
 
@@ -390,6 +398,9 @@ final class ChatSession: ObservableObject {
         voiceInputState = .idle
         showVoiceOverlay = false
         // Clear session identity for new chat
+        if let prev = sessionId {
+            sessionToolStates.removeValue(forKey: prev)
+        }
         sessionId = nil
         title = "New Chat"
         createdAt = Date()
@@ -864,6 +875,13 @@ final class ChatSession: ObservableObject {
                     guard t.role == .user, !t.contentIsEmpty else { return nil }
                     return ChatMessage(role: "user", content: t.content)
                 }
+
+                // Reuse the per-session preflight + capabilities_load union
+                // when this isn't the first send. Subsequent sends skip the
+                // LLM-based selection entirely; the agent uses
+                // capabilities_search / capabilities_load to pick up more
+                // tools mid-session.
+                let cachedSession = sessionId.flatMap { sessionToolStates[$0] }
                 let context = await SystemPromptComposer.composeChatContext(
                     agentId: effectiveAgentId,
                     executionMode: executionMode,
@@ -871,6 +889,8 @@ final class ChatSession: ObservableObject {
                     query: trimmed,
                     messages: priorUserMessages,
                     toolsDisabled: chatCfg.disableTools,
+                    cachedPreflight: cachedSession?.initialPreflight,
+                    additionalToolNames: cachedSession?.loadedToolNames ?? [],
                     trace: ttftTrace
                 )
                 guard isRunActive(runId) else { return }
@@ -888,6 +908,13 @@ final class ChatSession: ObservableObject {
                 var toolSpecs = context.tools
                 let isManualTools = AgentManager.shared.effectiveToolSelectionMode(for: effectiveAgentId) == .manual
                 cachedContext = context
+
+                // Persist the (possibly fresh) preflight back onto the
+                // session so the next send reuses it. Preserves any
+                // capabilities_load names already accumulated this session.
+                if let sid = sessionId, cachedSession == nil {
+                    sessionToolStates[sid] = SessionToolState(initialPreflight: context.preflight)
+                }
 
                 if !context.preflightItems.isEmpty {
                     assistantTurn.preflightCapabilities = context.preflightItems
@@ -993,6 +1020,13 @@ final class ChatSession: ObservableObject {
                         msgs.append(ChatMessage(role: "user", content: notice))
                         pendingBudgetNotice = nil
                     }
+
+                    // Memory now lives on the latest user message instead of
+                    // the system prompt — keeps the system prefix byte-stable
+                    // across turns so the MLX paged KV cache can reuse the
+                    // entire conversation prefix.
+                    SystemPromptComposer.injectMemoryPrefix(context.memorySection, into: &msgs)
+
                     let convTokens =
                         msgs
                         .filter { $0.role != "system" }
@@ -1241,6 +1275,18 @@ final class ChatSession: ObservableObject {
                                 for tool in newTools
                                 where !toolSpecs.contains(where: { $0.function.name == tool.function.name }) {
                                     toolSpecs.append(tool)
+                                }
+                                // Persist names into the session's tool union
+                                // so they survive the next compose call
+                                // without re-running preflight.
+                                if let sid = sessionId {
+                                    var entry =
+                                        sessionToolStates[sid]
+                                        ?? SessionToolState(initialPreflight: context.preflight)
+                                    for tool in newTools {
+                                        entry.loadedToolNames.insert(tool.function.name)
+                                    }
+                                    sessionToolStates[sid] = entry
                                 }
                             }
 

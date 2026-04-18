@@ -170,13 +170,27 @@ final class ToolRegistry: ObservableObject {
     /// Execute a tool by name with raw JSON arguments.
     /// Any registered tool can execute — access control is handled upstream
     /// by which tools are offered to the model (alwaysLoadedSpecs + capabilities_load).
+    ///
+    /// Unknown tools self-heal: instead of throwing, we return a
+    /// `ToolErrorEnvelope(kind: .toolNotFound)` whose `suggested_tools`
+    /// field carries the top capabilities_search hits so the model can
+    /// recover with a `capabilities_load` call on the next iteration. This
+    /// keeps the agent loop alive (callers don't see an exception, so the
+    /// turn isn't rejected) while still surfacing the failure in a way
+    /// trained models recognise.
     func execute(name: String, argumentsJSON: String) async throws -> String {
         guard let tool = toolsByName[name] else {
-            throw NSError(
-                domain: "ToolRegistry",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Unknown tool: \(name)"]
+            let hits = await CapabilitySearch.search(
+                query: name,
+                topK: (methods: 0, tools: 5, skills: 0)
             )
+            let suggestions = hits.tools.map { "tool/\($0.entry.id)" }
+            return ToolErrorEnvelope(
+                kind: .toolNotFound,
+                reason: "Tool '\(name)' is not loaded in this session.",
+                toolName: name,
+                suggestions: suggestions
+            ).toJSONString()
         }
         // Permission gating
         if let permissioned = tool as? PermissionedTool {
@@ -570,6 +584,13 @@ final class ToolRegistry: ObservableObject {
         Self.workToolNames
             .union(Self.folderToolNames)
             .union(builtInSandboxToolNames)
+    }
+
+    /// Read-only snapshot of the built-in sandbox tool names. Exposed so the
+    /// composer's canonical-order helper can group them at the top of the
+    /// `<tools>` block without reaching into private state.
+    var builtInSandboxToolNamesSnapshot: Set<String> {
+        builtInSandboxToolNames
     }
 
     private func excludedToolNames(for mode: WorkExecutionMode) -> Set<String> {

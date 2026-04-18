@@ -47,28 +47,37 @@ public struct SystemPromptComposer: Sendable {
         append(.static(id: "base", label: "Base Prompt", content: effective))
     }
 
-    public mutating func appendMemory(
+    // MARK: - Memory Assembly
+
+    /// Assemble the memory snippet for an agent. Returns `nil` when memory
+    /// is disabled, blank, or empty after trimming. Centralised so chat,
+    /// work, and HTTP paths all produce the same output and the rest of
+    /// the composer never needs to know about the two `assembleContext`
+    /// overloads.
+    static func assembleMemorySection(
         agentId: String,
         query: String? = nil,
         toolsAvailable: Bool = true
-    ) async {
+    ) async -> String? {
         let config = MemoryConfigurationStore.load()
-        let context: String
-        if let query, !query.isEmpty {
-            context = await MemoryContextAssembler.assembleContext(
+        let trimmedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let assembled: String
+        if let trimmedQuery, !trimmedQuery.isEmpty {
+            assembled = await MemoryContextAssembler.assembleContext(
                 agentId: agentId,
                 config: config,
-                query: query,
+                query: trimmedQuery,
                 toolsAvailable: toolsAvailable
             )
         } else {
-            context = await MemoryContextAssembler.assembleContext(
+            assembled = await MemoryContextAssembler.assembleContext(
                 agentId: agentId,
                 config: config,
                 toolsAvailable: toolsAvailable
             )
         }
-        append(.dynamic(id: "memory", label: "Memory", content: context))
+        let trimmed = assembled.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : assembled
     }
 
     // MARK: - High-Level API
@@ -78,6 +87,12 @@ public struct SystemPromptComposer: Sendable {
     /// `query` is used to seed pre-flight capability search. If `query` is
     /// empty, the most recent `"user"` message in `messages` is used as a
     /// fallback so retries / regenerations still drive preflight.
+    ///
+    /// Pass `cachedPreflight` from a per-session `SessionToolState` to skip
+    /// the LLM-based selection (it only ever needs to run on the first send
+    /// of a session). Pass `additionalToolNames` to merge tools the agent has
+    /// loaded mid-session via `capabilities_load`, so they survive across
+    /// subsequent composes.
     @MainActor
     static func composeChatContext(
         agentId: UUID,
@@ -86,6 +101,8 @@ public struct SystemPromptComposer: Sendable {
         query: String = "",
         messages: [ChatMessage] = [],
         toolsDisabled: Bool = false,
+        cachedPreflight: PreflightResult? = nil,
+        additionalToolNames: Set<String> = [],
         trace: TTFTTrace? = nil
     ) async -> ComposedContext {
         trace?.mark("compose_context_start")
@@ -96,6 +113,8 @@ public struct SystemPromptComposer: Sendable {
             executionMode: executionMode,
             query: resolvePreflightQuery(query: query, messages: messages),
             toolsDisabled: toolsDisabled,
+            cachedPreflight: cachedPreflight,
+            additionalToolNames: additionalToolNames,
             model: model,
             trace: trace
         )
@@ -118,7 +137,14 @@ public struct SystemPromptComposer: Sendable {
         return ""
     }
 
-    /// Shared pipeline: append memory + preflight + skills + resolve tools + build ComposedContext.
+    /// Shared pipeline: assemble memory (returned separately) + preflight +
+    /// skills + resolve tools + build ComposedContext.
+    ///
+    /// Memory is intentionally NOT appended into the system prompt. It is
+    /// surfaced on `ComposedContext.memorySection` so callers prepend it to
+    /// the latest user message — that keeps the system prompt byte-stable
+    /// across turns once preflight is cached, which lets the MLX paged KV
+    /// cache reuse the entire conversation prefix.
     @MainActor
     private static func finalizeContext(
         composer: SystemPromptComposer,
@@ -126,6 +152,8 @@ public struct SystemPromptComposer: Sendable {
         executionMode: WorkExecutionMode,
         query: String,
         toolsDisabled: Bool,
+        cachedPreflight: PreflightResult? = nil,
+        additionalToolNames: Set<String> = [],
         model: String? = nil,
         trace: TTFTTrace? = nil
     ) async -> ComposedContext {
@@ -136,13 +164,18 @@ public struct SystemPromptComposer: Sendable {
         let autonomousEnabled = AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true
         let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
 
+        // Memory is assembled here but returned separately (see ComposedContext.memorySection).
+        // We deliberately do NOT pass `query` so the cached memory snapshot
+        // can be reused even when the user's wording shifts — preserves the
+        // pre-split behaviour and avoids a per-turn embedding lookup.
         trace?.mark("memory_start")
-        if !memoryOff {
-            await comp.appendMemory(
+        let memorySection: String? =
+            memoryOff
+            ? nil
+            : await assembleMemorySection(
                 agentId: agentId.uuidString,
                 toolsAvailable: !effectiveToolsOff
             )
-        }
         trace?.mark("memory_done")
 
         // Surface a "sandbox unavailable" notice when the agent wants
@@ -163,15 +196,19 @@ public struct SystemPromptComposer: Sendable {
         }
 
         let preflight: PreflightResult
-        if !effectiveToolsOff && toolMode == .auto && !query.isEmpty {
+        if let cachedPreflight {
+            preflight = cachedPreflight
+            trace?.set("preflightSource", "cached")
+        } else if !effectiveToolsOff && toolMode == .auto && !query.isEmpty {
             let mode = ChatConfigurationStore.load().preflightSearchMode ?? .balanced
             trace?.mark("preflight_search_start")
             preflight = await PreflightCapabilitySearch.search(query: query, mode: mode, agentId: agentId)
             trace?.mark("preflight_search_done")
+            trace?.set("preflightSource", "fresh")
         } else {
             preflight = .empty
+            trace?.set("preflightSource", "skipped")
         }
-        comp.append(.dynamic(id: "preflight", label: "Pre-flight RAG", content: preflight.contextSnippet))
 
         if toolMode == .manual,
             let section = await SkillManager.shared.manualSkillPromptSection(for: agentId)
@@ -184,9 +221,28 @@ public struct SystemPromptComposer: Sendable {
             agentId: agentId,
             executionMode: executionMode,
             toolsDisabled: effectiveToolsOff,
-            preflight: preflight
+            preflight: preflight,
+            additionalToolNames: additionalToolNames
         )
         trace?.mark("resolve_tools_done")
+
+        // Capability-discovery nudge: explain how to recover when the
+        // current tool kit is incomplete. Gated to auto mode + presence of
+        // `capabilities_search` so manual-mode agents and tools-disabled
+        // sessions don't see irrelevant guidance. Static section so it
+        // contributes to the cached prefix.
+        if toolMode == .auto,
+            !effectiveToolsOff,
+            tools.contains(where: { $0.function.name == "capabilities_search" })
+        {
+            comp.append(
+                .static(
+                    id: "capabilityNudge",
+                    label: "Capability Discovery",
+                    content: SystemPromptTemplates.capabilityDiscoveryNudge
+                )
+            )
+        }
 
         // Plugin-creator backstop: only inject when the agent literally
         // has NO dynamic tools available (no MCP / plugin / sandbox-plugin
@@ -229,6 +285,8 @@ public struct SystemPromptComposer: Sendable {
             tools: tools,
             toolTokens: ToolRegistry.shared.totalEstimatedTokens(for: tools),
             preflightItems: preflight.items,
+            preflight: preflight,
+            memorySection: memorySection,
             cacheHint: manifest.staticPrefixHash(toolNames: toolNames),
             staticPrefix: manifest.staticPrefixContent
         )
@@ -309,7 +367,9 @@ public struct SystemPromptComposer: Sendable {
         }
     }
 
-    /// Resolve the full tool set for a request: built-in + preflight/manual, deduped.
+    /// Resolve the full tool set for a request: built-in + preflight/manual,
+    /// plus any tools the agent has loaded mid-session via `capabilities_load`,
+    /// deduped, then sorted into a stable canonical order.
     ///
     /// Manual mode is strict: only the user's explicitly selected tools are
     /// included, with one exception — when `executionMode` requires sandbox
@@ -317,45 +377,77 @@ public struct SystemPromptComposer: Sendable {
     /// the agent can act. Group 1 (selection) and Group 2 (sandbox) are
     /// orthogonal: enabling sandbox does not weaken the manual selection in
     /// any other way.
+    ///
+    /// `additionalToolNames` is honoured in both modes so tools the agent has
+    /// already loaded mid-session survive across composes (the chat / work
+    /// session caches feed this from their `SessionToolState`).
+    ///
+    /// Output is sorted via `canonicalToolOrder` so the chat-template-rendered
+    /// `<tools>` block is byte-stable across sends — required for the MLX
+    /// paged KV cache to reuse the prefix.
     @MainActor
     static func resolveTools(
         agentId: UUID,
         executionMode: WorkExecutionMode,
         toolsDisabled: Bool = false,
-        preflight: PreflightResult = .empty
+        preflight: PreflightResult = .empty,
+        additionalToolNames: Set<String> = []
     ) -> [Tool] {
         guard !toolsDisabled else { return [] }
 
         let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
         let isManual = toolMode == .manual
 
+        var byName: [String: Tool] = [:]
+
+        func add(_ specs: [Tool]) {
+            for spec in specs where byName[spec.function.name] == nil {
+                byName[spec.function.name] = spec
+            }
+        }
+
         if isManual {
-            var tools: [Tool] = []
-            var seen = Set<String>()
             if executionMode.usesSandboxTools {
-                for spec in ToolRegistry.shared.sandboxBuiltInSpecs(mode: executionMode)
-                where seen.insert(spec.function.name).inserted {
-                    tools.append(spec)
-                }
+                add(ToolRegistry.shared.sandboxBuiltInSpecs(mode: executionMode))
             }
             if let manualNames = AgentManager.shared.effectiveManualToolNames(for: agentId) {
-                for spec in ToolRegistry.shared.specs(forTools: manualNames)
-                where seen.insert(spec.function.name).inserted {
-                    tools.append(spec)
-                }
+                add(ToolRegistry.shared.specs(forTools: manualNames))
             }
-            return tools
+        } else {
+            add(ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode))
+            add(preflight.toolSpecs)
         }
 
-        var tools = ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)
-        var seen = Set(tools.map { $0.function.name })
-
-        for spec in preflight.toolSpecs
-        where seen.insert(spec.function.name).inserted {
-            tools.append(spec)
+        if !additionalToolNames.isEmpty {
+            add(ToolRegistry.shared.specs(forTools: Array(additionalToolNames)))
         }
 
-        return tools
+        return canonicalToolOrder(Array(byName.values))
+    }
+
+    /// Stable order: built-in sandbox tools (alphabetical) first, then the
+    /// fixed-order capability tools, then everything else alphabetically.
+    /// The fixed capability order keeps `capabilities_search` at the head
+    /// of its group so the model sees the discovery tool before the loader.
+    @MainActor
+    static func canonicalToolOrder(_ tools: [Tool]) -> [Tool] {
+        let sandboxNames = ToolRegistry.shared.builtInSandboxToolNamesSnapshot
+        let capabilityIndex = Dictionary(
+            uniqueKeysWithValues: ["capabilities_search", "capabilities_load", "methods_save", "methods_report"]
+                .enumerated().map { ($1, $0) }
+        )
+
+        // Sort key: (bucket, capability-order index, name). `Int.max` for
+        // non-capability tools collapses the index dimension to a no-op,
+        // leaving the alphabetical name as the tiebreaker.
+        func sortKey(_ tool: Tool) -> (Int, Int, String) {
+            let name = tool.function.name
+            if sandboxNames.contains(name) { return (0, .max, name) }
+            if let order = capabilityIndex[name] { return (1, order, name) }
+            return (2, .max, name)
+        }
+
+        return tools.sorted { sortKey($0) < sortKey($1) }
     }
 
     /// Compose the full work system prompt: base + workMode + sandbox.
@@ -388,8 +480,9 @@ public struct SystemPromptComposer: Sendable {
         return (composer.render(), composer.manifest())
     }
 
-    /// Full work context: base + workMode + sandbox + memory + tools.
-    /// Memory is correctly classified as dynamic for prefix cache optimization.
+    /// Full work context: base + workMode + sandbox + tools, with memory and
+    /// preflight returned on the result so callers can cache preflight per
+    /// issue and prepend memory to the latest user message.
     @MainActor
     static func composeWorkContext(
         agentId: UUID,
@@ -397,7 +490,9 @@ public struct SystemPromptComposer: Sendable {
         model: String? = nil,
         secretNames: [String] = [],
         query: String = "",
-        toolsDisabled: Bool = false
+        toolsDisabled: Bool = false,
+        cachedPreflight: PreflightResult? = nil,
+        additionalToolNames: Set<String> = []
     ) async -> ComposedContext {
         let compact = resolveCompact(model: model, agentId: agentId)
         let composer = forWork(
@@ -411,26 +506,28 @@ public struct SystemPromptComposer: Sendable {
             agentId: agentId,
             executionMode: executionMode,
             query: query,
-            toolsDisabled: toolsDisabled
+            toolsDisabled: toolsDisabled,
+            cachedPreflight: cachedPreflight,
+            additionalToolNames: additionalToolNames
         )
     }
 
-    /// Compose from a pre-resolved base with optional dynamic sections (preflight, skills).
+    /// Compose from a pre-resolved base with an optional dynamic skills section.
     public static func composePrompt(
         base: String,
-        preflightSnippet: String = "",
         skillSection: String? = nil
     ) -> (prompt: String, manifest: PromptManifest) {
         var composer = SystemPromptComposer()
         composer.append(.static(id: "base", label: "System Prompt", content: base))
-        composer.append(.dynamic(id: "preflight", label: "Pre-flight RAG", content: preflightSnippet))
         if let section = skillSection {
             composer.append(.dynamic(id: "skills", label: "Skills", content: section))
         }
         return (composer.render(), composer.manifest())
     }
 
-    /// Compose agent context (base prompt + memory) and inject into an existing message array.
+    /// Compose agent base prompt and inject into an existing message array.
+    /// Memory is now prepended to the latest user message instead of the
+    /// system prompt so the system message stays byte-stable across turns.
     /// Returns `(cacheHint, staticPrefix)` for the caller to set on the request.
     @discardableResult
     static func injectAgentContext(
@@ -439,21 +536,28 @@ public struct SystemPromptComposer: Sendable {
         into messages: inout [ChatMessage]
     ) async -> (cacheHint: String, staticPrefix: String) {
         // only forChat needs @MainActor. so hop there briefly and return the value type composer.
-        // appendMemory (memory search + embeddings) then runs on the cooperative thread pool to
-        // keep the mac app responsive during HTTP API requests
-        var composer = await MainActor.run { forChat(agentId: agentId, executionMode: .none) }
+        // Memory assembly itself runs on the cooperative thread pool so the
+        // app stays responsive during HTTP requests.
+        let composer = await MainActor.run { forChat(agentId: agentId, executionMode: .none) }
         let toolsOff = await AgentManager.shared.effectiveToolsDisabled(for: agentId)
-        await composer.appendMemory(
-            agentId: agentId.uuidString,
-            query: query.isEmpty ? nil : query,
-            toolsAvailable: !toolsOff
-        )
+        let memoryOff = await AgentManager.shared.effectiveMemoryDisabled(for: agentId)
+
+        let memorySection: String? =
+            memoryOff
+            ? nil
+            : await assembleMemorySection(
+                agentId: agentId.uuidString,
+                query: query,
+                toolsAvailable: !toolsOff
+            )
+
         let manifest = composer.manifest()
         let rendered = composer.render()
         debugLog("[Context:inject] \(manifest.debugDescription)")
         if !rendered.isEmpty {
             injectSystemContent(rendered, into: &messages)
         }
+        injectMemoryPrefix(memorySection, into: &messages)
         return (manifest.staticPrefixHash(toolNames: []), manifest.staticPrefixContent)
     }
 
@@ -554,6 +658,37 @@ public struct SystemPromptComposer: Sendable {
     }
 
     // MARK: - Message Array Helpers
+
+    /// Prepend a memory snippet to the latest user message instead of
+    /// stuffing it into the system prompt. This keeps the system message
+    /// byte-stable across turns (so the MLX paged KV cache can reuse the
+    /// entire conversation prefix) and confines memory churn to the volatile
+    /// user-message suffix. No-op when `memorySection` is nil/blank, no user
+    /// message exists, or the latest user message is multimodal (we leave
+    /// `contentParts`-bearing messages alone to avoid silently dropping
+    /// images).
+    static func injectMemoryPrefix(
+        _ memorySection: String?,
+        into messages: inout [ChatMessage]
+    ) {
+        guard let memorySection,
+            case let trimmed = memorySection.trimmingCharacters(in: .whitespacesAndNewlines),
+            !trimmed.isEmpty,
+            let idx = messages.lastIndex(where: { $0.role == "user" })
+        else { return }
+
+        let existing = messages[idx]
+        guard existing.contentParts == nil else { return }
+
+        let original = existing.content ?? ""
+        let prefixed = "[Memory]\n\(trimmed)\n[/Memory]\n\n\(original)"
+        messages[idx] = ChatMessage(
+            role: existing.role,
+            content: prefixed,
+            tool_calls: existing.tool_calls,
+            tool_call_id: existing.tool_call_id
+        )
+    }
 
     static func injectSystemContent(
         _ content: String,

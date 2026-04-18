@@ -402,23 +402,26 @@ public actor WorkExecutionEngine {
 
     /// Refreshed system context produced by an out-of-band recompose (e.g.
     /// after `capabilities_load` or compaction). The engine swaps in the
-    /// new system prompt, tool list, and cache hints for subsequent
-    /// iterations without restarting the loop.
+    /// new system prompt, tool list, cache hints, and memory snippet for
+    /// subsequent iterations without restarting the loop.
     struct RefreshedWorkContext: Sendable {
         let systemPrompt: String
         let tools: [Tool]
         let cacheHint: String?
         let staticPrefix: String?
+        let memorySection: String?
         init(
             systemPrompt: String,
             tools: [Tool],
             cacheHint: String? = nil,
-            staticPrefix: String? = nil
+            staticPrefix: String? = nil,
+            memorySection: String? = nil
         ) {
             self.systemPrompt = systemPrompt
             self.tools = tools
             self.cacheHint = cacheHint
             self.staticPrefix = staticPrefix
+            self.memorySection = memorySection
         }
     }
 
@@ -432,6 +435,15 @@ public actor WorkExecutionEngine {
             _ query: String,
             _ executionMode: WorkExecutionMode
         ) async -> RefreshedWorkContext?
+
+    /// Callback fired right after `capabilities_load` /
+    /// `sandbox_plugin_register` adds new tools to the active set. The
+    /// caller (WorkSession) records the names into the per-issue
+    /// `SessionToolState.loadedToolNames` so the subsequent context refresh
+    /// — and any later resume — reuses the same kit instead of re-running
+    /// preflight or losing the tools.
+    typealias ToolsLoadedCallback =
+        @MainActor @Sendable (_ toolNames: [String]) async -> Void
 
     /// Default maximum iterations for the reasoning loop
     public static let defaultMaxIterations = 50
@@ -475,6 +487,7 @@ public actor WorkExecutionEngine {
         agentId: UUID? = nil,
         cacheHint: String? = nil,
         staticPrefix: String? = nil,
+        memorySection: String? = nil,
         modelOptions: [String: ModelOptionValue] = [:],
         shouldInterrupt: @escaping InterruptCheckCallback = { false },
         onIterationStart: @escaping IterationStartCallback,
@@ -486,7 +499,8 @@ public actor WorkExecutionEngine {
         onArtifact: @escaping ArtifactCallback,
         onTokensConsumed: @escaping TokenConsumptionCallback,
         onSecretPrompt: SecretPromptCallback? = nil,
-        onContextRefresh: ContextRefreshCallback? = nil
+        onContextRefresh: ContextRefreshCallback? = nil,
+        onToolsLoaded: ToolsLoadedCallback? = nil
     ) async throws -> LoopResult {
         var activeTools = tools
         // Mutable so context-refresh triggers (capabilities_load,
@@ -495,6 +509,7 @@ public actor WorkExecutionEngine {
         var systemPrompt = systemPrompt
         var cacheHint = cacheHint
         var staticPrefix = staticPrefix
+        var memorySection = memorySection
         var contextDirty = false
         var iteration = 0
         var totalToolCalls = 0
@@ -633,11 +648,17 @@ public actor WorkExecutionEngine {
                     activeTools = refreshed.tools
                     cacheHint = refreshed.cacheHint
                     staticPrefix = refreshed.staticPrefix
+                    memorySection = refreshed.memorySection
                     await onStatusUpdate("Refreshed context")
                 }
                 contextDirty = false
             }
-            let effectiveMessages = messages
+            // Memory rides on the latest user message instead of the system
+            // prompt — keeps the system prefix byte-stable across iterations
+            // so the MLX paged KV cache reuses the entire conversation prefix.
+            // We work on a copy so the underlying transcript stays clean.
+            var effectiveMessages = messages
+            SystemPromptComposer.injectMemoryPrefix(memorySection, into: &effectiveMessages)
 
             await onStatusUpdate("Thinking...")
 
@@ -879,16 +900,22 @@ public actor WorkExecutionEngine {
                         || invocation.toolName == "sandbox_plugin_register"
                 {
                     let newTools = await CapabilityLoadBuffer.shared.drain()
-                    var newlyAdded = false
+                    var addedNames: [String] = []
                     for tool in newTools where !activeTools.contains(where: { $0.function.name == tool.function.name })
                     {
                         activeTools.append(tool)
-                        newlyAdded = true
+                        addedNames.append(tool.function.name)
                     }
-                    // Tool surface changed — request a full context recompose
-                    // before the next iteration so the system prompt + cache
-                    // hint reflect the new capabilities.
-                    if newlyAdded { contextDirty = true }
+                    if !addedNames.isEmpty {
+                        // Persist names to the session cache BEFORE flagging
+                        // the refresh so the subsequent recompose sees them
+                        // and the agent doesn't lose the freshly loaded tools.
+                        await onToolsLoaded?(addedNames)
+                        // Tool surface changed — request a full context
+                        // recompose before the next iteration so the system
+                        // prompt + cache hint reflect the new capabilities.
+                        contextDirty = true
+                    }
                 }
 
                 // Process share_artifact before storing the result so the enriched

@@ -61,11 +61,7 @@ struct SystemPromptComposerToolResolutionTests {
     @Test
     func autoMode_includesAlwaysLoadedAndPreflightAdditions() async {
         await withSandboxAgent(autonomous: false) { agentId in
-            let preflight = PreflightResult(
-                toolSpecs: [],
-                contextSnippet: "",
-                items: []
-            )
+            let preflight = PreflightResult(toolSpecs: [], items: [])
             let tools = SystemPromptComposer.resolveTools(
                 agentId: agentId,
                 executionMode: .none,
@@ -180,5 +176,49 @@ struct SystemPromptComposerToolResolutionTests {
             messages: []
         )
         #expect(resolved.isEmpty)
+    }
+
+    // MARK: - additionalToolNames
+
+    @Test
+    func resolveTools_autoMode_mergesAdditionalToolNames() async {
+        await withSandboxAgent(autonomous: false) { agentId in
+            // search_working_memory is a built-in always-loaded tool; ask the
+            // resolver to also include `methods_save` via additionalToolNames
+            // and verify it lands in the union without duplicates.
+            let tools = SystemPromptComposer.resolveTools(
+                agentId: agentId,
+                executionMode: .none,
+                additionalToolNames: ["methods_save"]
+            )
+            let names = tools.map { $0.function.name }
+            #expect(names.contains("methods_save"))
+            #expect(Set(names).count == names.count)
+        }
+    }
+
+    // MARK: - canonicalToolOrder
+
+    @Test
+    func canonicalToolOrder_isStableAcrossInvocations() async {
+        await withSandboxAgent(autonomous: true) { agentId in
+            registerSandboxBuiltins {
+                // Two compositions with identical inputs must return the
+                // exact same tool ordering — that's what makes the rendered
+                // <tools> block byte-stable across sends.
+                let a = SystemPromptComposer.resolveTools(agentId: agentId, executionMode: .sandbox)
+                let b = SystemPromptComposer.resolveTools(agentId: agentId, executionMode: .sandbox)
+                let aNames = a.map { $0.function.name }
+                let bNames = b.map { $0.function.name }
+                #expect(aNames == bNames)
+
+                // Sandbox built-ins must come first, capability tools next.
+                if let firstSandbox = aNames.firstIndex(where: { $0.hasPrefix("sandbox_") }),
+                    let firstCapability = aNames.firstIndex(of: "capabilities_search")
+                {
+                    #expect(firstSandbox < firstCapability)
+                }
+            }
+        }
     }
 }

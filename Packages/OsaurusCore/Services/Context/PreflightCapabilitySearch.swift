@@ -67,10 +67,25 @@ struct PreflightCapabilityItem: Equatable, Sendable {
 
 struct PreflightResult: Sendable {
     let toolSpecs: [Tool]
-    let contextSnippet: String
     let items: [PreflightCapabilityItem]
 
-    static let empty = PreflightResult(toolSpecs: [], contextSnippet: "", items: [])
+    static let empty = PreflightResult(toolSpecs: [], items: [])
+}
+
+/// Per-session record of the initial preflight selection plus every tool the
+/// agent has loaded mid-session via `capabilities_load`. Stored on the chat
+/// window state (per `sessionId`) and on the work session (per `issue.id`)
+/// so subsequent compose calls can skip the LLM preflight call and feed the
+/// model the same tool union — keeping the rendered system prompt + `<tools>`
+/// block byte-stable across turns and maximizing KV-cache reuse.
+struct SessionToolState: Sendable {
+    var initialPreflight: PreflightResult
+    var loadedToolNames: Set<String>
+
+    init(initialPreflight: PreflightResult, loadedToolNames: Set<String> = []) {
+        self.initialPreflight = initialPreflight
+        self.loadedToolNames = loadedToolNames
+    }
 }
 
 // MARK: - Capability Search (used by capabilities_search tool)
@@ -166,7 +181,7 @@ enum PreflightCapabilitySearch {
         }
 
         logger.info("Pre-flight loaded \(toolSpecs.count) tools")
-        return PreflightResult(toolSpecs: toolSpecs, contextSnippet: "", items: items)
+        return PreflightResult(toolSpecs: toolSpecs, items: items)
     }
 
     /// Snapshot the dynamic-tool catalog and its `tool → group` map from the

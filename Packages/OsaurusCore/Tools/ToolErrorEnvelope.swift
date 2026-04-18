@@ -26,18 +26,37 @@ public struct ToolErrorEnvelope: Sendable {
     public let reason: String
     public let toolName: String?
     public let retryable: Bool
+    /// Optional list of `capabilities_load`-shaped IDs (e.g. `tool/sandbox_exec`,
+    /// `skill/swift-best-practices`) the model can pass to `capabilities_load`
+    /// to recover from a `toolNotFound` error. Surfaced both as the structured
+    /// `suggested_tools` JSON field and appended to `reason` as plain text so
+    /// models that ignore the structured field still get an actionable hint.
+    public let suggestions: [String]
 
     public init(
         kind: Kind,
         reason: String,
         toolName: String? = nil,
-        retryable: Bool? = nil
+        retryable: Bool? = nil,
+        suggestions: [String] = []
     ) {
         self.kind = kind
         self.reason = reason
         self.toolName = toolName
-        // Sensible default-by-kind when caller doesn't override.
-        self.retryable = retryable ?? Self.defaultRetryable(for: kind)
+        // Default `toolNotFound` to retryable iff we have something concrete
+        // for the model to do — i.e. at least one capabilities_load suggestion.
+        // Without suggestions there's no clear next step, so retryable=false
+        // (matches the old behaviour).
+        let retryDefault: Bool
+        if let retryable {
+            retryDefault = retryable
+        } else if kind == .toolNotFound {
+            retryDefault = !suggestions.isEmpty
+        } else {
+            retryDefault = Self.defaultRetryable(for: kind)
+        }
+        self.retryable = retryDefault
+        self.suggestions = suggestions
     }
 
     /// Encode the envelope as a compact JSON string suitable for embedding in
@@ -46,10 +65,11 @@ public struct ToolErrorEnvelope: Sendable {
     public func toJSONString() -> String {
         var dict: [String: Any] = [
             "error": kind.rawValue,
-            "reason": reason,
+            "reason": fullReason,
             "retryable": retryable,
         ]
         if let toolName { dict["tool"] = toolName }
+        if !suggestions.isEmpty { dict["suggested_tools"] = suggestions }
         if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
             let json = String(data: data, encoding: .utf8)
         {
@@ -58,10 +78,23 @@ public struct ToolErrorEnvelope: Sendable {
         // Defensive fallback. JSONSerialization should never fail on this
         // shape, but if it somehow does, ensure the model still gets a
         // recognizable error envelope.
-        let escapedReason = Self.escape(reason)
+        let escapedReason = Self.escape(fullReason)
         let toolField = toolName.map { ",\"tool\":\"\(Self.escape($0))\"" } ?? ""
+        let suggField =
+            suggestions.isEmpty
+            ? ""
+            : ",\"suggested_tools\":[\(suggestions.map { "\"\(Self.escape($0))\"" }.joined(separator: ","))]"
         return
-            "{\"error\":\"\(kind.rawValue)\",\"reason\":\"\(escapedReason)\",\"retryable\":\(retryable)\(toolField)}"
+            "{\"error\":\"\(kind.rawValue)\",\"reason\":\"\(escapedReason)\",\"retryable\":\(retryable)\(toolField)\(suggField)}"
+    }
+
+    /// `reason` with a trailing `capabilities_load` hint when suggestions
+    /// exist. Plain-text channel for models that don't pick up the
+    /// structured `suggested_tools` field.
+    private var fullReason: String {
+        guard !suggestions.isEmpty else { return reason }
+        let ids = suggestions.joined(separator: ", ")
+        return "\(reason) Try: capabilities_load with \(ids)."
     }
 
     private static func defaultRetryable(for kind: Kind) -> Bool {

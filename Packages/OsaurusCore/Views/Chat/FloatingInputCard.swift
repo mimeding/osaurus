@@ -1435,8 +1435,23 @@ extension FloatingInputCard {
         let currentConfig = agentManager.effectiveAutonomousExec(for: effectiveAgentId)
         var newConfig = currentConfig ?? .default
         newConfig.enabled.toggle()
+        let agentId = effectiveAgentId
+        let manager = agentManager
         Task {
-            try? await agentManager.updateAutonomousExec(newConfig, for: effectiveAgentId)
+            do {
+                try await manager.updateAutonomousExec(newConfig, for: agentId)
+            } catch {
+                // Don't silently swallow provision failures — log loudly and
+                // roll the persisted toggle back so the chip flips back to
+                // its previous state. The failure reason still flows to the
+                // model via SandboxToolRegistrar's unavailability notice.
+                NSLog(
+                    "[FloatingInputCard] Sandbox toggle failed for agent \(agentId): \(error.localizedDescription)"
+                )
+                var rollback = newConfig
+                rollback.enabled.toggle()
+                try? await manager.updateAutonomousExec(rollback, for: agentId)
+            }
         }
     }
 

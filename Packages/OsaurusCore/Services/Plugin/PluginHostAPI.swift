@@ -624,12 +624,26 @@ final class PluginHostContext: @unchecked Sendable {
     /// system-prompt snippet stable across turns, which is required for KV-cache reuse:
     /// any change to the tool list causes prompt divergence before token ~1000 and forces
     /// a full re-prefill even when the conversation content is otherwise identical.
-    private nonisolated(unsafe) static var preflightCache: [String: PreflightResult] = [:]
+    private nonisolated(unsafe) static var preflightCache: [String: SessionToolState] = [:]
     private static let preflightCacheLock = NSLock()
 
     /// Call when a session ends (e.g. chat window closes) to release the memoized result.
     static func invalidatePreflightCache(sessionId: String) {
         _ = preflightCacheLock.withLock { preflightCache.removeValue(forKey: sessionId) }
+    }
+
+    /// Persist newly loaded tool names (from `capabilities_load`) onto a
+    /// session's preflight cache entry so subsequent requests with the same
+    /// `session_id` re-include them via `additionalToolNames` instead of
+    /// losing them when preflight is reused.
+    private static func recordSessionLoadedTools(sessionId: String, names: [String]) {
+        guard !names.isEmpty else { return }
+        preflightCacheLock.withLock {
+            if var entry = preflightCache[sessionId] {
+                for name in names { entry.loadedToolNames.insert(name) }
+                preflightCache[sessionId] = entry
+            }
+        }
     }
 
     private static func extractPreflightQuery(from messages: [ChatMessage]) -> String {
@@ -664,7 +678,7 @@ final class PluginHostContext: @unchecked Sendable {
                 request: inference.request,
                 tools: filteredExisting.isEmpty ? nil : filteredExisting
             )
-            let empty = PreflightResult(toolSpecs: manualSpecs, contextSnippet: "", items: [])
+            let empty = PreflightResult(toolSpecs: manualSpecs, items: [])
             return applyPreflightResult(empty, to: cleanInference, builtInTools: builtInTools)
         }
 
@@ -673,7 +687,15 @@ final class PluginHostContext: @unchecked Sendable {
             let cached = preflightCacheLock.withLock { preflightCache[sid] }
             if let cached {
                 let builtInTools = await MainActor.run { ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode) }
-                return applyPreflightResult(cached, to: inference, builtInTools: builtInTools)
+                let extraSpecs = await MainActor.run {
+                    ToolRegistry.shared.specs(forTools: Array(cached.loadedToolNames))
+                }
+                return applyPreflightResult(
+                    cached.initialPreflight,
+                    to: inference,
+                    builtInTools: builtInTools,
+                    additionalToolSpecs: extraSpecs
+                )
             }
         }
 
@@ -689,30 +711,31 @@ final class PluginHostContext: @unchecked Sendable {
         let preflight = await PreflightCapabilitySearch.search(query: query, mode: preflightMode, agentId: agentId)
 
         if let sid = inference.request.session_id {
-            preflightCacheLock.withLock { preflightCache[sid] = preflight }
+            preflightCacheLock.withLock {
+                preflightCache[sid] = SessionToolState(initialPreflight: preflight)
+            }
         }
 
         return applyPreflightResult(preflight, to: inference, builtInTools: builtInTools)
     }
 
-    /// Merges a cached `PreflightResult` into an inference request without re-running the search.
+    /// Merges a cached `PreflightResult` (and any session-loaded tool specs)
+    /// into an inference request without re-running the search.
     private static func applyPreflightResult(
         _ preflight: PreflightResult,
         to inference: EnrichedInference,
-        builtInTools: [Tool]
+        builtInTools: [Tool],
+        additionalToolSpecs: [Tool] = []
     ) -> EnrichedInference {
         var seen = Set((inference.tools ?? []).map { $0.function.name })
         var tools = inference.tools ?? []
-        for spec in builtInTools + preflight.toolSpecs where !seen.contains(spec.function.name) {
+        for spec in builtInTools + preflight.toolSpecs + additionalToolSpecs
+        where !seen.contains(spec.function.name) {
             tools.append(spec)
             seen.insert(spec.function.name)
         }
 
-        var messages = inference.request.messages
-        if !preflight.contextSnippet.isEmpty {
-            SystemPromptComposer.appendSystemContent(preflight.contextSnippet, into: &messages)
-        }
-
+        let messages = inference.request.messages
         let effectiveTools = tools.isEmpty ? nil : tools
         let request = ChatCompletionRequest(
             model: inference.request.model,
@@ -781,6 +804,15 @@ final class PluginHostContext: @unchecked Sendable {
             let additions = newTools.filter { !existing.contains($0.function.name) }
             if !additions.isEmpty {
                 toolSpecs = (toolSpecs ?? []) + additions
+                // Persist additions to the per-session cache so subsequent
+                // requests with the same `session_id` continue to see these
+                // tools without the model having to re-discover them.
+                if let sid = prep.enriched.request.session_id {
+                    recordSessionLoadedTools(
+                        sessionId: sid,
+                        names: additions.map { $0.function.name }
+                    )
+                }
             }
             return (result, nil)
 
