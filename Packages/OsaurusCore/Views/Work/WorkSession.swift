@@ -812,15 +812,57 @@ public final class WorkSession: ObservableObject {
         }
     }
 
+    /// Mirror of `ChatSession.prepareChatExecutionMode`: ensures the sandbox
+    /// container + builtin sandbox tools are registered for THIS work
+    /// session's agent before composing the system prompt. Without this, a
+    /// Work session whose agent isn't the global "active agent" would silently
+    /// run with no sandbox tools (and `composeWorkContext` would not get the
+    /// sandbox-unavailable notice + plugin-creator fallback).
+    func prepareWorkExecutionMode() async -> WorkExecutionMode {
+        let folderContext = WorkFolderContextService.shared.currentContext
+        if folderContext != nil {
+            return ToolRegistry.shared.resolveWorkExecutionMode(folderContext: folderContext)
+        }
+        if AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true {
+            await SandboxToolRegistrar.shared.registerTools(for: agentId)
+        }
+        return ToolRegistry.shared.resolveWorkExecutionMode(folderContext: nil)
+    }
+
+    /// Recompose the work context (system prompt, tools, cache hints) using
+    /// the latest sandbox + capability state. Called by `WorkExecutionEngine`
+    /// after `capabilities_load` / `sandbox_plugin_register` / compaction.
+    /// The optional return shape lets the engine's `[weak self]` callback
+    /// gracefully no-op when the session is torn down mid-execution; this
+    /// implementation itself always returns a non-nil context.
+    @MainActor
+    func recomposeWorkContext(
+        query: String,
+        executionMode: WorkExecutionMode,
+        model: String?
+    ) async -> WorkExecutionEngine.RefreshedWorkContext {
+        let workCtx = await SystemPromptComposer.composeWorkContext(
+            agentId: agentId,
+            executionMode: executionMode,
+            model: model,
+            secretNames: Array(AgentSecretsKeychain.getAllSecrets(agentId: agentId).keys),
+            query: query
+        )
+        return WorkExecutionEngine.RefreshedWorkContext(
+            systemPrompt: workCtx.prompt,
+            tools: workCtx.tools,
+            cacheHint: workCtx.cacheHint,
+            staticPrefix: workCtx.staticPrefix
+        )
+    }
+
     /// Executes a specific issue
     public func executeIssue(_ issue: Issue, withRetry: Bool = true, images: [Data] = []) async {
         guard !isExecuting else { return }
 
         resetExecutionState(for: issue)
 
-        let executionMode = ToolRegistry.shared.resolveWorkExecutionMode(
-            folderContext: WorkFolderContextService.shared.currentContext
-        )
+        let executionMode = await prepareWorkExecutionMode()
         let model = resolveModel()
         let issueQuery = [issue.title, issue.description].compactMap { $0 }.joined(separator: " ")
 
@@ -841,6 +883,9 @@ public final class WorkSession: ObservableObject {
         executionTask = Task { [weak self, engine] in
             do {
                 let capturedModelOptions = await MainActor.run { self?.activeModelOptions ?? [:] }
+                let refreshHandler: WorkExecutionEngine.ContextRefreshCallback = { @MainActor query, mode in
+                    await self?.recomposeWorkContext(query: query, executionMode: mode, model: model)
+                }
                 let result =
                     if withRetry {
                         try await engine.executeWithRetry(
@@ -852,7 +897,8 @@ public final class WorkSession: ObservableObject {
                             images: images,
                             cacheHint: workCtx.cacheHint,
                             staticPrefix: workCtx.staticPrefix,
-                            modelOptions: capturedModelOptions
+                            modelOptions: capturedModelOptions,
+                            onContextRefresh: refreshHandler
                         )
                     } else {
                         try await engine.resume(
@@ -863,7 +909,8 @@ public final class WorkSession: ObservableObject {
                             executionMode: executionMode,
                             cacheHint: workCtx.cacheHint,
                             staticPrefix: workCtx.staticPrefix,
-                            modelOptions: capturedModelOptions
+                            modelOptions: capturedModelOptions,
+                            onContextRefresh: refreshHandler
                         )
                     }
                 await MainActor.run { self?.handleExecutionResult(result) }
@@ -1337,9 +1384,7 @@ public final class WorkSession: ObservableObject {
             return
         }
 
-        let executionMode = ToolRegistry.shared.resolveWorkExecutionMode(
-            folderContext: WorkFolderContextService.shared.currentContext
-        )
+        let executionMode = await prepareWorkExecutionMode()
         let model = resolveModel()
         let resumeQuery = [issue.title, issue.description].compactMap { $0 }.joined(separator: " ")
 
@@ -1359,6 +1404,10 @@ public final class WorkSession: ObservableObject {
 
         executionTask = Task { [weak self, engine] in
             do {
+                let capturedModelOptions = await MainActor.run { self?.activeModelOptions ?? [:] }
+                let refreshHandler: WorkExecutionEngine.ContextRefreshCallback = { @MainActor query, mode in
+                    await self?.recomposeWorkContext(query: query, executionMode: mode, model: model)
+                }
                 let result = try await engine.resume(
                     issueId: issue.id,
                     model: model,
@@ -1366,7 +1415,9 @@ public final class WorkSession: ObservableObject {
                     tools: resumeCtx.tools,
                     executionMode: executionMode,
                     cacheHint: resumeCtx.cacheHint,
-                    staticPrefix: resumeCtx.staticPrefix
+                    staticPrefix: resumeCtx.staticPrefix,
+                    modelOptions: capturedModelOptions,
+                    onContextRefresh: refreshHandler
                 )
                 await MainActor.run { self?.handleExecutionResult(result) }
             } catch {

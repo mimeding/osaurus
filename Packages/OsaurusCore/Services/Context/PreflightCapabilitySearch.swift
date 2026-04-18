@@ -148,7 +148,11 @@ enum PreflightCapabilitySearch {
             return (sorted, groupMap)
         }
 
-        guard !catalog.isEmpty else { return await sandboxPluginCreatorFallback(agentId: agentId) }
+        // Empty catalog and empty selection are both treated as "no dynamic
+        // tools matched". The plugin-creator fallback is now applied uniformly
+        // by SystemPromptComposer after tool resolution, so it also fires in
+        // manual mode, with empty queries, and when preflight is .off.
+        guard !catalog.isEmpty else { return .empty }
 
         InferenceProgressManager.shared.preflightWillStartAsync()
         defer { InferenceProgressManager.shared.preflightDidFinishAsync() }
@@ -161,7 +165,7 @@ enum PreflightCapabilitySearch {
         )
 
         if selectedNames.isEmpty {
-            return await sandboxPluginCreatorFallback(agentId: agentId)
+            return .empty
         }
 
         let (toolSpecs, items) = await MainActor.run {
@@ -283,28 +287,34 @@ enum PreflightCapabilitySearch {
         return capped
     }
 
-    // MARK: Fallback
+    // MARK: Plugin Creator Fallback
+    //
+    // Note: the Sandbox Plugin Creator skill injection used to live here as a
+    // preflight-only fallback. It now lives in `SystemPromptComposer` so it
+    // fires uniformly whenever no dynamic tool was resolved (manual mode,
+    // empty query, preflight off, or LLM picked nothing) — see
+    // `pluginCreatorSkillSection(for:)` below.
 
-    private static func sandboxPluginCreatorFallback(agentId: UUID) async -> PreflightResult {
-        guard await CapabilitySearch.canCreatePlugins(agentId: agentId) else { return .empty }
+    /// Compose the Sandbox Plugin Creator skill section to inject into the
+    /// system prompt when no other dynamic tool matched the user's request.
+    /// Returns nil when the agent does not have plugin creation enabled or
+    /// the skill is not installed.
+    static func pluginCreatorSkillSection(for agentId: UUID) async -> String? {
+        guard await CapabilitySearch.canCreatePlugins(agentId: agentId) else { return nil }
         let skill = await MainActor.run {
             SkillManager.shared.skill(named: "Sandbox Plugin Creator")
         }
-        guard let skill else { return .empty }
+        guard let skill else { return nil }
 
-        logger.info("Pre-flight: no tools selected, injected Sandbox Plugin Creator skill")
-        return PreflightResult(
-            toolSpecs: [],
-            contextSnippet: """
-                ## No existing tools match this request
+        logger.info("Plugin creator: no dynamic tools matched, injecting \(skill.name) skill")
+        return """
+            ## No existing tools match this request
 
-                You can create new tools by writing a sandbox plugin.
-                Follow the instructions below.
+            You can create new tools by writing a sandbox plugin.
+            Follow the instructions below.
 
-                ## Skill: \(skill.name)
-                \(skill.instructions)
-                """,
-            items: [.init(type: .skill, name: skill.name, description: skill.description)]
-        )
+            ## Skill: \(skill.name)
+            \(skill.instructions)
+            """
     }
 }

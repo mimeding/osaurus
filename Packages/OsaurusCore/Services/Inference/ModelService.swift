@@ -74,6 +74,22 @@ struct ServiceToolInvocation: Error, Sendable {
     }
 }
 
+/// Batch of tool invocations parsed out of a single model completion.
+///
+/// Local (MLX) models can emit multiple `<tool_call>{...}</tool_call>` blocks
+/// per response — `StreamAccumulator` drains them all into `pendingEvents`,
+/// and `streamWithTools` collects them into this batch error so the caller
+/// (Work loop, HTTP agent loop, plugin streaming) can execute every call in
+/// a single iteration instead of one round-trip per call.
+///
+/// `invocations` is guaranteed non-empty. Consumers should `catch let invs as
+/// ServiceToolInvocations` BEFORE `catch let inv as ServiceToolInvocation`
+/// because some provider paths still throw the single form for genuinely
+/// one-at-a-time streams (OpenAI server-side tool calls).
+struct ServiceToolInvocations: Error, Sendable {
+    let invocations: [ServiceToolInvocation]
+}
+
 /// In-band signaling for tool name and argument detection during streaming.
 /// The stream type is `AsyncThrowingStream<String, Error>`, so we encode the
 /// detected tool name (and argument fragments) as sentinel strings using a

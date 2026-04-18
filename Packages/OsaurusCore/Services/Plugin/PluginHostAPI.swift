@@ -854,18 +854,27 @@ final class PluginHostContext: @unchecked Sendable {
                         )
                     }
                 } catch {
-                    return "[REJECTED] \(error.localizedDescription)"
+                    return ToolErrorEnvelope(
+                        kind: .executionError,
+                        reason: error.localizedDescription,
+                        toolName: name
+                    ).toJSONString()
                 }
             }
             group.addTask {
                 try? await Task.sleep(nanoseconds: toolExecutionTimeout * 1_000_000_000)
                 return nil
             }
+            let timeoutEnvelope = ToolErrorEnvelope(
+                kind: .timeout,
+                reason: "Tool did not complete within \(toolExecutionTimeout)s.",
+                toolName: name
+            ).toJSONString()
             guard let first = await group.next() else {
-                return "[TIMEOUT] Tool '\(name)' did not complete within \(toolExecutionTimeout)s."
+                return timeoutEnvelope
             }
             group.cancelAll()
-            return first ?? "[TIMEOUT] Tool '\(name)' did not complete within \(toolExecutionTimeout)s."
+            return first ?? timeoutEnvelope
         }
     }
 
@@ -917,31 +926,25 @@ final class PluginHostContext: @unchecked Sendable {
                         choice.finish_reason == "tool_calls",
                         iteration < prep.options.maxIterations
                     {
+                        // The non-streaming path already appends the full
+                        // assistant message (with all tool_calls) once,
+                        // then appends only the tool-result messages per call.
                         messages.append(choice.message)
                         for tc in calls {
-                            var result = await Self.executeToolCall(
-                                name: tc.function.name,
-                                argumentsJSON: tc.function.arguments,
-                                agentId: prep.agentId,
-                                executionMode: prep.executionMode
-                            )
-                            let postProcessed = await Self.postProcessToolResult(
+                            let processed = await Self.processToolCall(
                                 toolName: tc.function.name,
-                                result: result,
+                                argumentsJSON: tc.function.arguments,
+                                callId: tc.id,
+                                priorAssistantContent: "",
                                 prep: prep,
                                 toolSpecs: &toolSpecs
                             )
-                            result = postProcessed.result
-                            if let dict = postProcessed.artifactDict { sharedArtifacts.append(dict) }
-                            messages.append(
-                                ChatMessage(
-                                    role: "tool",
-                                    content: result,
-                                    tool_calls: nil,
-                                    tool_call_id: tc.id
-                                )
-                            )
-                            toolCallsExecuted.append(["name": tc.function.name, "tool_call_id": tc.id])
+                            // assistantMessage from processToolCall is unused
+                            // here because choice.message already represents
+                            // the full assistant turn for this iteration.
+                            if let dict = processed.artifactDict { sharedArtifacts.append(dict) }
+                            messages.append(processed.toolMessage)
+                            toolCallsExecuted.append(processed.toolCallExecuted)
                         }
                         continue
                     }
@@ -1041,72 +1044,40 @@ final class PluginHostContext: @unchecked Sendable {
                         sharedArtifacts: sharedArtifacts
                     )
 
+                } catch let invs as ServiceToolInvocations {
+                    guard iteration < prep.options.maxIterations else {
+                        emit(Self.chunkPayload(id: cid, delta: [:], finishReason: "stop"))
+                        break
+                    }
+                    await Self.processInvocationBatch(
+                        invs.invocations,
+                        cid: cid,
+                        lastContent: &lastContent,
+                        messages: &messages,
+                        toolSpecs: &toolSpecs,
+                        toolCallsExecuted: &toolCallsExecuted,
+                        sharedArtifacts: &sharedArtifacts,
+                        prep: prep,
+                        emit: emit
+                    )
+                    continue
+
                 } catch let inv as ServiceToolInvocation {
                     guard iteration < prep.options.maxIterations else {
                         emit(Self.chunkPayload(id: cid, delta: [:], finishReason: "stop"))
                         break
                     }
-
-                    let callId =
-                        inv.toolCallId
-                        ?? "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24))"
-
-                    let tcDelta: [String: Any] = [
-                        "tool_calls": [
-                            ["id": callId, "function": ["name": inv.toolName, "arguments": inv.jsonArguments]]
-                        ]
-                    ]
-                    emit(Self.chunkPayload(id: cid, delta: tcDelta, finishReason: "tool_calls"))
-
-                    var result = await Self.executeToolCall(
-                        name: inv.toolName,
-                        argumentsJSON: inv.jsonArguments,
-                        agentId: prep.agentId,
-                        executionMode: prep.executionMode
-                    )
-                    let postProcessed = await Self.postProcessToolResult(
-                        toolName: inv.toolName,
-                        result: result,
+                    await Self.processInvocationBatch(
+                        [inv],
+                        cid: cid,
+                        lastContent: &lastContent,
+                        messages: &messages,
+                        toolSpecs: &toolSpecs,
+                        toolCallsExecuted: &toolCallsExecuted,
+                        sharedArtifacts: &sharedArtifacts,
                         prep: prep,
-                        toolSpecs: &toolSpecs
+                        emit: emit
                     )
-                    result = postProcessed.result
-                    if let dict = postProcessed.artifactDict { sharedArtifacts.append(dict) }
-
-                    emit(
-                        Self.chunkPayload(
-                            id: cid,
-                            delta: [
-                                "role": "tool", "tool_call_id": callId, "content": result,
-                            ]
-                        )
-                    )
-
-                    toolCallsExecuted.append(["name": inv.toolName, "tool_call_id": callId])
-
-                    let toolCall = ToolCall(
-                        id: callId,
-                        type: "function",
-                        function: ToolCallFunction(name: inv.toolName, arguments: inv.jsonArguments),
-                        geminiThoughtSignature: inv.geminiThoughtSignature
-                    )
-                    messages.append(
-                        ChatMessage(
-                            role: "assistant",
-                            content: lastContent.isEmpty ? nil : lastContent,
-                            tool_calls: [toolCall],
-                            tool_call_id: nil
-                        )
-                    )
-                    messages.append(
-                        ChatMessage(
-                            role: "tool",
-                            content: result,
-                            tool_calls: nil,
-                            tool_call_id: callId
-                        )
-                    )
-                    lastContent = ""
                     continue
 
                 } catch {
@@ -1125,6 +1096,129 @@ final class PluginHostContext: @unchecked Sendable {
     }
 
     // MARK: Inference Helpers
+
+    /// Outcome of executing a single model-emitted tool call. Shared between
+    /// `complete` (non-streaming, walks each item in `choice.message.tool_calls`)
+    /// and `complete_stream` (each `ServiceToolInvocation`) so the per-call
+    /// behaviour — execute, post-process, append assistant + tool messages —
+    /// stays in sync between the two paths.
+    private struct ToolCallProcessing {
+        let result: String
+        let assistantMessage: ChatMessage
+        let toolMessage: ChatMessage
+        let toolCallExecuted: [String: String]
+        let artifactDict: [String: Any]?
+    }
+
+    /// Execute every tool in a `ServiceToolInvocations` batch and append the
+    /// assistant + tool messages in order. Mirrors the `complete()`
+    /// non-streaming path so a single completion that emits multiple
+    /// `<tool_call>` blocks runs all of them in one streaming round.
+    private static func processInvocationBatch(
+        _ invocations: [ServiceToolInvocation],
+        cid: String,
+        lastContent: inout String,
+        messages: inout [ChatMessage],
+        toolSpecs: inout [Tool]?,
+        toolCallsExecuted: inout [[String: String]],
+        sharedArtifacts: inout [[String: Any]],
+        prep: PreparedInference,
+        emit: ([String: Any]) -> Void
+    ) async {
+        for inv in invocations {
+            let callId =
+                inv.toolCallId
+                ?? "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24))"
+
+            let tcDelta: [String: Any] = [
+                "tool_calls": [
+                    ["id": callId, "function": ["name": inv.toolName, "arguments": inv.jsonArguments]]
+                ]
+            ]
+            emit(Self.chunkPayload(id: cid, delta: tcDelta, finishReason: "tool_calls"))
+
+            let processed = await Self.processToolCall(
+                toolName: inv.toolName,
+                argumentsJSON: inv.jsonArguments,
+                callId: callId,
+                priorAssistantContent: lastContent,
+                prep: prep,
+                toolSpecs: &toolSpecs
+            )
+            if let dict = processed.artifactDict { sharedArtifacts.append(dict) }
+
+            emit(
+                Self.chunkPayload(
+                    id: cid,
+                    delta: [
+                        "role": "tool", "tool_call_id": callId, "content": processed.result,
+                    ]
+                )
+            )
+
+            toolCallsExecuted.append(processed.toolCallExecuted)
+            messages.append(processed.assistantMessage)
+            messages.append(processed.toolMessage)
+            // Only the FIRST invocation in the batch consumes the streamed
+            // assistant prose — subsequent calls in the same completion
+            // share the same response, so we clear lastContent after the
+            // first tool to avoid duplicating prose into every assistant
+            // tool-call message.
+            lastContent = ""
+        }
+    }
+
+    /// Execute one tool call, post-process the result, and produce the
+    /// assistant + tool ChatMessages to append to the running history.
+    /// Updates `toolSpecs` in place when post-processing surfaces newly
+    /// loaded tools (e.g. `capabilities_load`).
+    private static func processToolCall(
+        toolName: String,
+        argumentsJSON: String,
+        callId: String,
+        priorAssistantContent: String,
+        prep: PreparedInference,
+        toolSpecs: inout [Tool]?
+    ) async -> ToolCallProcessing {
+        var result = await Self.executeToolCall(
+            name: toolName,
+            argumentsJSON: argumentsJSON,
+            agentId: prep.agentId,
+            executionMode: prep.executionMode
+        )
+        let postProcessed = await Self.postProcessToolResult(
+            toolName: toolName,
+            result: result,
+            prep: prep,
+            toolSpecs: &toolSpecs
+        )
+        result = postProcessed.result
+
+        let toolCall = ToolCall(
+            id: callId,
+            type: "function",
+            function: ToolCallFunction(name: toolName, arguments: argumentsJSON)
+        )
+        let assistantMessage = ChatMessage(
+            role: "assistant",
+            content: priorAssistantContent.isEmpty ? nil : priorAssistantContent,
+            tool_calls: [toolCall],
+            tool_call_id: nil
+        )
+        let toolMessage = ChatMessage(
+            role: "tool",
+            content: result,
+            tool_calls: nil,
+            tool_call_id: callId
+        )
+        return ToolCallProcessing(
+            result: result,
+            assistantMessage: assistantMessage,
+            toolMessage: toolMessage,
+            toolCallExecuted: ["name": toolName, "tool_call_id": callId],
+            artifactDict: postProcessed.artifactDict
+        )
+    }
 
     private static func buildStreamResult(
         id: String,

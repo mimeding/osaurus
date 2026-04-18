@@ -125,7 +125,8 @@ public actor WorkEngine {
         executionMode: WorkExecutionMode,
         cacheHint: String? = nil,
         staticPrefix: String? = nil,
-        modelOptions: [String: ModelOptionValue] = [:]
+        modelOptions: [String: ModelOptionValue] = [:],
+        onContextRefresh: WorkExecutionEngine.ContextRefreshCallback? = nil
     ) async throws -> ExecutionResult {
         guard !isExecuting else {
             throw WorkEngineError.alreadyExecuting
@@ -144,7 +145,8 @@ public actor WorkEngine {
             attemptResume: true,
             cacheHint: cacheHint,
             staticPrefix: staticPrefix,
-            modelOptions: modelOptions
+            modelOptions: modelOptions,
+            onContextRefresh: onContextRefresh
         )
     }
 
@@ -346,7 +348,8 @@ public actor WorkEngine {
         attemptResume: Bool = false,
         cacheHint: String? = nil,
         staticPrefix: String? = nil,
-        modelOptions: [String: ModelOptionValue] = [:]
+        modelOptions: [String: ModelOptionValue] = [:],
+        onContextRefresh: WorkExecutionEngine.ContextRefreshCallback? = nil
     ) async throws -> ExecutionResult {
         isExecuting = true
         interruptRequested = false
@@ -512,7 +515,8 @@ public actor WorkEngine {
                 onSecretPrompt: { [weak self] prompt in
                     guard let self = self else { return nil }
                     return await self.delegate?.workEngine(self, needsSecret: prompt)
-                }
+                },
+                onContextRefresh: onContextRefresh
             )
         } catch {
             if activeSession?.issueId == issue.id {
@@ -657,8 +661,16 @@ public actor WorkEngine {
                 toolCalls: totalToolCalls,
                 exitReason: .iterationLimitReached
             )
+            // Pull the last few tool names from the transcript so the
+            // budget-exhausted summary tells the user what the agent was
+            // actually doing when it ran out of iterations.
+            let recentToolNames = Self.recentToolNames(in: resumedMessages, limit: 5)
+            let toolsTrail =
+                recentToolNames.isEmpty
+                ? ""
+                : " Last tools: \(recentToolNames.joined(separator: " → "))."
             let summary =
-                "Budget exhausted after \(totalIterations) iterations and \(totalToolCalls) tool calls."
+                "Budget exhausted after \(totalIterations) iterations and \(totalToolCalls) tool calls.\(toolsTrail) Use Resume to continue from this checkpoint."
             persistExecutionStateIfPossible()
             await delegate?.workEngine(self, didExhaustBudget: issue, summary: summary)
 
@@ -670,6 +682,22 @@ public actor WorkEngine {
                 pauseReason: .budgetExhausted
             )
         }
+    }
+
+    /// Last `limit` tool-call names extracted from the assistant turns of
+    /// `messages`, in chronological order. Used to enrich the budget-exhausted
+    /// summary so the user can tell at a glance what the agent was doing.
+    private static func recentToolNames(in messages: [ChatMessage], limit: Int) -> [String] {
+        var names: [String] = []
+        for msg in messages.reversed() where msg.role == "assistant" {
+            if let calls = msg.tool_calls {
+                for call in calls.reversed() {
+                    names.append(call.function.name)
+                    if names.count >= limit { return names.reversed() }
+                }
+            }
+        }
+        return names.reversed()
     }
 
     private func buildInitialMessages(issue: Issue, images: [Data], executionMode: WorkExecutionMode) -> [ChatMessage] {
@@ -874,7 +902,8 @@ public actor WorkEngine {
         images: [Data] = [],
         cacheHint: String? = nil,
         staticPrefix: String? = nil,
-        modelOptions: [String: ModelOptionValue] = [:]
+        modelOptions: [String: ModelOptionValue] = [:],
+        onContextRefresh: WorkExecutionEngine.ContextRefreshCallback? = nil
     ) async throws -> ExecutionResult {
         guard let issue = try IssueStore.getIssue(id: issueId) else {
             throw WorkEngineError.issueNotFound(issueId)
@@ -907,7 +936,8 @@ public actor WorkEngine {
                     attemptResume: attempt > 0,
                     cacheHint: cacheHint,
                     staticPrefix: staticPrefix,
-                    modelOptions: modelOptions
+                    modelOptions: modelOptions,
+                    onContextRefresh: onContextRefresh
                 )
 
                 // Success - clear any error state

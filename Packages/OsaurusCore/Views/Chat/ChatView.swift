@@ -640,8 +640,17 @@ final class ChatSession: ObservableObject {
         activeRunContext = context
     }
 
+    /// Best-effort estimate of the execution mode the next send will use.
+    /// Prefers the registry's actual registered state (matches what
+    /// `prepareChatExecutionMode` would resolve) so the token-budget preview
+    /// doesn't disagree with the prompt that's actually sent. Falls back to
+    /// the autonomous flag when sandbox tools have not yet been registered
+    /// (first send of a session before any tool call has provisioned the
+    /// container).
     private func estimatedChatExecutionMode(agentId: UUID) -> WorkExecutionMode {
-        AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true ? .sandbox : .none
+        let resolved = ToolRegistry.shared.resolveWorkExecutionMode(folderContext: nil)
+        if resolved.usesSandboxTools { return resolved }
+        return AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true ? .sandbox : .none
     }
 
     private func completeRunCleanup() {
@@ -851,11 +860,16 @@ final class ChatSession: ObservableObject {
                 ttftTrace?.mark("prepare_exec_mode_done")
                 guard isRunActive(runId) else { return }
 
+                let priorUserMessages: [ChatMessage] = turns.compactMap { t in
+                    guard t.role == .user, !t.contentIsEmpty else { return nil }
+                    return ChatMessage(role: "user", content: t.content)
+                }
                 let context = await SystemPromptComposer.composeChatContext(
                     agentId: effectiveAgentId,
                     executionMode: executionMode,
                     model: selectedModel,
                     query: trimmed,
+                    messages: priorUserMessages,
                     toolsDisabled: chatCfg.disableTools,
                     trace: ttftTrace
                 )
@@ -1243,8 +1257,15 @@ final class ChatSession: ObservableObject {
                                 "[Osaurus][Tool] Success: \(inv.toolName) returned \(resultText.count) chars: \(truncatedResult)\(resultText.count > 500 ? "..." : "")"
                             )
                         } catch {
-                            // Store rejection/error as the result so UI shows "Rejected" instead of hanging
-                            let rejectionMessage = "[REJECTED] \(error.localizedDescription)"
+                            // Store rejection/error as the result so UI shows "Rejected" instead of hanging.
+                            // The structured envelope replaces the legacy `[REJECTED] …` string so local
+                            // models read a clear `{error, reason, retryable}` rather than a marker they
+                            // misinterpret as a sticky policy refusal.
+                            let rejectionMessage = ToolErrorEnvelope(
+                                kind: .executionError,
+                                reason: error.localizedDescription,
+                                toolName: inv.toolName
+                            ).toJSONString()
                             assistantTurn.toolResults[callId] = rejectionMessage
                             let toolTurn = ChatTurn(role: .tool, content: rejectionMessage)
                             toolTurn.toolCallId = callId

@@ -114,7 +114,8 @@ struct BatchEngineAdapter {
         buildToolsSpec: @Sendable () -> [[String: any Sendable]]?,
         generation: GenerationParameters,
         runtime: RuntimeConfig,
-        maxBatchSize: Int
+        maxBatchSize: Int,
+        toolCallFormatOverride: ToolCallFormat? = nil
     ) async throws -> PreparedStream {
         let trace = generation.ttftTrace
         trace?.mark("batch_prepare_start")
@@ -124,7 +125,8 @@ struct BatchEngineAdapter {
             buildChat: buildChat,
             buildToolsSpec: buildToolsSpec,
             generation: generation,
-            trace: trace
+            trace: trace,
+            toolCallFormatOverride: toolCallFormatOverride
         )
 
         // Get-or-create the per-model `BatchEngine`. The engine captures the
@@ -196,7 +198,8 @@ struct BatchEngineAdapter {
         buildChat: @Sendable () -> [MLXLMCommon.Chat.Message],
         buildToolsSpec: @Sendable () -> [[String: any Sendable]]?,
         generation: GenerationParameters,
-        trace: TTFTTrace?
+        trace: TTFTTrace?,
+        toolCallFormatOverride: ToolCallFormat? = nil
     ) async throws -> PreparedInput {
         // Heap-allocated outbox so the throwing closure can hand a value back
         // across the actor boundary. `try await container.perform` either
@@ -209,9 +212,15 @@ struct BatchEngineAdapter {
             let chat = MLXGenerationEngine.preprocessImages(in: buildChat())
             let toolsSpec = buildToolsSpec()
 
+            // Same explicit resolution as `MLXGenerationEngine`: when tools
+            // are in play but the caller has no opinion on thinking, default
+            // to `enable_thinking: false` so reasoning tokens don't interleave
+            // with tool-call wire format and trip up the parser.
             let additionalContext: [String: any Sendable]?
             if let disableThinking = generation.modelOptions["disableThinking"]?.boolValue {
                 additionalContext = ["enable_thinking": !disableThinking]
+            } else if let specs = toolsSpec, !specs.isEmpty {
+                additionalContext = ["enable_thinking": false]
             } else {
                 additionalContext = nil
             }
@@ -247,11 +256,21 @@ struct BatchEngineAdapter {
                 )
             }
 
+            let configFormat = context.configuration.toolCallFormat
+            let toolCallFormat: ToolCallFormat = toolCallFormatOverride ?? configFormat ?? .json
+            if let override = toolCallFormatOverride,
+                let cfg = configFormat,
+                override != cfg
+            {
+                batchAdapterLog.warning(
+                    "toolCallFormat mismatch: JANG=\(override.rawValue, privacy: .public) vmlx=\(cfg.rawValue, privacy: .public) — using JANG"
+                )
+            }
             box.result = PreparedInput(
                 input: lmInput,
                 promptTokens: tokens,
                 tokenizer: context.tokenizer,
-                toolCallFormat: context.configuration.toolCallFormat ?? .json
+                toolCallFormat: toolCallFormat
             )
         }
 

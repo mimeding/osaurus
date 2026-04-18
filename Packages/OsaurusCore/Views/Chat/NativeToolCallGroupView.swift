@@ -438,7 +438,7 @@ final class NativeToolCallGroupView: NSView {
     private func statusNSColor(calls: [ToolCallItem], theme: any ThemeProtocol) -> NSColor {
         if calls.contains(where: { $0.result == nil }) {
             return NSColor(theme.accentColor)
-        } else if calls.contains(where: { $0.result?.hasPrefix("[REJECTED]") == true }) {
+        } else if calls.contains(where: { ($0.result.map(ToolErrorEnvelope.isErrorResult) ?? false) }) {
             return NSColor(theme.errorColor)
         } else {
             return NSColor(theme.successColor)
@@ -645,7 +645,7 @@ final class NativeToolCallRowView: NSView {
 
     /// JSON → fenced `json` block (pretty-printed). Anything else → raw markdown so prose/lists/**bold** render.
     private static func markdownForToolResultDisplay(_ result: String) -> String {
-        if result.hasPrefix("[REJECTED]") {
+        if ToolErrorEnvelope.isErrorResult(result) {
             return result
         }
         let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -933,7 +933,9 @@ final class NativeToolCallRowView: NSView {
 
     private func statusInfo(item: ToolCallItem, theme: any ThemeProtocol) -> (String, NSColor) {
         if item.result == nil { return ("circle.dotted", NSColor(theme.accentColor)) }
-        if item.result?.hasPrefix("[REJECTED]") == true { return ("xmark.circle.fill", NSColor(theme.errorColor)) }
+        if let r = item.result, ToolErrorEnvelope.isErrorResult(r) {
+            return ("xmark.circle.fill", NSColor(theme.errorColor))
+        }
         return ("checkmark.circle.fill", NSColor(theme.successColor))
     }
 

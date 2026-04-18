@@ -63,7 +63,8 @@ struct MLXGenerationEngine {
         buildToolsSpec: @Sendable () -> [[String: any Sendable]]?,
         generation: GenerationParameters,
         runtime: RuntimeConfig,
-        wiredMemoryTicket: WiredMemoryTicket?
+        wiredMemoryTicket: WiredMemoryTicket?,
+        toolCallFormatOverride: ToolCallFormat? = nil
     ) async throws -> MLXGenerationEngineResult {
         let spState = engineSignposter.beginInterval("prepareAndGenerate", id: engineSignposter.makeSignpostID())
         let t0 = CFAbsoluteTimeGetCurrent()
@@ -101,13 +102,21 @@ struct MLXGenerationEngine {
                 repetitionPenalty: generation.repetitionPenalty,
                 maxKV: runtime.maxKV
             )
-            // When the caller has an opinion on thinking (toggle is present), forward
-            // it explicitly as `enable_thinking: true/false` — models whose templates
-            // default the kwarg OFF when it's absent would otherwise silently stay
-            // off even with the UI toggle enabled.
+            // Resolve `enable_thinking` explicitly:
+            //   1. If the caller has set `disableThinking`, honor it.
+            //   2. Otherwise, when tools are present, default to
+            //      `enable_thinking: false`. Mixing reasoning tokens with the
+            //      tool-call wire format trips up `ToolCallProcessor` on
+            //      several model families (Qwen3, GLM) and is the safer
+            //      default for tool-calling reliability.
+            //   3. Only omit the kwarg when there's truly no opinion (no
+            //      tools and no toggle present) so the template's own
+            //      default takes effect.
             let additionalContext: [String: any Sendable]?
             if let disableThinking = generation.modelOptions["disableThinking"]?.boolValue {
                 additionalContext = ["enable_thinking": !disableThinking]
+            } else if let specs = toolsSpec, !specs.isEmpty {
+                additionalContext = ["enable_thinking": false]
             } else {
                 additionalContext = nil
             }
@@ -177,7 +186,19 @@ struct MLXGenerationEngine {
             )
             engineLog.info("prepareAndGenerate: generateTokenTask created, returning stream")
 
-            let toolCallFormat = contextWithEOS.configuration.toolCallFormat ?? .json
+            // Prefer the JANG-resolved format when available — for stamped
+            // models the stamp is authoritative. Fall back to vmlx's
+            // configuration heuristic, then the JSON default.
+            let configFormat = contextWithEOS.configuration.toolCallFormat
+            let toolCallFormat: ToolCallFormat = toolCallFormatOverride ?? configFormat ?? .json
+            if let override = toolCallFormatOverride,
+                let cfg = configFormat,
+                override != cfg
+            {
+                engineLog.warning(
+                    "toolCallFormat mismatch: JANG=\(override.rawValue, privacy: .public) vmlx=\(cfg.rawValue, privacy: .public) — using JANG"
+                )
+            }
             return ResultBox(
                 stream,
                 contextWithEOS.tokenizer,

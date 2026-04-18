@@ -557,7 +557,12 @@ enum ToolChoiceOption: Codable, Sendable {
             switch str {
             case "auto": self = .auto
             case "none": self = .none
-            default: self = .auto
+            default:
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription:
+                        "Unsupported tool_choice string '\(str)'. Expected 'auto', 'none', or a typed function selector."
+                )
             }
             return
         }

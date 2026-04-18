@@ -178,7 +178,11 @@ struct WorkExecutionEngineTests {
 
         #expect(status == .verified)
         #expect(summary.contains("Completion status: VERIFIED"))
-        #expect(messages.contains(where: { $0.role == "tool" && ($0.content?.contains("[REJECTED]") == true) }))
+        #expect(
+            messages.contains(where: { msg in
+                msg.role == "tool" && (msg.content.map(ToolErrorEnvelope.isErrorResult) ?? false)
+            })
+        )
         #expect(
             messages.contains(where: {
                 $0.role == "user"
@@ -230,7 +234,11 @@ struct WorkExecutionEngineTests {
 
         #expect(status == .verified)
         #expect(summary.contains("Completion status: VERIFIED"))
-        #expect(messages.contains(where: { $0.role == "tool" && ($0.content?.contains("[REJECTED]") == true) }))
+        #expect(
+            messages.contains(where: { msg in
+                msg.role == "tool" && (msg.content.map(ToolErrorEnvelope.isErrorResult) ?? false)
+            })
+        )
         #expect(
             messages.contains(where: {
                 $0.role == "tool"
@@ -282,7 +290,11 @@ struct WorkExecutionEngineTests {
 
         #expect(status == .verified)
         #expect(summary.contains("Completion status: VERIFIED"))
-        #expect(messages.contains(where: { $0.role == "tool" && ($0.content?.contains("[REJECTED]") == true) }))
+        #expect(
+            messages.contains(where: { msg in
+                msg.role == "tool" && (msg.content.map(ToolErrorEnvelope.isErrorResult) ?? false)
+            })
+        )
         #expect(
             messages.contains(where: {
                 $0.role == "tool"

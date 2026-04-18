@@ -22,6 +22,26 @@ public final class SandboxToolRegistrar {
     private var statusCancellable: AnyCancellable?
     var provisionAgentOverride: ((UUID) async throws -> Void)?
 
+    /// Per-agent record of why sandbox tools are not currently available.
+    /// Used by `SystemPromptComposer` to inject a "sandbox unavailable" notice
+    /// into the system prompt so the model doesn't hallucinate sandbox calls.
+    public struct UnavailabilityReason: Sendable, Equatable {
+        public enum Kind: String, Sendable, Equatable {
+            case containerUnavailable
+            case provisioningFailed
+            case startupFailed
+        }
+        public let kind: Kind
+        public let message: String
+    }
+
+    private var unavailability: [UUID: UnavailabilityReason] = [:]
+
+    /// Returns the current unavailability reason for an agent, if any.
+    public func unavailabilityReason(for agentId: UUID) -> UnavailabilityReason? {
+        unavailability[agentId]
+    }
+
     private init() {}
 
     // MARK: - Lifecycle
@@ -97,33 +117,82 @@ public final class SandboxToolRegistrar {
 
     /// Re-register builtin sandbox tools for a specific agent.
     /// This is the per-agent concern: provisioning + builtin tool registration.
+    ///
+    /// When the agent has autonomous execution enabled but the container is
+    /// not running, this method will attempt to start the container before
+    /// provisioning. Failures are recorded in `unavailability[agentId]` so the
+    /// system prompt can surface a clear message to the model instead of the
+    /// model silently losing access to its sandbox tools.
     public func registerTools(for agentId: UUID) async {
         ToolRegistry.shared.unregisterAllBuiltinSandboxTools()
 
         let agent = AgentManager.shared.agent(for: agentId) ?? Agent.default
         let agentIdStr = agent.id.uuidString
         let agentName = SandboxAgentProvisioner.linuxName(for: agentIdStr)
-
-        guard SandboxManager.State.shared.status == .running else { return }
-
         let execConfig = AgentManager.shared.effectiveAutonomousExec(for: agent.id)
-        let plugins = SandboxPluginManager.shared.plugins(for: agentIdStr)
-        let needsProvisioning = (execConfig?.enabled == true) || plugins.contains { $0.status == .ready }
+        let autonomousEnabled = execConfig?.enabled == true
+        let needsProvisioning =
+            autonomousEnabled
+            || SandboxPluginManager.shared.plugins(for: agentIdStr).contains { $0.status == .ready }
+
+        let containerStatus = SandboxManager.State.shared.status
+        if containerStatus != .running {
+            // Without autonomous execution there's no expectation of sandbox
+            // tools — clear any prior unavailability and bail.
+            guard autonomousEnabled else {
+                unavailability.removeValue(forKey: agent.id)
+                return
+            }
+
+            do {
+                try await SandboxManager.shared.startContainer()
+            } catch {
+                recordUnavailability(
+                    for: agent.id,
+                    kind: containerStatus == .notProvisioned ? .containerUnavailable : .startupFailed,
+                    message: "Sandbox container could not be started: \(error.localizedDescription)"
+                )
+                return
+            }
+
+            guard SandboxManager.State.shared.status == .running else {
+                recordUnavailability(
+                    for: agent.id,
+                    kind: .startupFailed,
+                    message: "Sandbox container did not reach running state"
+                )
+                return
+            }
+        }
 
         if needsProvisioning {
             do {
                 try await ensureProvisioned(agentId: agent.id)
             } catch {
-                NSLog("[SandboxToolRegistrar] Failed to provision agent sandbox: \(error.localizedDescription)")
+                recordUnavailability(
+                    for: agent.id,
+                    kind: .provisioningFailed,
+                    message: "Failed to provision agent sandbox: \(error.localizedDescription)"
+                )
                 return
             }
         }
 
+        unavailability.removeValue(forKey: agent.id)
         BuiltinSandboxTools.register(
             agentId: agentIdStr,
             agentName: agentName,
             config: execConfig
         )
+    }
+
+    private func recordUnavailability(
+        for agentId: UUID,
+        kind: UnavailabilityReason.Kind,
+        message: String
+    ) {
+        NSLog("[SandboxToolRegistrar] \(message)")
+        unavailability[agentId] = UnavailabilityReason(kind: kind, message: message)
     }
 
     private func ensureProvisioned(agentId: UUID) async throws {

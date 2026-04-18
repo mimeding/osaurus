@@ -41,16 +41,24 @@ actor ModelRuntime {
         let container: ModelContainer
         let weightsSizeBytes: Int64
         let isVLM: Bool
+        /// Tool-call wire format resolved by `JANGReasoningResolver` at load
+        /// time. When non-nil, this overrides `ModelContext.configuration
+        /// .toolCallFormat` (vmlx's heuristic) — JANG-stamped models declare
+        /// the format authoritatively, so the parser must use that value or
+        /// the model's tool calls will silently fail to parse.
+        let resolvedToolCallFormat: ToolCallFormat?
         init(
             name: String,
             container: ModelContainer,
             weightsSizeBytes: Int64,
-            isVLM: Bool = false
+            isVLM: Bool = false,
+            resolvedToolCallFormat: ToolCallFormat? = nil
         ) {
             self.name = name
             self.container = container
             self.weightsSizeBytes = weightsSizeBytes
             self.isVLM = isVLM
+            self.resolvedToolCallFormat = resolvedToolCallFormat
         }
     }
 
@@ -274,6 +282,7 @@ actor ModelRuntime {
             "loadContainer: parser detection_source_reasoning=\(resolution.reasoningSource.rawValue, privacy: .public) detection_source_tool=\(resolution.toolCallSource.rawValue, privacy: .public) hasReasoningParser=\(resolution.reasoningParser != nil, privacy: .public) toolFormat=\(resolution.toolCallFormat?.rawValue ?? "none", privacy: .public) model=\(name, privacy: .public)"
         )
 
+        let resolvedToolCallFormat = resolution.toolCallFormat
         let task = Task<SessionHolder, Error> {
             let tokenizerLoader = SwiftTransformersTokenizerLoader()
             let container = try await loadModelContainer(
@@ -286,7 +295,8 @@ actor ModelRuntime {
                 name: name,
                 container: container,
                 weightsSizeBytes: weightsBytes,
-                isVLM: isVLM
+                isVLM: isVLM,
+                resolvedToolCallFormat: resolvedToolCallFormat
             )
         }
 
@@ -582,7 +592,8 @@ actor ModelRuntime {
                 buildToolsSpec: buildTools,
                 generation: parameters,
                 runtime: runtime,
-                wiredMemoryTicket: wiredTicket
+                wiredMemoryTicket: wiredTicket,
+                toolCallFormatOverride: holder.resolvedToolCallFormat
             )
             trace?.mark("prepare_and_generate_done")
             trace?.set("promptTokens", genResult.promptTokens.count)
@@ -656,7 +667,8 @@ actor ModelRuntime {
                 buildToolsSpec: buildTools,
                 generation: parameters,
                 runtime: runtime,
-                maxBatchSize: InferenceFeatureFlags.mlxBatchEngineMaxBatchSize
+                maxBatchSize: InferenceFeatureFlags.mlxBatchEngineMaxBatchSize,
+                toolCallFormatOverride: holder.resolvedToolCallFormat
             )
         } catch {
             InferenceProgressManager.shared.prefillDidFinishAsync()
@@ -708,6 +720,7 @@ actor ModelRuntime {
         modelName: String
     ) async throws -> String {
         var accumulated = ""
+        var pendingTools: [ServiceToolInvocation] = []
         let events = try await generateEventStream(
             chatBuilder: { ModelRuntime.mapOpenAIChatToMLX(messages) },
             parameters: parameters,
@@ -717,15 +730,31 @@ actor ModelRuntime {
             modelId: modelId,
             modelName: modelName
         )
+        // Drain the entire stream so multiple tool invocations parsed from
+        // one completion are surfaced together. StreamAccumulator already
+        // pushes additional tool calls into pendingEvents after the first;
+        // we just keep iterating until the stream finishes.
         for try await ev in events {
             switch ev {
             case .tokens(let s):
                 accumulated += s
             case .toolInvocation(let name, let argsJSON):
-                throw ServiceToolInvocation(toolName: name, jsonArguments: argsJSON)
+                pendingTools.append(
+                    ServiceToolInvocation(toolName: name, jsonArguments: argsJSON)
+                )
             case .completionInfo:
                 break
             }
+        }
+        if pendingTools.count == 1 {
+            // Backward compat: callers that only handle one-at-a-time tool
+            // calls (RemoteProvider streaming, OpenAI provider) still see
+            // the familiar single-throw shape. The batch type is reserved
+            // for genuinely parallel multi-tool completions.
+            throw pendingTools[0]
+        }
+        if !pendingTools.isEmpty {
+            throw ServiceToolInvocations(invocations: pendingTools)
         }
         return accumulated
     }
@@ -750,6 +779,11 @@ actor ModelRuntime {
         )
         let (stream, continuation) = AsyncThrowingStream<String, Error>.makeStream()
         let producerTask = Task {
+            // Collect every tool invocation parsed from this completion. Local
+            // models can emit multiple <tool_call> blocks per response;
+            // StreamAccumulator drains them all into pendingEvents after the
+            // first, so we keep iterating until the stream finishes naturally.
+            var pendingTools: [ServiceToolInvocation] = []
             do {
                 for try await ev in events {
                     if Task.isCancelled {
@@ -762,10 +796,9 @@ actor ModelRuntime {
                     case .toolInvocation(let name, let argsJSON):
                         continuation.yield(StreamingToolHint.encode(name))
                         continuation.yield(StreamingToolHint.encodeArgs(argsJSON))
-                        continuation.finish(
-                            throwing: ServiceToolInvocation(toolName: name, jsonArguments: argsJSON)
+                        pendingTools.append(
+                            ServiceToolInvocation(toolName: name, jsonArguments: argsJSON)
                         )
-                        return
                     case .completionInfo(let tokenCount, let tokensPerSecond):
                         continuation.yield(
                             StreamingStatsHint.encode(
@@ -775,10 +808,30 @@ actor ModelRuntime {
                         )
                     }
                 }
-                continuation.finish()
+                if pendingTools.isEmpty {
+                    continuation.finish()
+                } else if pendingTools.count == 1 {
+                    // Backward compat: single-tool completions still throw
+                    // the familiar single-invocation shape so existing
+                    // consumers (ChatView, RemoteProvider) need no changes.
+                    continuation.finish(throwing: pendingTools[0])
+                } else {
+                    continuation.finish(
+                        throwing: ServiceToolInvocations(invocations: pendingTools)
+                    )
+                }
             } catch {
                 if Task.isCancelled {
                     continuation.finish()
+                } else if pendingTools.count == 1 {
+                    // Single tool already parsed before the failure.
+                    continuation.finish(throwing: pendingTools[0])
+                } else if !pendingTools.isEmpty {
+                    // Multi-tool completion that failed mid-stream — surface
+                    // the batch so the caller can still execute what we got.
+                    continuation.finish(
+                        throwing: ServiceToolInvocations(invocations: pendingTools)
+                    )
                 } else {
                     continuation.finish(throwing: error)
                 }
@@ -844,51 +897,96 @@ actor ModelRuntime {
         }
     }
 
+    /// Map OpenAI-format chat messages to MLX `Chat.Message`s.
+    ///
+    /// `MLXLMCommon.Chat.Message` only carries `role` and `content` — it has
+    /// no structured `tool_calls` field, so we serialize assistant
+    /// `tool_calls` into `content` as Qwen-style `<tool_call>{...}</tool_call>`
+    /// blocks (the format `ToolCallProcessor` parses for most local models).
+    /// Tool-result messages are prefixed with `[tool: <name>]` so the model
+    /// can correlate each result with its originating call.
     nonisolated static func mapOpenAIChatToMLX(
         _ msgs: [ChatMessage]
     ) -> [MLXLMCommon.Chat.Message] {
         var toolIdToName: [String: String] = [:]
         for m in msgs where m.role == "assistant" {
-            if let calls = m.tool_calls {
-                for call in calls { toolIdToName[call.id] = call.function.name }
-            }
+            for call in m.tool_calls ?? [] { toolIdToName[call.id] = call.function.name }
         }
 
         var out: [MLXLMCommon.Chat.Message] = []
         out.reserveCapacity(max(6, msgs.count))
         for m in msgs {
             let images = extractImageSources(from: m)
-
             switch m.role {
             case "system":
-                out.append(
-                    MLXLMCommon.Chat.Message(role: .system, content: m.content ?? "", images: images, videos: [])
-                )
+                out.append(.init(role: .system, content: m.content ?? "", images: images))
             case "user":
-                out.append(
-                    MLXLMCommon.Chat.Message(role: .user, content: m.content ?? "", images: images, videos: [])
-                )
+                out.append(.init(role: .user, content: m.content ?? "", images: images))
             case "assistant":
-                if let calls = m.tool_calls, !calls.isEmpty, m.content == nil || m.content?.isEmpty == true {
-                    break
-                } else {
-                    out.append(
-                        MLXLMCommon.Chat.Message(
-                            role: .assistant,
-                            content: m.content ?? "",
-                            images: images,
-                            videos: []
-                        )
-                    )
-                }
+                let serialized = serializeAssistantContent(content: m.content, toolCalls: m.tool_calls)
+                // Skip wholly empty assistant messages (no content, no tool_calls)
+                guard !serialized.isEmpty else { continue }
+                out.append(.init(role: .assistant, content: serialized, images: images))
             case "tool":
-                out.append(
-                    MLXLMCommon.Chat.Message(role: .tool, content: m.content ?? "", images: images, videos: [])
+                let labeled = labelToolResult(
+                    content: m.content ?? "",
+                    toolCallId: m.tool_call_id,
+                    toolIdToName: toolIdToName
                 )
+                out.append(.init(role: .tool, content: labeled, images: images))
             default:
-                out.append(
-                    MLXLMCommon.Chat.Message(role: .user, content: m.content ?? "", images: images, videos: [])
-                )
+                out.append(.init(role: .user, content: m.content ?? "", images: images))
+            }
+        }
+        return out
+    }
+
+    /// Serialize an assistant turn's content + tool_calls into a single
+    /// string. Tool calls are emitted as `<tool_call>{json}</tool_call>` blocks
+    /// after any prose content, matching the format `ToolCallProcessor` uses
+    /// to parse model output for the majority of supported local models.
+    nonisolated static func serializeAssistantContent(
+        content: String?,
+        toolCalls: [ToolCall]?
+    ) -> String {
+        let trimmed = (content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let calls = toolCalls, !calls.isEmpty else { return trimmed }
+
+        var parts: [String] = []
+        if !trimmed.isEmpty { parts.append(trimmed) }
+        for call in calls {
+            // call.function.arguments is already a JSON string; embed raw so
+            // the model sees its prior call exactly as ToolCallProcessor parses.
+            let args = call.function.arguments.isEmpty ? "{}" : call.function.arguments
+            let name = escapeForJSONString(call.function.name)
+            parts.append("<tool_call>\n{\"name\": \"\(name)\", \"arguments\": \(args)}\n</tool_call>")
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    /// Prepend `[tool: <name>]` when we can correlate `tool_call_id` to a
+    /// function name. Models trained on multi-turn tool conversations expect
+    /// to know which call each result corresponds to.
+    nonisolated static func labelToolResult(
+        content: String,
+        toolCallId: String?,
+        toolIdToName: [String: String]
+    ) -> String {
+        guard let id = toolCallId, let name = toolIdToName[id] else { return content }
+        return "[tool: \(name)]\n\(content)"
+    }
+
+    nonisolated private static func escapeForJSONString(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        for ch in s {
+            switch ch {
+            case "\\": out += "\\\\"
+            case "\"": out += "\\\""
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default: out.append(ch)
             }
         }
         return out

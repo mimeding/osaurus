@@ -2006,12 +2006,14 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     stop: req.stop,
                     n: nil,
                     tools: tools.isEmpty ? nil : tools,
-                    tool_choice: nil,
+                    tool_choice: tools.isEmpty ? nil : .auto,
                     session_id: req.session_id
                 )
 
                 var responseContent = ""
-                var toolInvoked: ServiceToolInvocation?
+                // Local models can emit multiple tool calls in a single
+                // completion; ServiceToolInvocations carries the full batch.
+                var pendingInvocations: [ServiceToolInvocation] = []
 
                 do {
                     let stream = try await chatEngine.streamChat(request: iterationReq)
@@ -2028,8 +2030,10 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                             )
                         }
                     }
+                } catch let invs as ServiceToolInvocations {
+                    pendingInvocations = invs.invocations
                 } catch let inv as ServiceToolInvocation {
-                    toolInvoked = inv
+                    pendingInvocations = [inv]
                 } catch {
                     hop {
                         writerBound.value.writeError(error.localizedDescription, context: ctx.value)
@@ -2047,86 +2051,100 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     return
                 }
 
-                guard let invocation = toolInvoked else {
+                if pendingInvocations.isEmpty {
                     // Final text response — done
                     messages.append(ChatMessage(role: "assistant", content: responseContent))
                     break
                 }
 
-                // Notify the client that a tool is being called so it can show it in the chat log
-                hop {
-                    writerBound.value.writeContent(
-                        StreamingToolHint.encode(invocation.toolName),
-                        model: model,
-                        responseId: responseId,
-                        created: created,
-                        context: ctx.value
-                    )
-                    writerBound.value.writeContent(
-                        StreamingToolHint.encodeArgs(invocation.jsonArguments),
-                        model: model,
-                        responseId: responseId,
-                        created: created,
-                        context: ctx.value
-                    )
-                }
+                // Execute every parsed tool call, streaming hint+done frames
+                // for each, then append ONE assistant message with all
+                // tool_calls and the matching tool-result messages. This is
+                // the OpenAI shape that downstream clients expect for
+                // multi-call completions.
+                var assistantToolCalls: [ToolCall] = []
+                var toolResultsByCallId: [(String, String)] = []
+                for invocation in pendingInvocations {
+                    let callId =
+                        invocation.toolCallId
+                        ?? "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24))"
 
-                // Execute the tool on the server and append result to messages
-                let callId =
-                    invocation.toolCallId
-                    ?? "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24))"
-
-                let toolResult: String
-                do {
-                    toolResult = try await WorkExecutionContext.$currentIssueId.withValue(requestId) {
-                        try await WorkExecutionContext.$currentAgentId.withValue(agentId) {
-                            try await ToolRegistry.shared.execute(
-                                name: invocation.toolName,
-                                argumentsJSON: invocation.jsonArguments
-                            )
-                        }
+                    hop {
+                        writerBound.value.writeContent(
+                            StreamingToolHint.encode(invocation.toolName),
+                            model: model,
+                            responseId: responseId,
+                            created: created,
+                            context: ctx.value
+                        )
+                        writerBound.value.writeContent(
+                            StreamingToolHint.encodeArgs(invocation.jsonArguments),
+                            model: model,
+                            responseId: responseId,
+                            created: created,
+                            context: ctx.value
+                        )
                     }
-                } catch {
-                    toolResult = "[REJECTED] \(error.localizedDescription)"
-                }
 
-                // Notify the client the tool call is complete with its result so it can
-                // display the call card and result in the chat log
-                hop {
-                    writerBound.value.writeContent(
-                        StreamingToolHint.encodeDone(
-                            callId: callId,
-                            name: invocation.toolName,
-                            arguments: invocation.jsonArguments,
-                            result: toolResult
-                        ),
-                        model: model,
-                        responseId: responseId,
-                        created: created,
-                        context: ctx.value
+                    let toolResult: String
+                    do {
+                        toolResult = try await WorkExecutionContext.$currentIssueId.withValue(requestId) {
+                            try await WorkExecutionContext.$currentAgentId.withValue(agentId) {
+                                try await ToolRegistry.shared.execute(
+                                    name: invocation.toolName,
+                                    argumentsJSON: invocation.jsonArguments
+                                )
+                            }
+                        }
+                    } catch {
+                        toolResult = ToolErrorEnvelope(
+                            kind: .executionError,
+                            reason: error.localizedDescription,
+                            toolName: invocation.toolName
+                        ).toJSONString()
+                    }
+
+                    hop {
+                        writerBound.value.writeContent(
+                            StreamingToolHint.encodeDone(
+                                callId: callId,
+                                name: invocation.toolName,
+                                arguments: invocation.jsonArguments,
+                                result: toolResult
+                            ),
+                            model: model,
+                            responseId: responseId,
+                            created: created,
+                            context: ctx.value
+                        )
+                    }
+
+                    assistantToolCalls.append(
+                        ToolCall(
+                            id: callId,
+                            type: "function",
+                            function: ToolCallFunction(
+                                name: invocation.toolName,
+                                arguments: invocation.jsonArguments
+                            )
+                        )
                     )
+                    toolResultsByCallId.append((callId, toolResult))
                 }
 
                 messages.append(
                     ChatMessage(
                         role: "assistant",
                         content: responseContent.isEmpty ? nil : responseContent,
-                        tool_calls: [
-                            ToolCall(
-                                id: callId,
-                                type: "function",
-                                function: ToolCallFunction(
-                                    name: invocation.toolName,
-                                    arguments: invocation.jsonArguments
-                                )
-                            )
-                        ],
+                        tool_calls: assistantToolCalls,
                         tool_call_id: nil
                     )
                 )
-                messages.append(
-                    ChatMessage(role: "tool", content: toolResult, tool_calls: nil, tool_call_id: callId)
-                )
+                for (callId, result) in toolResultsByCallId {
+                    messages.append(
+                        ChatMessage(role: "tool", content: result, tool_calls: nil, tool_call_id: callId)
+                    )
+                }
             }
 
             hop {

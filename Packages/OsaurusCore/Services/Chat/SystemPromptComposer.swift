@@ -74,12 +74,17 @@ public struct SystemPromptComposer: Sendable {
     // MARK: - High-Level API
 
     /// Compose the full chat context: prompt + tools + manifest in one call.
+    ///
+    /// `query` is used to seed pre-flight capability search. If `query` is
+    /// empty, the most recent `"user"` message in `messages` is used as a
+    /// fallback so retries / regenerations still drive preflight.
     @MainActor
     static func composeChatContext(
         agentId: UUID,
         executionMode: WorkExecutionMode,
         model: String? = nil,
         query: String = "",
+        messages: [ChatMessage] = [],
         toolsDisabled: Bool = false,
         trace: TTFTTrace? = nil
     ) async -> ComposedContext {
@@ -89,13 +94,28 @@ public struct SystemPromptComposer: Sendable {
             composer: composer,
             agentId: agentId,
             executionMode: executionMode,
-            query: query,
+            query: resolvePreflightQuery(query: query, messages: messages),
             toolsDisabled: toolsDisabled,
             model: model,
             trace: trace
         )
         trace?.mark("compose_context_done")
         return result
+    }
+
+    /// Derive the effective preflight query: prefer the explicit `query`, else
+    /// the most recent user message text. Returns "" if neither is available.
+    static func resolvePreflightQuery(query: String, messages: [ChatMessage]) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        for msg in messages.reversed() where msg.role == "user" {
+            if let content = msg.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !content.isEmpty
+            {
+                return content
+            }
+        }
+        return ""
     }
 
     /// Shared pipeline: append memory + preflight + skills + resolve tools + build ComposedContext.
@@ -113,6 +133,8 @@ public struct SystemPromptComposer: Sendable {
 
         let effectiveToolsOff = toolsDisabled || AgentManager.shared.effectiveToolsDisabled(for: agentId)
         let memoryOff = AgentManager.shared.effectiveMemoryDisabled(for: agentId)
+        let autonomousEnabled = AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true
+        let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
 
         trace?.mark("memory_start")
         if !memoryOff {
@@ -123,7 +145,23 @@ public struct SystemPromptComposer: Sendable {
         }
         trace?.mark("memory_done")
 
-        let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
+        // Surface a "sandbox unavailable" notice when the agent wants
+        // sandbox tools but registration couldn't provide them — otherwise
+        // the model hallucinates sandbox calls that never get a result.
+        if !executionMode.usesSandboxTools,
+            autonomousEnabled,
+            let reason = SandboxToolRegistrar.shared.unavailabilityReason(for: agentId)
+        {
+            comp.append(
+                .dynamic(
+                    id: "sandboxUnavailable",
+                    label: "Sandbox Unavailable",
+                    content: Self.sandboxUnavailableNotice(reason: reason)
+                )
+            )
+            trace?.set("sandboxUnavailable", reason.kind.rawValue)
+        }
+
         let preflight: PreflightResult
         if !effectiveToolsOff && toolMode == .auto && !query.isEmpty {
             let mode = ChatConfigurationStore.load().preflightSearchMode ?? .balanced
@@ -150,9 +188,30 @@ public struct SystemPromptComposer: Sendable {
         )
         trace?.mark("resolve_tools_done")
 
+        // Generic plugin-creator backstop: fires whenever no dynamic tool
+        // was resolved (auto / manual / empty query / preflight off) AND
+        // the agent can create plugins AND sandbox is active.
+        if !effectiveToolsOff,
+            executionMode.usesSandboxTools,
+            !hasDynamicTools(toolMode: toolMode, preflight: preflight, agentId: agentId),
+            let pluginCreator = await PreflightCapabilitySearch.pluginCreatorSkillSection(for: agentId)
+        {
+            comp.append(.dynamic(id: "pluginCreator", label: "Plugin Creator", content: pluginCreator))
+            trace?.set("pluginCreatorInjected", "1")
+        }
+
         let manifest = comp.manifest()
         let toolNames = tools.map { $0.function.name }
         debugLog("[Context] \(manifest.debugDescription)")
+        emitToolDiagnostics(
+            tools: tools,
+            toolMode: toolMode,
+            preflight: preflight,
+            executionMode: executionMode,
+            autonomousEnabled: autonomousEnabled,
+            effectiveToolsOff: effectiveToolsOff,
+            trace: trace
+        )
 
         let rendered = comp.render()
         trace?.set("systemPromptChars", rendered.count)
@@ -170,7 +229,89 @@ public struct SystemPromptComposer: Sendable {
         )
     }
 
+    private static func sandboxUnavailableNotice(
+        reason: SandboxToolRegistrar.UnavailabilityReason
+    ) -> String {
+        """
+        ## Sandbox unavailable
+
+        The user has enabled autonomous execution for this chat, but the \
+        sandbox container is not currently available, so sandbox tools \
+        (file IO, shell, etc.) are NOT in your tool list this turn. \
+        Reason: \(reason.message)
+
+        Do not attempt to call any sandbox tool by name; you will not \
+        receive a result. Tell the user briefly that the sandbox is \
+        unavailable and what they could try (e.g. check the sandbox \
+        container status), then proceed with text-only assistance.
+        """
+    }
+
+    /// Emit structured tool diagnostics so silent "model can't see the
+    /// tools" failures are visible in logs and traces.
+    @MainActor
+    private static func emitToolDiagnostics(
+        tools: [Tool],
+        toolMode: ToolSelectionMode,
+        preflight: PreflightResult,
+        executionMode: WorkExecutionMode,
+        autonomousEnabled: Bool,
+        effectiveToolsOff: Bool,
+        trace: TTFTTrace?
+    ) {
+        let toolSource: String
+        if effectiveToolsOff {
+            toolSource = "disabled"
+        } else if !preflight.toolSpecs.isEmpty {
+            toolSource = "preflight"
+        } else if toolMode == .manual {
+            toolSource = "manual"
+        } else {
+            toolSource = "alwaysLoaded"
+        }
+        let sandboxStatus = String(describing: SandboxManager.State.shared.status)
+        let sortedNames = tools.map { $0.function.name }.sorted()
+        debugLog(
+            "[Context:tools] mode=\(toolMode) source=\(toolSource) autonomous=\(autonomousEnabled) sandboxStatus=\(sandboxStatus) executionMode=\(executionMode) count=\(tools.count) names=[\(sortedNames.joined(separator: ", "))]"
+        )
+        if autonomousEnabled && tools.isEmpty {
+            debugLog(
+                "[Context:tools] WARNING: autonomous execution is enabled but the resolved tool list is empty. The model will not be able to act on the user's request. Check sandbox container status (\(sandboxStatus))."
+            )
+        }
+        trace?.set("toolMode", String(describing: toolMode))
+        trace?.set("toolSource", toolSource)
+        trace?.set("autonomous", autonomousEnabled ? "1" : "0")
+        trace?.set("sandboxStatus", sandboxStatus)
+    }
+
+    /// Did the current request resolve any dynamic (non-always-loaded,
+    /// non-sandbox-builtin) tool via preflight or manual selection? Used by
+    /// `finalizeContext` to decide whether to inject the plugin-creator
+    /// fallback skill.
+    @MainActor
+    private static func hasDynamicTools(
+        toolMode: ToolSelectionMode,
+        preflight: PreflightResult,
+        agentId: UUID
+    ) -> Bool {
+        switch toolMode {
+        case .auto:
+            return !preflight.toolSpecs.isEmpty
+        case .manual:
+            let names = AgentManager.shared.effectiveManualToolNames(for: agentId) ?? []
+            return !names.isEmpty
+        }
+    }
+
     /// Resolve the full tool set for a request: built-in + preflight/manual, deduped.
+    ///
+    /// Manual mode is strict: only the user's explicitly selected tools are
+    /// included, with one exception — when `executionMode` requires sandbox
+    /// tools (autonomous execution), the sandbox built-ins are always added so
+    /// the agent can act. Group 1 (selection) and Group 2 (sandbox) are
+    /// orthogonal: enabling sandbox does not weaken the manual selection in
+    /// any other way.
     @MainActor
     static func resolveTools(
         agentId: UUID,
@@ -183,24 +324,30 @@ public struct SystemPromptComposer: Sendable {
         let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
         let isManual = toolMode == .manual
 
-        var tools = ToolRegistry.shared.alwaysLoadedSpecs(
-            mode: executionMode,
-            excludeCapabilityTools: isManual
-        )
-        var seen = Set(tools.map { $0.function.name })
-
         if isManual {
+            var tools: [Tool] = []
+            var seen = Set<String>()
+            if executionMode.usesSandboxTools {
+                for spec in ToolRegistry.shared.sandboxBuiltInSpecs(mode: executionMode)
+                where seen.insert(spec.function.name).inserted {
+                    tools.append(spec)
+                }
+            }
             if let manualNames = AgentManager.shared.effectiveManualToolNames(for: agentId) {
                 for spec in ToolRegistry.shared.specs(forTools: manualNames)
                 where seen.insert(spec.function.name).inserted {
                     tools.append(spec)
                 }
             }
-        } else {
-            for spec in preflight.toolSpecs
-            where seen.insert(spec.function.name).inserted {
-                tools.append(spec)
-            }
+            return tools
+        }
+
+        var tools = ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)
+        var seen = Set(tools.map { $0.function.name })
+
+        for spec in preflight.toolSpecs
+        where seen.insert(spec.function.name).inserted {
+            tools.append(spec)
         }
 
         return tools

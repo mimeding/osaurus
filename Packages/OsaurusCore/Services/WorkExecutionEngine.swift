@@ -75,7 +75,11 @@ public actor WorkExecutionEngine {
             }
 
             guard let first = await group.next() else {
-                return "[TIMEOUT] Tool '\(toolName)' did not complete within \(timeout) seconds."
+                return ToolErrorEnvelope(
+                    kind: .timeout,
+                    reason: "Tool did not complete within \(timeout) seconds.",
+                    toolName: toolName
+                ).toJSONString()
             }
             group.cancelAll()
 
@@ -84,7 +88,11 @@ public actor WorkExecutionEngine {
             }
 
             print("[WorkExecutionEngine] Tool '\(toolName)' timed out after \(timeout)s")
-            return "[TIMEOUT] Tool '\(toolName)' did not complete within \(timeout) seconds."
+            return ToolErrorEnvelope(
+                kind: .timeout,
+                reason: "Tool did not complete within \(timeout) seconds.",
+                toolName: toolName
+            ).toJSONString()
         }
 
         let toolCall = makeToolCall(from: invocation)
@@ -110,8 +118,32 @@ public actor WorkExecutionEngine {
             }
         } catch {
             print("[WorkExecutionEngine] Tool execution failed: \(error)")
-            return "[REJECTED] \(error.localizedDescription)"
+            return ToolErrorEnvelope(
+                kind: classifyToolError(error),
+                reason: error.localizedDescription,
+                toolName: name
+            ).toJSONString()
         }
+    }
+
+    /// Map common error shapes to a `ToolErrorEnvelope.Kind` so the model
+    /// gets the right `retryable` signal. Permission rejections are sticky
+    /// (retryable=false); transient infrastructure errors are not.
+    private func classifyToolError(_ error: Error) -> ToolErrorEnvelope.Kind {
+        let message = error.localizedDescription.lowercased()
+        if message.contains("denied") || message.contains("rejected") || message.contains("permission") {
+            return .rejected
+        }
+        if message.contains("not found") || message.contains("unknown tool") {
+            return .toolNotFound
+        }
+        if message.contains("timeout") || message.contains("timed out") {
+            return .timeout
+        }
+        if message.contains("invalid") && message.contains("argument") {
+            return .invalidArguments
+        }
+        return .executionError
     }
 
     // MARK: - Tool Result Truncation
@@ -255,16 +287,30 @@ public actor WorkExecutionEngine {
         let tailSlice = Array(messages[(messages.count - tail)...])
         let middle = Array(messages[head ..< (messages.count - tail)])
 
-        // Serialize the middle chunk for summarization
+        // Serialize the middle chunk for summarization. Per-message budget
+        // is generous enough to retain the operative detail of tool results
+        // (~2000 chars vs the previous 500), and assistant `tool_calls` are
+        // expanded into the transcript so the summarizer can describe what
+        // each call did with what arguments — not just "called X".
         var transcript = ""
+        let perMessageLimit = 2000
         for msg in middle {
             let role = msg.role.uppercased()
+            if let calls = msg.tool_calls, !calls.isEmpty {
+                let parts = calls.map { call -> String in
+                    let args = call.function.arguments
+                    let argsTrimmed =
+                        args.count > 200 ? String(args.prefix(200)) + "..." : args
+                    return "\(call.function.name)(\(argsTrimmed))"
+                }
+                transcript += "[ASSISTANT tool_calls] \(parts.joined(separator: "; "))\n"
+            }
             if let content = msg.content, !content.isEmpty {
-                let truncated = content.count > 500 ? String(content.prefix(500)) + "..." : content
+                let truncated =
+                    content.count > perMessageLimit
+                    ? String(content.prefix(perMessageLimit)) + "..."
+                    : content
                 transcript += "[\(role)] \(truncated)\n"
-            } else if let toolCalls = msg.tool_calls {
-                let names = toolCalls.map { $0.function.name }.joined(separator: ", ")
-                transcript += "[ASSISTANT] Called: \(names)\n"
             }
         }
 
@@ -354,6 +400,39 @@ public actor WorkExecutionEngine {
     /// Callback for secret prompt — shows a secure input overlay and returns the value (nil if cancelled)
     public typealias SecretPromptCallback = @MainActor @Sendable (SecretPromptParser.Prompt) async -> String?
 
+    /// Refreshed system context produced by an out-of-band recompose (e.g.
+    /// after `capabilities_load` or compaction). The engine swaps in the
+    /// new system prompt, tool list, and cache hints for subsequent
+    /// iterations without restarting the loop.
+    struct RefreshedWorkContext: Sendable {
+        let systemPrompt: String
+        let tools: [Tool]
+        let cacheHint: String?
+        let staticPrefix: String?
+        init(
+            systemPrompt: String,
+            tools: [Tool],
+            cacheHint: String? = nil,
+            staticPrefix: String? = nil
+        ) {
+            self.systemPrompt = systemPrompt
+            self.tools = tools
+            self.cacheHint = cacheHint
+            self.staticPrefix = staticPrefix
+        }
+    }
+
+    /// Callback that recomposes the work context for the current agent.
+    /// Called after triggers that genuinely change what the model needs to
+    /// see (capabilities_load / sandbox_plugin_register / compaction). The
+    /// `query` is the most recent user message so memory + preflight stay
+    /// relevant.
+    typealias ContextRefreshCallback =
+        @MainActor @Sendable (
+            _ query: String,
+            _ executionMode: WorkExecutionMode
+        ) async -> RefreshedWorkContext?
+
     /// Default maximum iterations for the reasoning loop
     public static let defaultMaxIterations = 50
 
@@ -406,15 +485,28 @@ public actor WorkExecutionEngine {
         onStatusUpdate: @escaping StatusCallback,
         onArtifact: @escaping ArtifactCallback,
         onTokensConsumed: @escaping TokenConsumptionCallback,
-        onSecretPrompt: SecretPromptCallback? = nil
+        onSecretPrompt: SecretPromptCallback? = nil,
+        onContextRefresh: ContextRefreshCallback? = nil
     ) async throws -> LoopResult {
         var activeTools = tools
+        // Mutable so context-refresh triggers (capabilities_load,
+        // compaction, sandbox_plugin_register) can swap in a fresher
+        // system prompt + cache prefix mid-loop.
+        var systemPrompt = systemPrompt
+        var cacheHint = cacheHint
+        var staticPrefix = staticPrefix
+        var contextDirty = false
         var iteration = 0
         var totalToolCalls = 0
         var toolsUsed: [String] = []
         var consecutiveTextOnly = 0
         var lastResponseContent = ""
         var preSaveAttempted = false
+        // Iteration of the most recent compaction; prevents the compactor from
+        // running on every iteration if `messages` somehow stays over budget.
+        var lastCompactionIteration = -100
+        // Recent tool invocations (name + args hash) for stuck-loop detection.
+        var recentToolCalls: [String] = []
 
         // Set up context budget manager if context length is known
         var budgetManager: ContextBudgetManager? = nil
@@ -479,8 +571,21 @@ public actor WorkExecutionEngine {
                 await onStatusUpdate("Optimizing memory...")
             }
 
-            // Context compaction: tier 2 LLM summarization if still over budget
-            let effectiveMessages: [ChatMessage]
+            // Context compaction: tier 2 LLM summarization when over budget.
+            //
+            // Two-step strategy on first overrun:
+            //   1) Append a "save_notes" nudge BUT do NOT skip the iteration —
+            //      the model still gets a chance to call save_notes inline.
+            //   2) On the next overrun, run the compactor.
+            //
+            // After a successful compaction we WRITE THE COMPACTED HISTORY
+            // BACK to `messages` so subsequent budget checks see the smaller
+            // transcript. Otherwise the compactor would fire every iteration
+            // and the budget would never recover.
+            //
+            // Minimum interval between compactions guards against pathological
+            // cases where compaction itself doesn't shrink the transcript.
+            let minCompactionInterval = 2
             if let manager = budgetManager, !manager.fitsInBudget(messages) {
                 if !preSaveAttempted {
                     await onStatusUpdate("Saving progress notes...")
@@ -493,22 +598,46 @@ public actor WorkExecutionEngine {
                         )
                     )
                     preSaveAttempted = true
-                    continue
+                } else if iteration - lastCompactionIteration >= minCompactionInterval {
+                    await onStatusUpdate("Summarizing earlier work...")
+                    do {
+                        let compacted = try await compactMiddleMessages(
+                            messages: messages,
+                            model: model
+                        )
+                        messages = compacted
+                        await onStatusUpdate("Resuming with summary")
+                    } catch {
+                        messages = manager.trimMessages(messages)
+                        await onStatusUpdate("Resuming...")
+                    }
+                    lastCompactionIteration = iteration
+                    // Allow another pre-save nudge before the next compaction.
+                    preSaveAttempted = false
+                    // Memory has shifted significantly — request a context
+                    // refresh so preflight + memory snippets reflect the
+                    // post-compaction state.
+                    contextDirty = true
                 }
-                await onStatusUpdate("Summarizing earlier work...")
-                do {
-                    effectiveMessages = try await compactMiddleMessages(
-                        messages: messages,
-                        model: model
-                    )
-                    await onStatusUpdate("Resuming with summary")
-                } catch {
-                    effectiveMessages = manager.trimMessages(messages)
-                    await onStatusUpdate("Resuming...")
-                }
-            } else {
-                effectiveMessages = messages
             }
+
+            // Refresh system prompt + tools when capabilities have changed
+            // (capabilities_load / sandbox_plugin_register) or after
+            // compaction. We do this BEFORE building the request so the new
+            // values flow into the next streamChat call. Skipped when no
+            // refresh callback is wired (e.g. tests, plain WorkEngine path).
+            if contextDirty, let refresh = onContextRefresh {
+                let lastUserText = messages.reversed().first { $0.role == "user" }?.content ?? ""
+                if let refreshed = await refresh(lastUserText, executionMode) {
+                    systemPrompt = refreshed.systemPrompt
+                    activeTools = refreshed.tools
+                    cacheHint = refreshed.cacheHint
+                    staticPrefix = refreshed.staticPrefix
+                    await onStatusUpdate("Refreshed context")
+                }
+                contextDirty = false
+            }
+            let effectiveMessages = messages
 
             await onStatusUpdate("Thinking...")
 
@@ -527,7 +656,7 @@ public actor WorkExecutionEngine {
                 stop: nil,
                 n: nil,
                 tools: activeTools.isEmpty ? nil : activeTools,
-                tool_choice: nil,
+                tool_choice: activeTools.isEmpty ? nil : .auto,
                 session_id: issue.id
             )
             request.cache_hint = cacheHint
@@ -541,7 +670,12 @@ public actor WorkExecutionEngine {
 
             // Stream response
             var responseContent = ""
-            var toolInvoked: ServiceToolInvocation?
+            // Collect every tool call surfaced from this completion. Local
+            // models can emit multiple `<tool_call>` blocks per response;
+            // ServiceToolInvocations carries the full batch so we execute
+            // each in order within this single iteration instead of one
+            // round-trip per call.
+            var pendingInvocations: [ServiceToolInvocation] = []
 
             do {
                 let stream = try await resolvedChatEngine().streamChat(request: request)
@@ -562,26 +696,24 @@ public actor WorkExecutionEngine {
                         continue
                     }
                     // Strip benchmarking sentinel (￾stats:N;TPS). Like
-                    // StreamingToolHint, the stats delta is its own
-                    // stream fragment — not part of the visible text —
-                    // so we must drop it rather than accumulate into
-                    // responseContent. Without this strip, the stats
-                    // sentinel was being persisted into the assistant's
-                    // message content and then rendered verbatim on
-                    // re-display, surfacing as the user-visible
-                    // "…￾stats:24;85.4607" string (issue #856).
-                    //
-                    // ChatView.swift:1064 already handles this for the
-                    // regular chat path; work mode uses a different
-                    // consumer (this file), which previously missed it.
+                    // StreamingToolHint, the stats delta is its own stream
+                    // fragment — not part of the visible text — so we must
+                    // drop it rather than accumulate into responseContent.
+                    // Otherwise the sentinel ends up persisted in the
+                    // assistant message and re-rendered as raw text
+                    // ("…￾stats:24;85.46…", issue #856). ChatView already
+                    // handles this for the chat path; Work needs the same
+                    // strip on its own consumer.
                     if StreamingStatsHint.decode(delta) != nil {
                         continue
                     }
                     responseContent += delta
                     await onDelta(delta, iteration)
                 }
+            } catch let invs as ServiceToolInvocations {
+                pendingInvocations = invs.invocations
             } catch let invocation as ServiceToolInvocation {
-                toolInvoked = invocation
+                pendingInvocations = [invocation]
             } catch is CancellationError {
                 return .interrupted(
                     messages: messages,
@@ -592,16 +724,22 @@ public actor WorkExecutionEngine {
 
             lastResponseContent = responseContent
 
-            // Estimate token consumption for this iteration
-            // Rough estimate: ~4 characters per token (varies by model/tokenizer)
-            let inputChars = fullMessages.reduce(0) { $0 + ($1.content?.count ?? 0) } + systemPrompt.count
-            let outputChars = responseContent.count + (toolInvoked?.jsonArguments.count ?? 0)
+            // Estimate token consumption for this iteration. Includes the
+            // full assistant message body (content + serialized tool_calls)
+            // and incoming tool messages so tool-heavy iterations don't
+            // under-report. Mirrors ChatEngine.estimateInputTokens.
+            let inputChars = estimateMessagesChars(fullMessages) + systemPrompt.count
+            let outputChars =
+                responseContent.count
+                + pendingInvocations.reduce(0) {
+                    $0 + $1.toolName.count + $1.jsonArguments.count + 20
+                }
             let estimatedInputTokens = max(1, inputChars / 4)
             let estimatedOutputTokens = max(1, outputChars / 4)
             await onTokensConsumed(estimatedInputTokens, estimatedOutputTokens)
 
             // If pure text response (no tool call), keep nudging tool-capable progress.
-            if toolInvoked == nil {
+            if pendingInvocations.isEmpty {
                 messages.append(ChatMessage(role: "assistant", content: responseContent))
 
                 // Track consecutive text-only responses to detect models that can't use tools
@@ -631,219 +769,213 @@ public actor WorkExecutionEngine {
                 continue
             }
 
-            // Model successfully called a tool - reset consecutive text-only counter
+            // Model successfully called at least one tool - reset counter.
             consecutiveTextOnly = 0
 
-            // Tool call - execute it
-            let invocation = toolInvoked!
-            totalToolCalls += 1
-            if !toolsUsed.contains(invocation.toolName) {
-                toolsUsed.append(invocation.toolName)
-            }
+            // Sequentially process every tool the model emitted in this
+            // completion. Meta-tools (complete_task, request_clarification)
+            // short-circuit the rest of the batch — models almost never
+            // mix them with other tools, but if they do, prior calls have
+            // already been executed and appended above by the time we get
+            // here.
+            for invocation in pendingInvocations {
+                totalToolCalls += 1
+                if !toolsUsed.contains(invocation.toolName) {
+                    toolsUsed.append(invocation.toolName)
+                }
 
-            // Check for meta-tool signals before execution
-            switch invocation.toolName {
-            case "complete_task":
-                switch parseCompleteTaskArgs(invocation.jsonArguments, taskId: issue.taskId) {
-                case .success(let completion):
-                    return .completed(
-                        summary: completion.contract.formattedMessage,
-                        artifact: completion.artifact,
-                        status: completion.contract.status
-                    )
+                if let nudge = stuckLoopNudge(
+                    for: invocation,
+                    recentToolCalls: &recentToolCalls
+                ) {
+                    messages.append(ChatMessage(role: "user", content: nudge))
+                }
 
-                case .failure(let rejection):
-                    let toolCall = makeToolCall(from: invocation)
-                    let rejectionMessage = "[REJECTED] \(rejection.message)"
-                    let cleanedContent = StringCleaning.stripFunctionCallLeakage(
-                        responseContent,
-                        toolName: invocation.toolName
-                    )
+                // Check for meta-tool signals before execution
+                switch invocation.toolName {
+                case "complete_task":
+                    switch parseCompleteTaskArgs(invocation.jsonArguments, taskId: issue.taskId) {
+                    case .success(let completion):
+                        return .completed(
+                            summary: completion.contract.formattedMessage,
+                            artifact: completion.artifact,
+                            status: completion.contract.status
+                        )
 
-                    if cleanedContent.isEmpty {
+                    case .failure(let rejection):
+                        let toolCall = makeToolCall(from: invocation)
+                        let rejectionMessage = ToolErrorEnvelope(
+                            kind: .rejected,
+                            reason: rejection.message,
+                            toolName: invocation.toolName,
+                            retryable: true
+                        ).toJSONString()
+                        appendAssistantToolCall(
+                            responseContent: responseContent,
+                            toolCall: toolCall,
+                            toolName: invocation.toolName,
+                            into: &messages
+                        )
                         messages.append(
                             ChatMessage(
-                                role: "assistant",
-                                content: nil,
-                                tool_calls: [toolCall],
-                                tool_call_id: nil
+                                role: "tool",
+                                content: rejectionMessage,
+                                tool_calls: nil,
+                                tool_call_id: toolCall.id
                             )
                         )
-                    } else {
                         messages.append(
                             ChatMessage(
-                                role: "assistant",
-                                content: cleanedContent,
-                                tool_calls: [toolCall],
-                                tool_call_id: nil
+                                role: "user",
+                                content:
+                                    "[System Notice] `complete_task` was rejected. Continue working, gather evidence, and try again with the required structured completion contract."
                             )
                         )
+
+                        await onToolCall(invocation.toolName, invocation.jsonArguments, rejectionMessage)
+                        await onStatusUpdate("Completion rejected")
+
+                        _ = try? IssueStore.createEvent(
+                            IssueEvent.withPayload(
+                                issueId: issue.id,
+                                eventType: .toolCallCompleted,
+                                payload: EventPayload.ToolCallCompleted(
+                                    toolName: invocation.toolName,
+                                    iteration: iteration,
+                                    arguments: invocation.jsonArguments,
+                                    result: rejectionMessage,
+                                    success: false
+                                )
+                            )
+                        )
+                        continue
                     }
 
-                    messages.append(
-                        ChatMessage(
-                            role: "tool",
-                            content: rejectionMessage,
-                            tool_calls: nil,
-                            tool_call_id: toolCall.id
-                        )
-                    )
-                    messages.append(
-                        ChatMessage(
-                            role: "user",
-                            content:
-                                "[System Notice] `complete_task` was rejected. Continue working, gather evidence, and try again with the required structured completion contract."
-                        )
+                case "request_clarification":
+                    // Parse clarification request
+                    let clarification = parseClarificationArgs(invocation.jsonArguments)
+                    return .needsClarification(
+                        clarification,
+                        messages: messages,
+                        iteration: iteration,
+                        totalToolCalls: totalToolCalls
                     )
 
-                    await onToolCall(invocation.toolName, invocation.jsonArguments, rejectionMessage)
-                    await onStatusUpdate("Completion rejected")
-
-                    _ = try? IssueStore.createEvent(
-                        IssueEvent.withPayload(
-                            issueId: issue.id,
-                            eventType: .toolCallCompleted,
-                            payload: EventPayload.ToolCallCompleted(
-                                toolName: invocation.toolName,
-                                iteration: iteration,
-                                arguments: invocation.jsonArguments,
-                                result: rejectionMessage,
-                                success: false
-                            )
-                        )
-                    )
-                    continue
+                default:
+                    break
                 }
 
-            case "request_clarification":
-                // Parse clarification request
-                let clarification = parseClarificationArgs(invocation.jsonArguments)
-                return .needsClarification(
-                    clarification,
-                    messages: messages,
-                    iteration: iteration,
-                    totalToolCalls: totalToolCalls
+                // Execute the tool
+                let result = try await executeToolCall(invocation, issueId: issue.id, agentId: agentId)
+
+                // Hot-load tools injected by capabilities_load or sandbox_plugin_register.
+                // Skipped in manual mode — the user's explicit tool set is fixed.
+                let isManualMode: Bool = await {
+                    guard let id = agentId else { return false }
+                    return await MainActor.run { AgentManager.shared.effectiveToolSelectionMode(for: id) == .manual }
+                }()
+                if !isManualMode,
+                    invocation.toolName == "capabilities_load"
+                        || invocation.toolName == "sandbox_plugin_register"
+                {
+                    let newTools = await CapabilityLoadBuffer.shared.drain()
+                    var newlyAdded = false
+                    for tool in newTools where !activeTools.contains(where: { $0.function.name == tool.function.name })
+                    {
+                        activeTools.append(tool)
+                        newlyAdded = true
+                    }
+                    // Tool surface changed — request a full context recompose
+                    // before the next iteration so the system prompt + cache
+                    // hint reflect the new capabilities.
+                    if newlyAdded { contextDirty = true }
+                }
+
+                // Process share_artifact before storing the result so the enriched
+                // metadata (host_path, file_size, etc.) flows into the transcript.
+                var toolResultForDisplay = result.result
+                var sharedArtifact: SharedArtifact?
+                if invocation.toolName == "share_artifact" {
+                    if let processed = SharedArtifact.processToolResult(
+                        result.result,
+                        contextId: issue.taskId,
+                        contextType: .work,
+                        executionMode: executionMode,
+                        sandboxAgentName: sandboxAgentName
+                    ) {
+                        toolResultForDisplay = processed.enrichedToolResult
+                        sharedArtifact = processed.artifact
+                    }
+                }
+
+                let truncatedResult = truncateToolResult(toolResultForDisplay)
+                await onToolCall(invocation.toolName, invocation.jsonArguments, toolResultForDisplay)
+
+                appendAssistantToolCall(
+                    responseContent: responseContent,
+                    toolCall: result.toolCall,
+                    toolName: invocation.toolName,
+                    into: &messages
                 )
-
-            default:
-                break
-            }
-
-            // Execute the tool
-            let result = try await executeToolCall(invocation, issueId: issue.id, agentId: agentId)
-
-            // Hot-load tools injected by capabilities_load or sandbox_plugin_register.
-            // Skipped in manual mode — the user's explicit tool set is fixed.
-            let isManualMode: Bool = await {
-                guard let id = agentId else { return false }
-                return await MainActor.run { AgentManager.shared.effectiveToolSelectionMode(for: id) == .manual }
-            }()
-            if !isManualMode,
-                invocation.toolName == "capabilities_load"
-                    || invocation.toolName == "sandbox_plugin_register"
-            {
-                let newTools = await CapabilityLoadBuffer.shared.drain()
-                for tool in newTools where !activeTools.contains(where: { $0.function.name == tool.function.name }) {
-                    activeTools.append(tool)
-                }
-            }
-
-            // Process share_artifact before storing the result so the enriched
-            // metadata (host_path, file_size, etc.) flows into the transcript.
-            var toolResultForDisplay = result.result
-            var sharedArtifact: SharedArtifact?
-            if invocation.toolName == "share_artifact" {
-                if let processed = SharedArtifact.processToolResult(
-                    result.result,
-                    contextId: issue.taskId,
-                    contextType: .work,
-                    executionMode: executionMode,
-                    sandboxAgentName: sandboxAgentName
-                ) {
-                    toolResultForDisplay = processed.enrichedToolResult
-                    sharedArtifact = processed.artifact
-                }
-            }
-
-            let truncatedResult = truncateToolResult(toolResultForDisplay)
-            await onToolCall(invocation.toolName, invocation.jsonArguments, toolResultForDisplay)
-
-            // Clean response content - strip any leaked function-call JSON patterns
-            let cleanedContent = StringCleaning.stripFunctionCallLeakage(responseContent, toolName: invocation.toolName)
-
-            // Append tool call + result to conversation
-            if cleanedContent.isEmpty {
-                messages.append(
-                    ChatMessage(role: "assistant", content: nil, tool_calls: [result.toolCall], tool_call_id: nil)
-                )
-            } else {
                 messages.append(
                     ChatMessage(
-                        role: "assistant",
-                        content: cleanedContent,
-                        tool_calls: [result.toolCall],
-                        tool_call_id: nil
+                        role: "tool",
+                        content: truncatedResult,
+                        tool_calls: nil,
+                        tool_call_id: result.toolCall.id
                     )
                 )
-            }
-            messages.append(
-                ChatMessage(
-                    role: "tool",
-                    content: truncatedResult,
-                    tool_calls: nil,
-                    tool_call_id: result.toolCall.id
-                )
-            )
 
-            // Log the tool call event
-            _ = try? IssueStore.createEvent(
-                IssueEvent.withPayload(
-                    issueId: issue.id,
-                    eventType: .toolCallCompleted,
-                    payload: EventPayload.ToolCallCompleted(
-                        toolName: invocation.toolName,
-                        iteration: iteration,
-                        arguments: invocation.jsonArguments,
-                        result: result.result,
-                        success: !result.result.hasPrefix("[REJECTED]")
-                    )
-                )
-            )
-
-            // Handle semi-meta-tools (execute but also process results)
-            switch invocation.toolName {
-            case "create_issue":
-                await onStatusUpdate("Created follow-up issue")
-
-            case "share_artifact":
-                if let artifact = sharedArtifact {
-                    await onArtifact(artifact)
-                    await onStatusUpdate("Shared artifact: \(artifact.filename)")
-                    await PluginManager.shared.notifyArtifactHandlers(artifact: artifact)
-                }
-
-            case "sandbox_secret_set":
-                if let prompt = SecretPromptParser.parse(result.result),
-                    let handler = onSecretPrompt
-                {
-                    let secretValue = await handler(prompt)
-                    let replacement =
-                        secretValue != nil
-                        ? SecretToolResult.stored(key: prompt.key)
-                        : SecretToolResult.cancelled(key: prompt.key)
-                    if let lastIdx = messages.indices.last, messages[lastIdx].role == "tool" {
-                        messages[lastIdx] = ChatMessage(
-                            role: "tool",
-                            content: replacement,
-                            tool_calls: nil,
-                            tool_call_id: messages[lastIdx].tool_call_id
+                // Log the tool call event
+                _ = try? IssueStore.createEvent(
+                    IssueEvent.withPayload(
+                        issueId: issue.id,
+                        eventType: .toolCallCompleted,
+                        payload: EventPayload.ToolCallCompleted(
+                            toolName: invocation.toolName,
+                            iteration: iteration,
+                            arguments: invocation.jsonArguments,
+                            result: result.result,
+                            success: !ToolErrorEnvelope.isErrorResult(result.result)
                         )
-                    }
-                }
+                    )
+                )
 
-            default:
-                break
-            }
+                // Handle semi-meta-tools (execute but also process results)
+                switch invocation.toolName {
+                case "create_issue":
+                    await onStatusUpdate("Created follow-up issue")
+
+                case "share_artifact":
+                    if let artifact = sharedArtifact {
+                        await onArtifact(artifact)
+                        await onStatusUpdate("Shared artifact: \(artifact.filename)")
+                        await PluginManager.shared.notifyArtifactHandlers(artifact: artifact)
+                    }
+
+                case "sandbox_secret_set":
+                    if let prompt = SecretPromptParser.parse(result.result),
+                        let handler = onSecretPrompt
+                    {
+                        let secretValue = await handler(prompt)
+                        let replacement =
+                            secretValue != nil
+                            ? SecretToolResult.stored(key: prompt.key)
+                            : SecretToolResult.cancelled(key: prompt.key)
+                        if let lastIdx = messages.indices.last, messages[lastIdx].role == "tool" {
+                            messages[lastIdx] = ChatMessage(
+                                role: "tool",
+                                content: replacement,
+                                tool_calls: nil,
+                                tool_call_id: messages[lastIdx].tool_call_id
+                            )
+                        }
+                    }
+
+                default:
+                    break
+                }
+            }  // end for invocation in pendingInvocations
         }
 
         // Hit iteration limit
@@ -853,6 +985,66 @@ public actor WorkExecutionEngine {
             totalToolCalls: totalToolCalls,
             lastResponseContent: lastResponseContent
         )
+    }
+
+    /// Append an assistant tool-call message to `messages`, stripping any
+    /// leaked function-call JSON from `responseContent` and using `nil`
+    /// content when nothing useful remains. Centralises the
+    /// previously-duplicated `if cleanedContent.isEmpty { … } else { … }`
+    /// blocks at every Work-loop tool-call site.
+    private func appendAssistantToolCall(
+        responseContent: String,
+        toolCall: ToolCall,
+        toolName: String,
+        into messages: inout [ChatMessage]
+    ) {
+        let cleaned = StringCleaning.stripFunctionCallLeakage(responseContent, toolName: toolName)
+        messages.append(
+            ChatMessage(
+                role: "assistant",
+                content: cleaned.isEmpty ? nil : cleaned,
+                tool_calls: [toolCall],
+                tool_call_id: nil
+            )
+        )
+    }
+
+    /// Stuck-loop detection. Records this invocation in the rolling window
+    /// of the last 4 tool calls and returns a system-nudge string when the
+    /// same `(name, args-prefix)` fingerprint has appeared 3 times in a row.
+    /// Mutates `recentToolCalls` in place; clears it after firing so the
+    /// nudge only goes out once per stuck cluster.
+    private func stuckLoopNudge(
+        for invocation: ServiceToolInvocation,
+        recentToolCalls: inout [String]
+    ) -> String? {
+        let fingerprint = "\(invocation.toolName)|\(invocation.jsonArguments.prefix(256))"
+        recentToolCalls.append(fingerprint)
+        if recentToolCalls.count > 4 { recentToolCalls.removeFirst() }
+        guard recentToolCalls.count >= 3,
+            Set(recentToolCalls.suffix(3)).count == 1
+        else { return nil }
+        recentToolCalls.removeAll(keepingCapacity: true)
+        return
+            "[System Notice] You've called `\(invocation.toolName)` multiple times with the same arguments without progress. Try a different tool, change the arguments, or describe the blocker so we can move forward."
+    }
+
+    /// Sum char-count of `content` plus serialized `tool_calls` plus tool
+    /// result bodies across `messages`. Used to estimate input token count
+    /// without ignoring tool-heavy iterations (mirrors
+    /// `ChatEngine.estimateInputTokens`).
+    private func estimateMessagesChars(_ messages: [ChatMessage]) -> Int {
+        messages.reduce(0) { sum, msg in
+            var chars = msg.content?.count ?? 0
+            if let calls = msg.tool_calls {
+                for call in calls {
+                    chars += call.function.name.count
+                    chars += call.function.arguments.count
+                    chars += 20  // ~JSON envelope overhead per call
+                }
+            }
+            return sum + chars
+        }
     }
 
     /// Extracts a completion summary from a text response

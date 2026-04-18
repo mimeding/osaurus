@@ -349,17 +349,21 @@ struct StreamAccumulator: AsyncSequence, Sendable {
                 // When toolCalls.count grows, a complete tool call was parsed.
                 if let proc = processor {
                     let displayText = proc.processChunk(token)
-                    let newCount = proc.toolCalls.count
 
-                    if newCount > knownToolCallCount {
-                        // A complete tool call was just parsed.
-                        let toolCall = proc.toolCalls[knownToolCallCount]
-                        knownToolCallCount = newCount
+                    if proc.toolCalls.count > knownToolCallCount {
+                        // Drain ALL parsed calls so parallel tool calls in a
+                        // single completion are surfaced — yielding only the
+                        // first would silently drop the rest.
+                        let calls = drainNewToolCalls()
                         InferenceProgressManager.shared.prefillDidFinishAsync()
                         generationTask?.cancel()
                         finished = true
-                        let argsJSON = serializeArguments(toolCall.function.arguments)
-                        return .toolInvocation(name: toolCall.function.name, argsJSON: argsJSON)
+                        if let first = calls.first {
+                            if calls.count > 1 {
+                                pendingEvents.append(contentsOf: calls.dropFirst())
+                            }
+                            return first
+                        }
                     }
 
                     // If processChunk returned nil, the token is being buffered
@@ -420,24 +424,23 @@ struct StreamAccumulator: AsyncSequence, Sendable {
 
                 // When a stop sequence marks the end of a tool-call block, call
                 // processEOS so ToolCallProcessor can extract any buffered call.
+                // When a stop tag marks the end of a tool-call block we need
+                // ToolCallProcessor to flush any buffered call. The processor
+                // has already been fed every token up to (but not including)
+                // the current `token`, and the stop tag arrived inside the
+                // current token, so `processEOS` is sufficient — no extra
+                // suffix feeding required.
                 if let proc = processor {
-                    let stopEndIndex = stopRange.upperBound
-                    // Feed everything up to and including the stop tag into the processor.
-                    let tail = String(rollingBuffer[rollingBuffer.startIndex ..< stopEndIndex])
-                    // We already fed all prior tokens; only the remaining suffix needs feeding.
-                    // Since processor has already received all tokens up to (but not including)
-                    // the current `token`, and processWithStopCheck is called after processChunk
-                    // has returned the displayText, the stop tag arrived inside `token` itself.
-                    // Call processEOS to flush any buffered content.
                     proc.processEOS()
-                    let newCount = proc.toolCalls.count
-                    if newCount > knownToolCallCount {
-                        let toolCall = proc.toolCalls[knownToolCallCount]
-                        knownToolCallCount = newCount
-                        let argsJSON = serializeArguments(toolCall.function.arguments)
-                        return .toolInvocation(name: toolCall.function.name, argsJSON: argsJSON)
+                    if proc.toolCalls.count > knownToolCallCount {
+                        let calls = drainNewToolCalls()
+                        if let first = calls.first {
+                            if calls.count > 1 {
+                                pendingEvents.append(contentsOf: calls.dropFirst())
+                            }
+                            return first
+                        }
                     }
-                    _ = tail  // suppress unused-variable warning
                 }
 
                 if stopGlobalIndex > emittedCount {
@@ -513,12 +516,8 @@ struct StreamAccumulator: AsyncSequence, Sendable {
             // as text), so processChunk never saw the closing delimiter.
             if let proc = processor {
                 proc.processEOS()
-                let newCount = proc.toolCalls.count
-                if newCount > knownToolCallCount {
-                    let toolCall = proc.toolCalls[knownToolCallCount]
-                    knownToolCallCount = newCount
-                    let argsJSON = serializeArguments(toolCall.function.arguments)
-                    pendingEvents.append(.toolInvocation(name: toolCall.function.name, argsJSON: argsJSON))
+                if proc.toolCalls.count > knownToolCallCount {
+                    pendingEvents.append(contentsOf: drainNewToolCalls())
                     // Don't flush stop-sequence buffer — tool call replaces it.
                     InferenceProgressManager.shared.prefillDidFinishAsync()
                     onGeneratedTokenIds?(generatedTokenIds)
@@ -582,16 +581,58 @@ struct StreamAccumulator: AsyncSequence, Sendable {
             onGeneratedTokenIds?(generatedTokenIds)
         }
 
+        // MARK: - Tool-call draining
+
+        /// Drain every tool call the processor has parsed beyond
+        /// `knownToolCallCount` and return them as `.toolInvocation` events.
+        /// This is the single source of truth for tool-call surfacing —
+        /// streaming, stop-sequence, and EOS paths all funnel through here so
+        /// parallel calls in a single completion are never silently dropped.
+        private mutating func drainNewToolCalls() -> [ModelRuntimeEvent] {
+            guard let proc = processor else { return [] }
+            var events: [ModelRuntimeEvent] = []
+            while knownToolCallCount < proc.toolCalls.count {
+                let toolCall = proc.toolCalls[knownToolCallCount]
+                knownToolCallCount += 1
+                let argsJSON = serializeArguments(
+                    toolCall.function.arguments,
+                    toolName: toolCall.function.name
+                )
+                events.append(.toolInvocation(name: toolCall.function.name, argsJSON: argsJSON))
+            }
+            return events
+        }
+
         // MARK: - Argument serialisation
 
         /// Converts `[String: JSONValue]` (upstream ToolCall argument type) to a
         /// compact JSON string suitable for `ModelRuntimeEvent.toolInvocation(argsJSON:)`.
-        private func serializeArguments(_ arguments: [String: MLXLMCommon.JSONValue]) -> String {
+        ///
+        /// On serialization failure, logs the failure loudly and returns a
+        /// structured error envelope so the model receives an unambiguous
+        /// signal that something went wrong rather than the silent `{}` that
+        /// previously masked the bug.
+        private func serializeArguments(
+            _ arguments: [String: MLXLMCommon.JSONValue],
+            toolName: String
+        ) -> String {
             let anyDict = arguments.mapValues { $0.anyValue }
-            guard let data = try? JSONSerialization.data(withJSONObject: anyDict),
-                let json = String(data: data, encoding: .utf8)
-            else { return "{}" }
-            return json
+            do {
+                let data = try JSONSerialization.data(withJSONObject: anyDict)
+                if let json = String(data: data, encoding: .utf8) {
+                    return json
+                }
+                accumLog.error(
+                    "[tools] arguments for \(toolName, privacy: .public) serialised to non-UTF8 data"
+                )
+            } catch {
+                accumLog.error(
+                    "[tools] failed to serialise arguments for \(toolName, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+            // Return a structured error so the executor and the model both
+            // see something they can react to instead of a silent empty dict.
+            return "{\"_error\":\"argument_serialization_failed\",\"_tool\":\"\(toolName)\"}"
         }
     }
 

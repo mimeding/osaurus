@@ -63,12 +63,87 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
         }
     }
 
-    /// Estimate input tokens from messages (rough heuristic: ~4 chars per token)
+    /// Estimate input tokens from messages (rough heuristic: ~4 chars per token).
+    ///
+    /// Includes assistant `tool_calls` payloads and `tool` role bodies so
+    /// tool-heavy sessions don't under-report prompt size in metrics and
+    /// downstream budget-adjacent decisions.
     private func estimateInputTokens(_ messages: [ChatMessage]) -> Int {
         let totalChars = messages.reduce(0) { sum, msg in
-            sum + (msg.content?.count ?? 0)
+            var chars = msg.content?.count ?? 0
+            if let calls = msg.tool_calls {
+                for call in calls {
+                    chars += call.function.name.count
+                    chars += call.function.arguments.count
+                    // ~20 chars overhead per call for JSON envelope shape
+                    chars += 20
+                }
+            }
+            return sum + chars
         }
         return max(1, totalChars / 4)
+    }
+
+    /// Build a non-stream OpenAI-style response from one or more tool
+    /// invocations parsed out of a single completion. Local models can emit
+    /// multiple `<tool_call>` blocks per response; OpenAI clients expect a
+    /// single assistant message with all `tool_calls` attached, which is
+    /// what we produce here.
+    static func makeToolCallResponse(
+        invocations: [ServiceToolInvocation],
+        responseId: String,
+        created: Int,
+        effectiveModel: String,
+        inputTokens: Int,
+        startTime: Date,
+        inferenceSource: InferenceSource,
+        temperature: Float?,
+        maxTokens: Int
+    ) -> ChatCompletionResponse {
+        let toolCalls: [ToolCall] = invocations.map { inv in
+            let raw = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            let callId = inv.toolCallId ?? "call_" + String(raw.prefix(24))
+            return ToolCall(
+                id: callId,
+                type: "function",
+                function: ToolCallFunction(name: inv.toolName, arguments: inv.jsonArguments),
+                geminiThoughtSignature: inv.geminiThoughtSignature
+            )
+        }
+        let assistant = ChatMessage(
+            role: "assistant",
+            content: nil,
+            tool_calls: toolCalls,
+            tool_call_id: nil
+        )
+        let choice = ChatChoice(index: 0, message: assistant, finish_reason: "tool_calls")
+        let usage = Usage(prompt_tokens: inputTokens, completion_tokens: 0, total_tokens: inputTokens)
+
+        if inferenceSource == .chatUI {
+            let durationMs = Date().timeIntervalSince(startTime) * 1000
+            InsightsService.logInference(
+                source: inferenceSource,
+                model: effectiveModel,
+                inputTokens: inputTokens,
+                outputTokens: 0,
+                durationMs: durationMs,
+                temperature: temperature,
+                maxTokens: maxTokens,
+                toolCalls: invocations.map {
+                    ToolCallLog(name: $0.toolName, arguments: $0.jsonArguments)
+                },
+                finishReason: .toolCalls
+            )
+        }
+
+        return ChatCompletionResponse(
+            id: responseId,
+            created: created,
+            model: effectiveModel,
+            choices: [choice],
+            usage: usage,
+            system_fingerprint: nil
+        )
     }
 
     /// Map an `InferenceSource` to its default scheduler priority. Callers that
@@ -89,6 +164,16 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
         trace?.mark("chatengine_start")
         let messages = request.messages
         debugLog("[ChatEngine] streamChat: messages count=\(messages.count), fetching remote services")
+
+        // Tool diagnostics: log the final tool list (count + names + choice)
+        // immediately before dispatch so silent "model didn't see the tools"
+        // failures are easy to triage from logs.
+        let toolNames = (request.tools ?? []).map { $0.function.name }.sorted()
+        let toolChoiceDesc = request.tool_choice.map { String(describing: $0) } ?? "nil"
+        debugLog(
+            "[Tools] streamChat model=\(request.model) source=\(inferenceSource) count=\(toolNames.count) choice=\(toolChoiceDesc) names=[\(toolNames.joined(separator: ", "))]"
+        )
+        trace?.set("toolListSent", String(toolNames.count))
         let temperature = request.temperature
         let maxTokens = request.max_tokens ?? 16384
         let repPenalty: Float? = {
@@ -248,6 +333,13 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
                 )
 
                 continuation.finish()
+            } catch let invs as ServiceToolInvocations {
+                print("[Osaurus][Stream] Tool invocations (batch): count=\(invs.invocations.count)")
+                if let first = invs.invocations.first {
+                    toolInvocation = (first.toolName, first.jsonArguments)
+                }
+                finishReason = .toolCalls
+                continuation.finish(throwing: invs)
             } catch let inv as ServiceToolInvocation {
                 print("[Osaurus][Stream] Tool invocation: \(inv.toolName)")
                 toolInvocation = (inv.toolName, inv.jsonArguments)
@@ -399,48 +491,29 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
                         usage: usage,
                         system_fingerprint: nil
                     )
-                } catch let inv as ServiceToolInvocation {
-                    // Convert tool invocation to OpenAI-style non-stream response
-                    let raw = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-                    let callId = "call_" + String(raw.prefix(24))
-                    let toolCall = ToolCall(
-                        id: callId,
-                        type: "function",
-                        function: ToolCallFunction(name: inv.toolName, arguments: inv.jsonArguments),
-                        geminiThoughtSignature: inv.geminiThoughtSignature
-                    )
-                    let assistant = ChatMessage(
-                        role: "assistant",
-                        content: nil,
-                        tool_calls: [toolCall],
-                        tool_call_id: nil
-                    )
-                    let choice = ChatChoice(index: 0, message: assistant, finish_reason: "tool_calls")
-                    let usage = Usage(prompt_tokens: inputTokens, completion_tokens: 0, total_tokens: inputTokens)
-
-                    // Log the inference (only for Chat UI - HTTP requests are logged by HTTPHandler)
-                    if inferenceSource == .chatUI {
-                        let durationMs = Date().timeIntervalSince(startTime) * 1000
-                        InsightsService.logInference(
-                            source: inferenceSource,
-                            model: effectiveModel,
-                            inputTokens: inputTokens,
-                            outputTokens: 0,
-                            durationMs: durationMs,
-                            temperature: temperature,
-                            maxTokens: maxTokens,
-                            toolCalls: [ToolCallLog(name: inv.toolName, arguments: inv.jsonArguments)],
-                            finishReason: .toolCalls
-                        )
-                    }
-
-                    return ChatCompletionResponse(
-                        id: responseId,
+                } catch let invs as ServiceToolInvocations {
+                    return Self.makeToolCallResponse(
+                        invocations: invs.invocations,
+                        responseId: responseId,
                         created: created,
-                        model: effectiveModel,
-                        choices: [choice],
-                        usage: usage,
-                        system_fingerprint: nil
+                        effectiveModel: effectiveModel,
+                        inputTokens: inputTokens,
+                        startTime: startTime,
+                        inferenceSource: inferenceSource,
+                        temperature: temperature,
+                        maxTokens: maxTokens
+                    )
+                } catch let inv as ServiceToolInvocation {
+                    return Self.makeToolCallResponse(
+                        invocations: [inv],
+                        responseId: responseId,
+                        created: created,
+                        effectiveModel: effectiveModel,
+                        inputTokens: inputTokens,
+                        startTime: startTime,
+                        inferenceSource: inferenceSource,
+                        temperature: temperature,
+                        maxTokens: maxTokens
                     )
                 }
             }

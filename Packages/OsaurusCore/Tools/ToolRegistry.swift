@@ -115,8 +115,45 @@ final class ToolRegistry: ObservableObject {
         }
     }
 
+    /// Register a tool. Names are sanitised to satisfy
+    /// `^[a-zA-Z0-9_-]{1,64}$` (OpenAI / common chat-template constraint).
+    /// Cross-type collisions are warned because they would route the
+    /// model's call to the wrong target.
     func register(_ tool: OsaurusTool) {
-        toolsByName[tool.name] = tool
+        let sanitized = Self.sanitizeToolName(tool.name)
+        if sanitized != tool.name {
+            NSLog(
+                "[ToolRegistry] Tool name '\(tool.name)' contains illegal characters; using '\(sanitized)' instead"
+            )
+        }
+        if let existing = toolsByName[sanitized] {
+            let existingType = String(describing: type(of: existing))
+            let newType = String(describing: type(of: tool))
+            if existingType != newType {
+                NSLog(
+                    "[ToolRegistry] WARNING: tool name collision on '\(sanitized)'; existing=\(existingType) new=\(newType). Previous registration will be overwritten — consider namespacing the providers."
+                )
+            }
+        }
+        toolsByName[sanitized] = tool
+    }
+
+    /// Sanitize a candidate tool name so it satisfies `^[a-zA-Z0-9_-]{1,64}$`.
+    /// Disallowed characters become underscores; empty results fall back to
+    /// `tool_unnamed`; over-length names are truncated to 64.
+    static func sanitizeToolName(_ raw: String) -> String {
+        var out = ""
+        out.reserveCapacity(raw.count)
+        for ch in raw {
+            if ch.isASCII, ch.isLetter || ch.isNumber || ch == "_" || ch == "-" {
+                out.append(ch)
+            } else {
+                out.append("_")
+            }
+        }
+        if out.isEmpty { out = "tool_unnamed" }
+        if out.count > 64 { out = String(out.prefix(64)) }
+        return out
     }
 
     private static func estimateTokenCount(_ tool: OsaurusTool) -> Int {
@@ -601,6 +638,18 @@ final class ToolRegistry: ObservableObject {
             }
             .filter { !excluded.contains($0.name) }
             .filter { !excludeCapabilityTools || !Self.capabilityToolNames.contains($0.name) }
+            .sorted { $0.name < $1.name }
+            .map { $0.asOpenAITool() }
+    }
+
+    /// Sandbox built-in tool specs available for the given execution mode.
+    /// Used by manual tool-selection mode to keep sandbox tools discoverable
+    /// even when the user has not explicitly opted into them.
+    func sandboxBuiltInSpecs(mode: WorkExecutionMode) -> [Tool] {
+        let excluded = excludedToolNames(for: mode)
+        return toolsByName.values
+            .filter { builtInSandboxToolNames.contains($0.name) }
+            .filter { !excluded.contains($0.name) }
             .sorted { $0.name < $1.name }
             .map { $0.asOpenAITool() }
     }
