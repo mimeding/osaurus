@@ -140,6 +140,8 @@ gitignored and not used by CI.
 
 - Add or update tests in `Packages/OsaurusCore/Tests/` where reasonable
 - Ensure the project builds and tests pass in Xcode before submitting
+- If a test overrides global process state such as `OsaurusPaths.overrideRoot` or closes/reopens a shared database singleton, restore both the original value and the original open/closed state in `defer` before the test exits
+- When writing isolated database tests, capture the prior singleton state first (for example `let wasOpen = WorkDatabase.shared.isOpen`) so later suites do not inherit `.notOpen` / `.noIssueCreated` failures from leaked teardown state
 
 ### Commit and PR guidelines
 

@@ -32,9 +32,11 @@ public final class IssueManager: ObservableObject {
 
     /// Initialize the manager and open the database
     public func initialize() async throws {
-        guard !isInitialized else { return }
+        guard !isInitialized || !WorkDatabase.shared.isOpen else { return }
 
-        try WorkDatabase.shared.open()
+        if !WorkDatabase.shared.isOpen {
+            try WorkDatabase.shared.open()
+        }
         isInitialized = true
 
         // Load initial data

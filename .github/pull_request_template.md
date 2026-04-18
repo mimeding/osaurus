@@ -22,5 +22,6 @@ If UI updated, add before/after.
 
 - [ ] I have read `CONTRIBUTING.md`
 - [ ] I added/updated tests where reasonable
+- [ ] If my tests touched shared global state (`OsaurusPaths.overrideRoot`, shared DB singletons, registries), teardown restores the original state
 - [ ] I updated docs/README as needed
 - [ ] I verified build on macOS with Xcode 16.4+

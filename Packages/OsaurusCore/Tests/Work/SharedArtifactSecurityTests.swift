@@ -109,6 +109,7 @@ struct SharedArtifactSecurityTests {
     private func withIsolatedOsaurusRoot(_ body: (URL) throws -> Void) throws {
         let fm = FileManager.default
         let originalRoot = OsaurusPaths.overrideRoot
+        let wasOpen = WorkDatabase.shared.isOpen
         let isolatedRoot = fm.temporaryDirectory
             .appendingPathComponent("osaurus-artifact-security-\(UUID().uuidString)", isDirectory: true)
 
@@ -120,6 +121,9 @@ struct SharedArtifactSecurityTests {
         defer {
             WorkDatabase.shared.close()
             OsaurusPaths.overrideRoot = originalRoot
+            if wasOpen {
+                try? WorkDatabase.shared.open()
+            }
             try? fm.removeItem(at: isolatedRoot)
         }
 
