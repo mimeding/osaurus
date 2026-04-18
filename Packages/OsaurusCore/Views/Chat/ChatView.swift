@@ -1020,6 +1020,10 @@ final class ChatSession: ObservableObject {
                     debugLog(
                         "send: attempt=\(attempts) model=\(req.model) tools=\(req.tools?.count ?? 0) sessionId=\(req.session_id ?? "nil")"
                     )
+                    // Tool calls parsed from this completion. Populated by
+                    // either the single-throw or batch-throw catch below; the
+                    // shared per-tool block then iterates through it.
+                    var pendingInvocations: [ServiceToolInvocation] = []
                     do {
                         var uiDeltaCount = 0
                         var firstDeltaTime: Date?
@@ -1164,9 +1168,29 @@ final class ChatSession: ObservableObject {
                         )
 
                         break  // finished normally
+                    } catch let invs as ServiceToolInvocations {
+                        // Multi-tool completion (MLX models can emit multiple
+                        // <tool_call> blocks per response). Process each in
+                        // order; falls through to the shared per-tool block
+                        // below.
+                        pendingInvocations = invs.invocations
                     } catch let inv as ServiceToolInvocation {
+                        // Single-tool completion (the common case for chat).
+                        pendingInvocations = [inv]
+                    }
+
+                    // Shared per-tool processing for both single and batched
+                    // catches. Iterates through every parsed tool call in
+                    // order; on any execution rejection we break the outer
+                    // loop just like the original single-tool code did.
+                    if pendingInvocations.isEmpty {
+                        break  // stream finished without surfacing any tool call
+                    }
+
+                    var rejectedDuringBatch = false
+                    invocations: for inv in pendingInvocations {
                         guard isRunActive(runId) else { break outer }
-                        // Use preserved tool call ID from stream if available, otherwise generate one
+
                         let callId: String
                         if let preservedId = inv.toolCallId, !preservedId.isEmpty {
                             callId = preservedId
@@ -1270,9 +1294,10 @@ final class ChatSession: ObservableObject {
                             let toolTurn = ChatTurn(role: .tool, content: rejectionMessage)
                             toolTurn.toolCallId = callId
                             turns.append(toolTurn)
-                            break  // Stop tool loop on rejection
+                            rejectedDuringBatch = true
+                            break invocations  // Stop processing remaining tools in batch
                         }
-                        guard isRunActive(runId) else { break }
+                        guard isRunActive(runId) else { break outer }
                         assistantTurn.toolResults[callId] = resultText
                         let toolTurn = ChatTurn(role: .tool, content: resultText)
                         toolTurn.toolCallId = callId
@@ -1286,16 +1311,21 @@ final class ChatSession: ObservableObject {
                         turns.append(contentsOf: [toolTurn, newAssistantTurn])
                         assistantTurn = newAssistantTurn
                         rebuildVisibleBlocks()
-
-                        let remaining = maxAttempts - attempts
-                        if remaining <= 0 {
-                            reachedToolLimit = true
-                        } else if remaining <= toolBudgetWarningThreshold {
-                            pendingBudgetNotice =
-                                "[System Notice] Tool call budget: \(remaining) of \(maxAttempts) remaining. Wrap up your current work and provide a summary."
-                        }
-                        continue
                     }
+
+                    // Per-iteration budget bookkeeping (one decrement per outer
+                    // iteration regardless of how many tools the batch ran).
+                    if rejectedDuringBatch {
+                        break outer
+                    }
+                    let remaining = maxAttempts - attempts
+                    if remaining <= 0 {
+                        reachedToolLimit = true
+                    } else if remaining <= toolBudgetWarningThreshold {
+                        pendingBudgetNotice =
+                            "[System Notice] Tool call budget: \(remaining) of \(maxAttempts) remaining. Wrap up your current work and provide a summary."
+                    }
+                    continue
                 }
 
                 if reachedToolLimit && isRunActive(runId) {

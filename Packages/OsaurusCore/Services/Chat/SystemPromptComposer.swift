@@ -188,11 +188,16 @@ public struct SystemPromptComposer: Sendable {
         )
         trace?.mark("resolve_tools_done")
 
-        // Generic plugin-creator backstop: fires whenever no dynamic tool
-        // was resolved (auto / manual / empty query / preflight off) AND
-        // the agent can create plugins AND sandbox is active.
+        // Plugin-creator backstop: only inject when the agent literally
+        // has NO dynamic tools available (no MCP / plugin / sandbox-plugin
+        // installed) AND nothing was resolved this turn. The narrower gate
+        // prevents the skill from being injected on every "this turn just
+        // doesn't need a plugin" case for users who already have plugin
+        // tools installed — which would bias the model toward writing new
+        // plugins instead of using the ones it has.
         if !effectiveToolsOff,
             executionMode.usesSandboxTools,
+            ToolRegistry.shared.dynamicCatalogIsEmpty(),
             !hasDynamicTools(toolMode: toolMode, preflight: preflight, agentId: agentId),
             let pluginCreator = await PreflightCapabilitySearch.pluginCreatorSkillSection(for: agentId)
         {

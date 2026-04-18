@@ -132,26 +132,16 @@ enum PreflightCapabilitySearch {
 
     // MARK: Search
 
-    static func search(query: String, mode: PreflightSearchMode = .balanced, agentId: UUID) async -> PreflightResult {
+    static func search(
+        query: String,
+        mode: PreflightSearchMode = .balanced,
+        agentId: UUID
+    ) async -> PreflightResult {
         guard mode != .off,
             !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return .empty }
 
-        let (catalog, groups) = await MainActor.run {
-            let tools = ToolRegistry.shared.listDynamicTools()
-            let groupMap = Dictionary(
-                uniqueKeysWithValues: tools.compactMap { tool in
-                    ToolRegistry.shared.groupName(for: tool.name).map { (tool.name, $0) }
-                }
-            )
-            let sorted = tools.sorted { (groupMap[$0.name] ?? "") < (groupMap[$1.name] ?? "") }
-            return (sorted, groupMap)
-        }
-
-        // Empty catalog and empty selection are both treated as "no dynamic
-        // tools matched". The plugin-creator fallback is now applied uniformly
-        // by SystemPromptComposer after tool resolution, so it also fires in
-        // manual mode, with empty queries, and when preflight is .off.
+        let (catalog, groups) = await MainActor.run { loadDynamicCatalog() }
         guard !catalog.isEmpty else { return .empty }
 
         InferenceProgressManager.shared.preflightWillStartAsync()
@@ -163,10 +153,7 @@ enum PreflightCapabilitySearch {
             groups: groups,
             cap: mode.toolCap
         )
-
-        if selectedNames.isEmpty {
-            return .empty
-        }
+        guard !selectedNames.isEmpty else { return .empty }
 
         let (toolSpecs, items) = await MainActor.run {
             let specs = ToolRegistry.shared.specs(forTools: selectedNames)
@@ -182,6 +169,21 @@ enum PreflightCapabilitySearch {
         return PreflightResult(toolSpecs: toolSpecs, contextSnippet: "", items: items)
     }
 
+    /// Snapshot the dynamic-tool catalog and its `tool → group` map from the
+    /// registry, sorted by group so `formatCatalog` can emit deterministic
+    /// section order. Must run on the main actor.
+    @MainActor
+    private static func loadDynamicCatalog() -> (catalog: [ToolRegistry.ToolEntry], groups: [String: String]) {
+        let tools = ToolRegistry.shared.listDynamicTools()
+        let groupMap = Dictionary(
+            uniqueKeysWithValues: tools.compactMap { tool in
+                ToolRegistry.shared.groupName(for: tool.name).map { (tool.name, $0) }
+            }
+        )
+        let sorted = tools.sorted { (groupMap[$0.name] ?? "") < (groupMap[$1.name] ?? "") }
+        return (sorted, groupMap)
+    }
+
     // MARK: LLM Tool Selection
 
     private static func selectTools(
@@ -190,17 +192,15 @@ enum PreflightCapabilitySearch {
         groups: [String: String],
         cap: Int
     ) async -> [String] {
-        guard !catalog.isEmpty else { return [] }
-
-        let catalogText = formatCatalog(catalog, groups: groups)
         let systemPrompt = """
-            Output ONLY tool names, comma-separated. No explanation.
+            Output ONLY tool names from the `tool:` lines below, comma-separated. No explanation.
             Max \(cap). If none relevant: NONE
+            Do NOT output group/provider names (the `[provider]` headers). Pick the specific tools.
 
             Example input: "play some jazz"
             Example output: play,search_songs
 
-            \(catalogText)
+            \(formatCatalog(catalog, groups: groups))
             """
 
         do {
@@ -211,7 +211,7 @@ enum PreflightCapabilitySearch {
                 maxTokens: 256,
                 timeout: selectionTimeout
             )
-            return parseToolNames(from: response, catalog: catalog, cap: cap)
+            return parseToolNames(from: response, catalog: catalog, groups: groups, cap: cap)
         } catch {
             logger.info("Pre-flight tool selection skipped: \(error)")
             return []
@@ -220,90 +220,96 @@ enum PreflightCapabilitySearch {
 
     // MARK: Catalog Formatting
 
+    /// Render `catalog` as a model-friendly listing. Group headers are
+    /// labeled `[provider: ...]` and each tool line is prefixed with `tool:`
+    /// so the model can clearly tell apart pickable items from section
+    /// headers. (An earlier `# group / - tool:` format caused models to
+    /// pick group names like `osaurus.pptx` as if they were tools.)
     private static func formatCatalog(
         _ catalog: [ToolRegistry.ToolEntry],
         groups: [String: String]
     ) -> String {
-        var sections: [(group: String, tools: [ToolRegistry.ToolEntry])] = []
-        var currentGroup = ""
-        var currentTools: [ToolRegistry.ToolEntry] = []
+        let bySection = Dictionary(grouping: catalog) { groups[$0.name] ?? "" }
 
+        // Preserve first-seen order rather than dictionary order so the
+        // listing stays deterministic across runs.
+        var sectionOrder: [String] = []
+        var seenSections: Set<String> = []
         for entry in catalog {
-            let group = groups[entry.name] ?? ""
-            if group != currentGroup {
-                if !currentTools.isEmpty { sections.append((currentGroup, currentTools)) }
-                currentGroup = group
-                currentTools = []
-            }
-            currentTools.append(entry)
+            let g = groups[entry.name] ?? ""
+            if seenSections.insert(g).inserted { sectionOrder.append(g) }
         }
-        if !currentTools.isEmpty { sections.append((currentGroup, currentTools)) }
 
-        return sections.map { group, tools in
-            let header = group.isEmpty ? "" : "# \(group)\n"
-            let lines = tools.map { "- \($0.name): \($0.description)" }
+        return sectionOrder.map { group in
+            let header = group.isEmpty ? "" : "[provider: \(group)]\n"
+            let lines = (bySection[group] ?? []).map {
+                "tool: \($0.name) — \($0.description)"
+            }
             return header + lines.joined(separator: "\n")
-        }.joined(separator: "\n")
+        }.joined(separator: "\n\n")
     }
 
     // MARK: Response Parsing
 
+    /// Parse the model's comma-/newline-separated response into canonical
+    /// tool names from `catalog`. If the model returns a `[provider]` group
+    /// label instead of individual tool names (a common failure mode), the
+    /// group is expanded to every tool it owns, then the combined list is
+    /// capped.
     private static func parseToolNames(
         from response: String,
         catalog: [ToolRegistry.ToolEntry],
+        groups: [String: String],
         cap: Int
     ) -> [String] {
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
         logger.info("Pre-flight: raw LLM response: \(trimmed)")
+        guard !trimmed.isEmpty, trimmed.uppercased() != "NONE" else { return [] }
 
-        if trimmed.isEmpty || trimmed.uppercased() == "NONE" { return [] }
-
-        let validNames = Dictionary(uniqueKeysWithValues: catalog.map { ($0.name.lowercased(), $0.name) })
+        let validNames = Dictionary(
+            uniqueKeysWithValues: catalog.map { ($0.name.lowercased(), $0.name) }
+        )
+        let groupExpansion = Dictionary(grouping: catalog) {
+            (groups[$0.name] ?? "").lowercased()
+        }
+        .filter { !$0.key.isEmpty }
+        .mapValues { $0.map(\.name) }
 
         var selected: [String] = []
         var seen: Set<String> = []
 
-        let tokens =
-            trimmed
-            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        for token in tokens {
-            let cleaned =
-                token
+        for raw in trimmed.components(separatedBy: CharacterSet(charactersIn: ",\n")) {
+            let key =
+                raw
+                .trimmingCharacters(in: .whitespacesAndNewlines)
                 .replacingOccurrences(of: "^[-•*]\\s*", with: "", options: .regularExpression)
                 .trimmingCharacters(in: .whitespaces)
+                .lowercased()
+            guard !key.isEmpty, selected.count < cap else { continue }
 
-            if let canonical = validNames[cleaned.lowercased()],
-                seen.insert(canonical).inserted
-            {
+            if let canonical = validNames[key], seen.insert(canonical).inserted {
                 selected.append(canonical)
+            } else if let toolsInGroup = groupExpansion[key] {
+                for name in toolsInGroup where selected.count < cap && seen.insert(name).inserted {
+                    selected.append(name)
+                }
             }
         }
 
-        let capped = Array(selected.prefix(cap))
-        logger.info("Pre-flight: LLM selected \(capped.count) tools: \(capped.joined(separator: ", "))")
-        return capped
+        logger.info("Pre-flight: LLM selected \(selected.count) tools: \(selected.joined(separator: ", "))")
+        return selected
     }
 
     // MARK: Plugin Creator Fallback
-    //
-    // Note: the Sandbox Plugin Creator skill injection used to live here as a
-    // preflight-only fallback. It now lives in `SystemPromptComposer` so it
-    // fires uniformly whenever no dynamic tool was resolved (manual mode,
-    // empty query, preflight off, or LLM picked nothing) — see
-    // `pluginCreatorSkillSection(for:)` below.
 
-    /// Compose the Sandbox Plugin Creator skill section to inject into the
-    /// system prompt when no other dynamic tool matched the user's request.
-    /// Returns nil when the agent does not have plugin creation enabled or
-    /// the skill is not installed.
+    /// Compose the Sandbox Plugin Creator skill section. Returns nil when the
+    /// agent does not have plugin creation enabled or the skill is not
+    /// installed. Invoked by `SystemPromptComposer` after tool resolution so
+    /// the section is injected uniformly across auto/manual modes, empty
+    /// queries, and `preflightSearchMode == .off`.
     static func pluginCreatorSkillSection(for agentId: UUID) async -> String? {
         guard await CapabilitySearch.canCreatePlugins(agentId: agentId) else { return nil }
-        let skill = await MainActor.run {
-            SkillManager.shared.skill(named: "Sandbox Plugin Creator")
-        }
+        let skill = await MainActor.run { SkillManager.shared.skill(named: "Sandbox Plugin Creator") }
         guard let skill else { return nil }
 
         logger.info("Plugin creator: no dynamic tools matched, injecting \(skill.name) skill")

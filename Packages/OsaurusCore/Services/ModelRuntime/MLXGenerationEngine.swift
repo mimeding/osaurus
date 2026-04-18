@@ -102,21 +102,16 @@ struct MLXGenerationEngine {
                 repetitionPenalty: generation.repetitionPenalty,
                 maxKV: runtime.maxKV
             )
-            // Resolve `enable_thinking` explicitly:
-            //   1. If the caller has set `disableThinking`, honor it.
-            //   2. Otherwise, when tools are present, default to
-            //      `enable_thinking: false`. Mixing reasoning tokens with the
-            //      tool-call wire format trips up `ToolCallProcessor` on
-            //      several model families (Qwen3, GLM) and is the safer
-            //      default for tool-calling reliability.
-            //   3. Only omit the kwarg when there's truly no opinion (no
-            //      tools and no toggle present) so the template's own
-            //      default takes effect.
+            // Honor the caller's explicit `disableThinking` toggle when
+            // present; otherwise omit the kwarg so the chat template's own
+            // default takes effect. (An earlier change tried to force
+            // `enable_thinking: false` whenever tools were present, but that
+            // surprised users with thinking-capable models that didn't have
+            // `disableThinking` populated and could even hurt tool-calling
+            // by stripping the model's reasoning step.)
             let additionalContext: [String: any Sendable]?
             if let disableThinking = generation.modelOptions["disableThinking"]?.boolValue {
                 additionalContext = ["enable_thinking": !disableThinking]
-            } else if let specs = toolsSpec, !specs.isEmpty {
-                additionalContext = ["enable_thinking": false]
             } else {
                 additionalContext = nil
             }

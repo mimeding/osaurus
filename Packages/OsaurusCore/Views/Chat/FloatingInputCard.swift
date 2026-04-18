@@ -1128,8 +1128,14 @@ extension FloatingInputCard {
                 modelOptionsSelectorChip
             }
 
-            // Sandbox toggle (visible when sandbox is available on this system, hidden when folder context is active)
-            if isSandboxAvailable && !folderContextService.hasActiveFolder {
+            // Sandbox toggle: visible whenever the sandbox is available on
+            // this system. Folder context replaces the sandbox in Work mode
+            // (mutually exclusive execution backends), so it's hidden there
+            // when a folder is active — but in Chat mode the folder context
+            // doesn't apply, so the chip stays visible regardless.
+            if isSandboxAvailable
+                && (workInputState == nil || !folderContextService.hasActiveFolder)
+            {
                 sandboxToggleChip
             }
 
@@ -1138,9 +1144,14 @@ extension FloatingInputCard {
                 clipboardToggleChip
             }
 
-            // Folder context selector (work mode only, hidden when sandbox is enabled)
-            if workInputState != nil && (folderContextService.hasActiveFolder || isAgentEmptyMode) && !isSandboxEnabled
-            {
+            // Folder context selector: visible whenever the user is on the
+            // Work tab and sandbox isn't enabled (folder + sandbox are
+            // mutually exclusive backends). The chip's own internals render
+            // both "no folder picked" and "folder picked" states, so we no
+            // longer gate on `hasActiveFolder || isAgentEmptyMode` —
+            // otherwise the chip disappears mid-task and the user can't see
+            // what folder is in use.
+            if workInputState != nil && !isSandboxEnabled {
                 folderContextChip
             }
 

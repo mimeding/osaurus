@@ -47,11 +47,23 @@
         @MainActor
         public final class State: ObservableObject {
             public static let shared = State()
-            @Published public var availability: SandboxAvailability = .unavailable(reason: "Not checked yet")
+            // Seed `availability` synchronously from the OS version so the
+            // sandbox UI chip is visible from the very first frame on
+            // macOS 26+. `refreshAvailability()` later re-asserts the same
+            // value (or downgrades on older OSes); SwiftUI's @Published
+            // diff makes the re-assignment a no-op when nothing changed.
+            @Published public var availability: SandboxAvailability = State.initialAvailability
             @Published public var status: ContainerStatus = .notProvisioned
             @Published public var provisioningPhase: String?
             @Published public var provisioningProgress: Double?
             @Published public var isProvisioning: Bool = false
+
+            private static var initialAvailability: SandboxAvailability {
+                let osVersion = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+                return osVersion >= 26
+                    ? .available
+                    : .unavailable(reason: "Requires macOS 26 or later")
+            }
         }
 
         // MARK: - Availability

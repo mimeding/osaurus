@@ -212,15 +212,12 @@ struct BatchEngineAdapter {
             let chat = MLXGenerationEngine.preprocessImages(in: buildChat())
             let toolsSpec = buildToolsSpec()
 
-            // Same explicit resolution as `MLXGenerationEngine`: when tools
-            // are in play but the caller has no opinion on thinking, default
-            // to `enable_thinking: false` so reasoning tokens don't interleave
-            // with tool-call wire format and trip up the parser.
+            // Honor the caller's explicit `disableThinking` toggle when
+            // present; otherwise omit the kwarg so the chat template's own
+            // default takes effect. Mirrors `MLXGenerationEngine`.
             let additionalContext: [String: any Sendable]?
             if let disableThinking = generation.modelOptions["disableThinking"]?.boolValue {
                 additionalContext = ["enable_thinking": !disableThinking]
-            } else if let specs = toolsSpec, !specs.isEmpty {
-                additionalContext = ["enable_thinking": false]
             } else {
                 additionalContext = nil
             }

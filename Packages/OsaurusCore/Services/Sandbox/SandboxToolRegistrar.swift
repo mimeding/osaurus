@@ -37,6 +37,29 @@ public final class SandboxToolRegistrar {
 
     private var unavailability: [UUID: UnavailabilityReason] = [:]
 
+    /// Coalesces concurrent `startContainer()` attempts so multiple Work
+    /// sessions / Chat sends don't pile up duplicate provision tasks (which
+    /// caused vmnet "address already in use" thrashing).
+    private var startupTask: Task<Void, Error>?
+
+    /// Earliest wall-clock time at which a fresh `startContainer()` retry is
+    /// allowed after a failed attempt. We back off so a misconfigured host
+    /// (vmnet collision, port conflict, missing entitlement) doesn't generate
+    /// log spam on every chat send.
+    private var nextStartupRetryAfter: Date?
+
+    /// Number of `startContainer()` attempts since process launch that have
+    /// failed. After `maxStartupFailures` we stop trying entirely until the
+    /// user takes explicit action (toggling autonomous off/on, restarting
+    /// the app, or hitting "Start" in the Sandbox settings panel).
+    private var startupFailureCount: Int = 0
+
+    /// Cool-down between failed `startContainer()` attempts.
+    private static let startupRetryCooldown: TimeInterval = 120
+
+    /// Hard cap on automatic startup attempts per app launch.
+    private static let maxStartupFailures: Int = 3
+
     /// Returns the current unavailability reason for an agent, if any.
     public func unavailabilityReason(for agentId: UUID) -> UnavailabilityReason? {
         unavailability[agentId]
@@ -144,9 +167,48 @@ public final class SandboxToolRegistrar {
                 return
             }
 
+            // After `maxStartupFailures` give up entirely until the user
+            // takes explicit action (toggling autonomous off/on, restarting
+            // the app, or hitting "Start" in the Sandbox settings panel).
+            // The recorded unavailability tells the model what happened.
+            if startupFailureCount >= Self.maxStartupFailures {
+                if unavailability[agent.id] == nil {
+                    recordUnavailability(
+                        for: agent.id,
+                        kind: containerStatus == .notProvisioned ? .containerUnavailable : .startupFailed,
+                        message:
+                            "Sandbox start has failed \(startupFailureCount) times this session — automatic retries disabled. Open the Sandbox settings panel to start it manually or check ~/.osaurus/container/containers/osaurus-sandbox for stale state."
+                    )
+                }
+                return
+            }
+
+            // Honor the failure cool-down so a misconfigured host (vmnet
+            // collision, port-in-use, missing entitlement) doesn't get
+            // hammered with a fresh provision attempt on every chat/work
+            // send. The previous failure reason is still in `unavailability`
+            // so the model gets the same notice without us re-trying.
+            if let retryAfter = nextStartupRetryAfter, retryAfter > Date() {
+                if unavailability[agent.id] == nil {
+                    recordUnavailability(
+                        for: agent.id,
+                        kind: containerStatus == .notProvisioned ? .containerUnavailable : .startupFailed,
+                        message: "Sandbox container start is in cool-down after a recent failure"
+                    )
+                }
+                return
+            }
+
             do {
-                try await SandboxManager.shared.startContainer()
+                try await ensureContainerStartedCoalesced()
             } catch {
+                startupFailureCount += 1
+                nextStartupRetryAfter = Date().addingTimeInterval(Self.startupRetryCooldown)
+                // Clear any leftover container/bridge state so the next
+                // attempt starts from a clean slate. The SDK's own cleanup
+                // sometimes leaves the on-disk container directory behind
+                // (the source of "file ... already exists" errors).
+                await SandboxManager.shared.cleanupAfterFailure()
                 recordUnavailability(
                     for: agent.id,
                     kind: containerStatus == .notProvisioned ? .containerUnavailable : .startupFailed,
@@ -156,6 +218,9 @@ public final class SandboxToolRegistrar {
             }
 
             guard SandboxManager.State.shared.status == .running else {
+                startupFailureCount += 1
+                nextStartupRetryAfter = Date().addingTimeInterval(Self.startupRetryCooldown)
+                await SandboxManager.shared.cleanupAfterFailure()
                 recordUnavailability(
                     for: agent.id,
                     kind: .startupFailed,
@@ -163,6 +228,10 @@ public final class SandboxToolRegistrar {
                 )
                 return
             }
+
+            // Successful start resets failure tracking.
+            nextStartupRetryAfter = nil
+            startupFailureCount = 0
         }
 
         if needsProvisioning {
@@ -191,8 +260,31 @@ public final class SandboxToolRegistrar {
         kind: UnavailabilityReason.Kind,
         message: String
     ) {
-        NSLog("[SandboxToolRegistrar] \(message)")
-        unavailability[agentId] = UnavailabilityReason(kind: kind, message: message)
+        // Only log when this is a NEW failure (kind+message changed). Without
+        // this, every chat send / work iteration produces another identical
+        // line in the system log.
+        let prev = unavailability[agentId]
+        let next = UnavailabilityReason(kind: kind, message: message)
+        unavailability[agentId] = next
+        if prev != next {
+            NSLog("[SandboxToolRegistrar] \(message)")
+        }
+    }
+
+    /// Coalesce concurrent `startContainer()` attempts so multiple sessions
+    /// firing `registerTools` in parallel share one provision task instead
+    /// of racing each other into "address already in use" / vmnet failures.
+    private func ensureContainerStartedCoalesced() async throws {
+        if let inFlight = startupTask {
+            try await inFlight.value
+            return
+        }
+        let task = Task<Void, Error> {
+            try await SandboxManager.shared.startContainer()
+        }
+        startupTask = task
+        defer { startupTask = nil }
+        try await task.value
     }
 
     private func ensureProvisioned(agentId: UUID) async throws {
@@ -227,9 +319,24 @@ public final class SandboxToolRegistrar {
 
     private func handleContainerStatusChanged(_ newStatus: ContainerStatus) async {
         if newStatus == .running {
+            // Someone (UI, autoStart, agent provisioner) successfully
+            // started the container — clear any prior failure tracking so
+            // future hiccups can retry from scratch.
+            startupFailureCount = 0
+            nextStartupRetryAfter = nil
             await SandboxPluginManager.shared.verifyAndRepairAllPlugins()
         }
         registerAllPluginTools()
         await registerTools(for: AgentManager.shared.activeAgent.id)
+    }
+
+    /// Reset the failure tracking so the next `registerTools` call is
+    /// allowed to attempt startup again. Called when the user takes an
+    /// explicit action that should bypass the cool-down: toggling
+    /// autonomous execution off/on, or hitting "Start" in the Sandbox
+    /// settings panel.
+    public func resetStartupFailures() {
+        startupFailureCount = 0
+        nextStartupRetryAfter = nil
     }
 }

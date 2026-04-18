@@ -279,6 +279,9 @@ extension AgentManager {
         }
 
         if willBeEnabled && !wasEnabled {
+            // Toggling autonomous on is an explicit user action — clear any
+            // prior failure cool-down so this attempt isn't suppressed.
+            SandboxToolRegistrar.shared.resetStartupFailures()
             try await SandboxAgentProvisioner.shared.ensureProvisioned(agentId: agentId)
         }
     }
