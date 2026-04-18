@@ -380,7 +380,7 @@ public struct CreateIssueTool: OsaurusTool {
 public struct RequestClarificationTool: OsaurusTool {
     public let name = "request_clarification"
     public let description =
-        "Ask the user a question when the task is critically ambiguous. Only use this for ambiguities that would lead to wrong results if assumed incorrectly. Do NOT use for minor details or preferences."
+        "Ask the user a question when the task is " + SystemPromptTemplates.requestClarificationGuidance + "."
 
     public let parameters: JSONValue? = .object([
         "type": .string("object"),

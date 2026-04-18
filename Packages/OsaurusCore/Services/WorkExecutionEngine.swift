@@ -347,7 +347,7 @@ public actor WorkExecutionEngine {
 
                 \(summary)
 
-                Continue from where this summary leaves off.
+                If you saved any notes earlier, call `read_notes` now to recover detail that the summary may have dropped. Then continue from where this summary leaves off.
                 """
         )
 
@@ -1053,7 +1053,7 @@ public actor WorkExecutionEngine {
         else { return nil }
         recentToolCalls.removeAll(keepingCapacity: true)
         return
-            "[System Notice] You've called `\(invocation.toolName)` multiple times with the same arguments without progress. Try a different tool, change the arguments, or describe the blocker so we can move forward."
+            "[System Notice] You've called `\(invocation.toolName)` repeatedly without progress. Pivot now: try a different tool, change the arguments meaningfully, or split the work with `create_issue` and call `complete_task` with `status: \"blocked\"` describing what you tried and why it didn't work."
     }
 
     /// Sum char-count of `content` plus serialized `tool_calls` plus tool

@@ -42,6 +42,33 @@ public enum SystemPromptTemplates {
         `capabilities_load`.
         """
 
+    // MARK: - Shared Work-mode guidance fragments
+
+    /// Single source of truth for the `request_clarification` threshold.
+    /// Referenced from both Work-mode prompt variants and the tool's own
+    /// description so the model never sees three slightly-different
+    /// thresholds (which historically caused over-pinging or guessing).
+    public static let requestClarificationGuidance =
+        "ambiguous in a way that would lead to the wrong result if you guessed. "
+        + "For minor preferences or recoverable choices, pick a sensible default and proceed"
+
+    /// Reminder that bookkeeping is not termination. Appended to both
+    /// Work-mode `## Notes` sections so the model can't confuse "I wrote
+    /// notes" with "the task is done."
+    public static let saveNotesNotTerminalReminder = """
+        Calling `save_notes` records bookkeeping but does NOT end the task. \
+        The only valid finish is `complete_task` (verified, partial, or blocked). \
+        Save notes before any partial/blocked completion so resumes pick up where you left off.
+        """
+
+    /// Replacement for the sandbox `share_artifact` mandate when the agent
+    /// is operating directly in the user's host folder. Without this the
+    /// user often has no idea which files were touched.
+    public static let hostFolderFileListMandate =
+        "The user sees changes via the working folder. In your `complete_task` summary list "
+        + "every file or directory you modified or created (paths relative to the folder root, "
+        + "or absolute) so the user knows where to look."
+
     // MARK: - Work Mode
 
     public enum WorkModeVariant {
@@ -67,6 +94,7 @@ public enum SystemPromptTemplates {
         } else {
             completionLines = """
                 - When finished, call `complete_task` with `{"status":"verified","summary":"...","verification_performed":"...","remaining_risks":"none","remaining_work":"none"}`.
+                - \(hostFolderFileListMandate)
                 - If work is unfinished, call `complete_task` with `status: "partial"` or `status: "blocked"` and explain the verification performed, remaining risks, and remaining work.
                 """
         }
@@ -82,7 +110,8 @@ public enum SystemPromptTemplates {
 
             - ALWAYS attempt the task using your tools. Never refuse or list limitations.
             - Read/explore before modifying. Never edit code you have not examined.
-            - Use `create_issue` for additional work; `request_clarification` if ambiguous.
+            - Use `create_issue` for additional work; use `request_clarification` only when the task is \(requestClarificationGuidance).
+            - For longer tasks, briefly restate goal -> done -> next -> blockers every few rounds to stay on track.
             - If something fails: read the error, verify assumptions, apply a targeted fix. Do not retry blindly.
             - Limit changes to what was requested. No speculative error handling, no premature abstractions, no narrating comments.
             - Start with the answer — no filler, no echoing the user. Be concise.
@@ -90,6 +119,8 @@ public enum SystemPromptTemplates {
             ## Notes
 
             Use `save_notes` to record important findings, decisions, file paths, and current state as you work. Your context may be compacted during long tasks — saved notes persist and will be available if you resume. Use `read_notes` to recall earlier findings.
+
+            \(saveNotesNotTerminalReminder)
 
             """
     }
@@ -113,7 +144,8 @@ public enum SystemPromptTemplates {
 
                 When the goal is fully achieved:
                 1. Call `complete_task` with `{"status":"verified","summary":"what was accomplished","verification_performed":"tests run / commands executed / manual validation","remaining_risks":"none","remaining_work":"none"}`.
-                2. If the task is incomplete, still use `complete_task`, but set `status` to `partial` or `blocked` and describe the actual verification performed, the remaining risks, and the remaining work.
+                2. \(hostFolderFileListMandate)
+                3. If the task is incomplete, still use `complete_task`, but set `status` to `partial` or `blocked` and describe the actual verification performed, the remaining risks, and the remaining work.
                 """
         }
 
@@ -131,7 +163,14 @@ public enum SystemPromptTemplates {
             - You do not need to plan everything upfront. Explore, read, understand, then act.
             - If you discover additional work needed, use `create_issue` to track it.
             - Use `complete_task` as the normal way to finish work once the task is actually verified. If work cannot be fully finished, use `status: "partial"` or `status: "blocked"` instead of pretending it is done.
-            - If the task is ambiguous and you cannot make a reasonable assumption, use `request_clarification`.
+            - Use `request_clarification` only when the task is \(requestClarificationGuidance).
+
+            ## Stay Oriented
+
+            For tasks longer than 3-4 tool calls, periodically restate (one short line is enough):
+            goal -> what is done -> next action -> any blockers. Do this at the start, after major
+            discoveries, and before risky changes. This keeps you on track when context is long
+            and is the single most reliable way to avoid drifting off the user's actual request.
 
             ## Task Execution
 
@@ -177,6 +216,8 @@ public enum SystemPromptTemplates {
             ## Notes
 
             Use `save_notes` to record important findings, decisions, file paths, and current state as you work. Your context may be compacted during long tasks — saved notes persist and will be available if you resume. Use `read_notes` to recall earlier findings.
+
+            \(saveNotesNotTerminalReminder)
 
             """
     }

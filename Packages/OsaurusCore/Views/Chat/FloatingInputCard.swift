@@ -296,7 +296,12 @@ struct FloatingInputCard: View {
 
     private var mainContent: some View {
         VStack(spacing: 12) {
-            if (pickerItems.count > 1
+            // Work mode always renders the row so the folder chip is reachable
+            // even when sandbox is unavailable, no token estimate exists, and
+            // the agent has a single picker item — otherwise the user has no
+            // way to pick a working folder.
+            if (workInputState != nil
+                || pickerItems.count > 1
                 || displayContextTokens > 0
                 || isSandboxAvailable
                 || (appConfig.chatConfig.enableClipboardMonitoring && clipboardService.hasNewContent))
@@ -1129,13 +1134,11 @@ extension FloatingInputCard {
             }
 
             // Sandbox toggle: visible whenever the sandbox is available on
-            // this system. Folder context replaces the sandbox in Work mode
-            // (mutually exclusive execution backends), so it's hidden there
-            // when a folder is active — but in Chat mode the folder context
-            // doesn't apply, so the chip stays visible regardless.
-            if isSandboxAvailable
-                && (workInputState == nil || !folderContextService.hasActiveFolder)
-            {
+            // this system. Mutual exclusion with the folder backend is
+            // enforced inside `toggleSandbox()` (it clears the active
+            // folder before enabling sandbox), not by hiding the chip —
+            // that way the user can always see and switch backends.
+            if isSandboxAvailable {
                 sandboxToggleChip
             }
 
@@ -1145,13 +1148,11 @@ extension FloatingInputCard {
             }
 
             // Folder context selector: visible whenever the user is on the
-            // Work tab and sandbox isn't enabled (folder + sandbox are
-            // mutually exclusive backends). The chip's own internals render
-            // both "no folder picked" and "folder picked" states, so we no
-            // longer gate on `hasActiveFolder || isAgentEmptyMode` —
-            // otherwise the chip disappears mid-task and the user can't see
-            // what folder is in use.
-            if workInputState != nil && !isSandboxEnabled {
+            // Work tab. Mutual exclusion with sandbox is enforced inside
+            // the folder selection handlers (they disable autonomous exec
+            // before opening the picker), not by hiding the chip — both
+            // backends stay reachable so the user can switch freely.
+            if workInputState != nil {
                 folderContextChip
             }
 
@@ -1437,7 +1438,18 @@ extension FloatingInputCard {
         newConfig.enabled.toggle()
         let agentId = effectiveAgentId
         let manager = agentManager
+        let willEnable = newConfig.enabled
+        let folderService = folderContextService
         Task {
+            // Sandbox and folder backends are mutually exclusive — clear the
+            // folder context BEFORE provisioning sandbox so we don't briefly
+            // leave both backends "live". On a provision failure we roll the
+            // sandbox flag back but leave the folder cleared (the user can
+            // re-pick it); avoiding a partial-state mess is worth the extra
+            // tap.
+            if willEnable && folderService.hasActiveFolder {
+                folderService.clearFolder()
+            }
             do {
                 try await manager.updateAutonomousExec(newConfig, for: agentId)
             } catch {
@@ -1452,6 +1464,32 @@ extension FloatingInputCard {
                 rollback.enabled.toggle()
                 try? await manager.updateAutonomousExec(rollback, for: agentId)
             }
+        }
+    }
+
+    /// Disable autonomous execution (sandbox) if currently enabled. Used by
+    /// folder selection paths to enforce sandbox/folder mutual exclusion at
+    /// the tap site instead of by hiding chips.
+    private func disableSandboxIfEnabled() async {
+        guard isSandboxEnabled else { return }
+        var config = agentManager.effectiveAutonomousExec(for: effectiveAgentId) ?? .default
+        config.enabled = false
+        do {
+            try await agentManager.updateAutonomousExec(config, for: effectiveAgentId)
+        } catch {
+            NSLog(
+                "[FloatingInputCard] Failed to disable sandbox for folder backend switch: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// Disable sandbox (if enabled) then open the system folder picker.
+    /// Drives both the chip's main tap and the context-menu "Change Folder"
+    /// item so they share one mutual-exclusion path.
+    private func selectFolderWithSandboxOff() {
+        Task {
+            await disableSandboxIfEnabled()
+            _ = await folderContextService.selectFolder()
         }
     }
 
@@ -1844,7 +1882,7 @@ extension FloatingInputCard {
 
         return HStack(spacing: 4) {
             if canEdit {
-                Button(action: { Task { await folderContextService.selectFolder() } }) {
+                Button(action: selectFolderWithSandboxOff) {
                     folderChipContent(hasFolder: hasFolder, canEdit: true)
                 }
                 .buttonStyle(.plain)
@@ -1852,7 +1890,7 @@ extension FloatingInputCard {
                 .contextMenu {
                     if hasFolder {
                         Button {
-                            Task { await folderContextService.selectFolder() }
+                            selectFolderWithSandboxOff()
                         } label: {
                             Label {
                                 Text("Change Folder", bundle: .module)
