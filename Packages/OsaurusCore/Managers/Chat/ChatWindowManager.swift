@@ -139,10 +139,8 @@ public final class ChatWindowManager: NSObject, ObservableObject {
         window.close()
     }
 
-    /// Check if window close should be allowed.
-    /// Always returns true now that work mode is gone — chat sessions
-    /// can be safely closed; if the user wants to keep the chat running
-    /// in the background they should leave the window open.
+    /// Check if window close should be allowed. Chat sessions can always
+    /// be safely closed; users keep work running by leaving the window open.
     private func shouldAllowClose(id: UUID) -> Bool {
         _ = id
         return true

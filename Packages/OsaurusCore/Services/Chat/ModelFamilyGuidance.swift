@@ -10,11 +10,8 @@
 //    - GLM/Qwen are usually well-behaved; a small reminder is enough.
 //    - Everything else gets nothing — silence is a feature.
 //
-//  This is the Hermes pattern: their `agent/prompt_builder.py` keeps a
-//  per-family map (`OPENAI_MODEL_EXECUTION_GUIDANCE`,
-//  `GOOGLE_MODEL_OPERATIONAL_GUIDANCE`) so each family gets tightly
-//  targeted nudges instead of one universal addendum that satisfies no
-//  one and inflates every prompt.
+//  Each family gets a tightly-targeted block instead of one universal
+//  addendum that satisfies no one and inflates every prompt.
 //
 //  The blocks are static strings so they survive the prompt-caching path.
 //  Resolution is a case-insensitive substring match on the model id, with
@@ -71,9 +68,9 @@ enum ModelFamilyGuidance {
     // MARK: - Family blocks
 
     /// GPT / Codex / o-series: persistence + verification + act-don't-ask.
-    /// Adapted from Hermes' `OPENAI_MODEL_EXECUTION_GUIDANCE`. The XML-tag
-    /// shape matters — these models were trained to weight `<tag>...</tag>`
-    /// blocks as structured directives rather than prose suggestions.
+    /// The XML-tag shape matters — these models were trained to weight
+    /// `<tag>...</tag>` blocks as structured directives rather than as
+    /// prose suggestions, so we keep that wrapping for each section.
     static let gptCodexGuidance = """
         # Execution discipline
 
@@ -115,9 +112,8 @@ enum ModelFamilyGuidance {
         """
 
     /// Google Gemma / Gemini: anti-hallucination + execute-don't-narrate.
-    /// Adapted from Hermes' `GOOGLE_MODEL_OPERATIONAL_GUIDANCE`, with the
-    /// addition of an explicit "do not enumerate tools" line because we've
-    /// observed Gemma 4 listing fictional tool names in its thinking.
+    /// Includes an explicit "do not enumerate tools" line because Gemma
+    /// has been observed listing fictional tool names in its thinking.
     static let googleGemmaGuidance = """
         # Operational directives
 

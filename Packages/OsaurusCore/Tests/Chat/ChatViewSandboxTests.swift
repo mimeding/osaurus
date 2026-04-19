@@ -131,9 +131,8 @@ struct ChatViewSandboxTests {
         _ = await manager.delete(id: sandboxAgent.id)
     }
 
-    // The Work-mode budget-estimate test was removed when WorkSession +
-    // the issue tracker were retired. Chat session budget estimation is
-    // covered indirectly via SystemPromptComposer + ContextBudgetManager.
+    // Chat session budget estimation is covered indirectly via
+    // SystemPromptComposer + ContextBudgetManager tests.
 }
 
 @MainActor

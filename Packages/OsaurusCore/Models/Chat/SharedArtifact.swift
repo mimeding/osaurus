@@ -3,10 +3,7 @@
 //  osaurus
 //
 //  An artifact (file, directory, or inline content) handed off by the agent
-//  to the user. Used by the chat-side `share_artifact` tool path. Originally
-//  lived in `Models/Work/WorkModels.swift` alongside Work-mode types; moved
-//  here when the Work-mode backend was deleted because chat sessions remain
-//  the live consumer.
+//  to the user. Used by the chat-side `share_artifact` tool path.
 //
 
 import Foundation
@@ -14,8 +11,8 @@ import Foundation
 // MARK: - Artifact Context Type
 
 public enum ArtifactContextType: String, Codable, Sendable {
-    /// Retained for back-compat with tool results enriched before the
-    /// work-mode deletion. New artifacts are always `.chat`.
+    /// Retained only so previously-encoded artifacts decode cleanly. New
+    /// artifacts are always `.chat`.
     case work
     case chat
 }
@@ -198,12 +195,12 @@ extension SharedArtifact {
         )
     }
 
-    /// Full processing pipeline: parse markers, resolve files, copy to artifacts dir,
-    /// and return both the artifact and an enriched tool result string.
-    /// (No DB persistence — the issue tracker DB was retired with the work-mode
-    /// deletion. Artifacts live on disk under `~/.osaurus/artifacts/{contextId}/`
-    /// and are referenced by the enriched tool-result string carried in chat
-    /// transcripts.)
+    /// Full processing pipeline: parse markers, resolve files, copy to
+    /// artifacts dir, and return both the artifact and an enriched tool
+    /// result string. Artifacts live on disk under
+    /// `~/.osaurus/artifacts/{contextId}/` and are referenced by the
+    /// enriched tool-result string carried in chat transcripts — no
+    /// database persistence.
     static func processToolResult(
         _ toolResult: String,
         contextId: String,

@@ -57,9 +57,10 @@ struct ToolErrorEnvelopeTests {
     }
 
     @Test func envelopeNeverIncludesSuggestedTools() throws {
-        // Hermes-style: suggestions in error envelopes were causing the model
-        // to invent neighbouring tool names. The envelope should now carry
-        // only error/reason/retryable/(tool) — no list of "you might mean...".
+        // Suggestions in error envelopes were causing the model to invent
+        // neighbouring tool names (it treats the suggestion as proof a
+        // tool exists). The envelope must carry only error/reason/retryable/
+        // (tool) — no "you might mean..." list.
         let env = ToolErrorEnvelope(
             kind: .toolNotFound,
             reason: "Tool 'mystery' is not available in this session.",

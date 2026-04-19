@@ -130,9 +130,9 @@ public final class FolderContextService: ObservableObject {
 
     // MARK: - Context Files
 
-    /// Maximum total size for the loaded context block. Matches Hermes'
-    /// `CONTEXT_FILE_MAX_CHARS` so the model sees the same upper bound it
-    /// was trained against.
+    /// Maximum total size for the loaded context block (~5K tokens). Big
+    /// enough for a typical AGENTS.md / CLAUDE.md, small enough that it
+    /// can't crowd out the rest of the system prompt.
     private static let contextFileMaxChars = 20_000
 
     /// Search order for the project-level context file. First found wins —
@@ -160,8 +160,9 @@ public final class FolderContextService: ObservableObject {
     }
 
     /// Head + tail truncation with a `[truncated ...]` marker in the middle.
-    /// Matches Hermes' 70/20 split — the head usually contains the most
-    /// important framing while the tail catches sign-off / configuration.
+    /// 70% head / 20% tail — the head usually contains the most important
+    /// framing (project intro, conventions) while the tail catches
+    /// sign-off / configuration that often appears at the bottom.
     private static func truncateContextContent(_ content: String, label: String) -> String {
         guard content.count > contextFileMaxChars else { return content }
         let headChars = Int(Double(contextFileMaxChars) * 0.7)

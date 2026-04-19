@@ -461,8 +461,8 @@ struct NotchView: View {
 
     @ViewBuilder
     private func expandedProgress(task: BackgroundTaskState) -> some View {
-        // Chat tasks always show an indeterminate shimmer; structured
-        // progress was a Work-mode concept tied to issue counts.
+        // Chat tasks have no structured progress signal, so always show
+        // an indeterminate shimmer while the task is running.
         IndeterminateShimmerProgress(color: accentColor, height: 3)
     }
 

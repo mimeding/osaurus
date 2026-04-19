@@ -281,10 +281,9 @@ final class PluginHostContext: @unchecked Sendable {
         }
     }
 
-    /// Removed in the work-mode deletion. Chat agent uses the inline
-    /// `clarify` intercept rendered in the chat window; there is no
-    /// programmatic clarification submission API anymore. The C ABI slot
-    /// is preserved so old plugins keep loading; the call is a no-op.
+    /// No-op: clarifications are surfaced inline in the chat window via
+    /// the `clarify` agent intercept. The C ABI slot is preserved so old
+    /// plugins keep loading.
     func dispatchClarify(taskId: String, response: String) {
         _ = taskId
         _ = response
@@ -2197,17 +2196,17 @@ extension PluginHostContext {
         )
     }
 
-    /// Removed in the work-mode deletion: issues no longer exist as a
-    /// concept. The C ABI slot is retained so old plugins keep loading;
-    /// the call returns a clean error envelope so plugins notice and fall
-    /// back to plain `dispatch`.
+    /// Returns a `not_supported` error envelope: nested issues no longer
+    /// exist as a concept, so plugins should call `dispatch` to start a
+    /// fresh task instead. The C ABI slot is retained so old plugins
+    /// keep loading.
     static let trampolineDispatchAddIssue: osr_dispatch_add_issue_t = { taskIdPtr, _ in
         guard let taskIdPtr, let ctx = activeContext() else { return nil }
         let taskId = String(cString: taskIdPtr)
         let result = jsonString([
             "error": "not_supported",
             "message":
-                "dispatch_add_issue was removed when work-mode issue tracking was retired. Use `dispatch` for a fresh task.",
+                "dispatch_add_issue is no longer supported. Call dispatch() to start a fresh task.",
         ])
         logPluginCall(
             pluginId: ctx.pluginId,

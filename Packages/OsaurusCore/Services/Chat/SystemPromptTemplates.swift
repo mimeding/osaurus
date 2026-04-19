@@ -195,9 +195,10 @@ public enum SystemPromptTemplates {
 
         // Project-level guidance (AGENTS.md / CLAUDE.md / .hermes.md /
         // .cursorrules). Loaded once at folder-mount time and stamped onto
-        // the FolderContext, so it lives in the static prefix and
-        // doesn't break KV-cache reuse across turns. Hermes' approach:
-        // first-found-wins, capped at 20K chars, head+tail truncated.
+        // the FolderContext, so it lives in the static prefix and doesn't
+        // break KV-cache reuse across turns. First-found-wins across the
+        // candidate filenames; capped at 20K chars with head+tail
+        // truncation so important leading and trailing instructions stay.
         if let contextFiles = folder.contextFiles, !contextFiles.isEmpty {
             section += "\n## Project Context\n\n"
             section += "The following project context file has been loaded and should be followed:\n\n"

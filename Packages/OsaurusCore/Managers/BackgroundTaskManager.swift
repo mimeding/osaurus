@@ -141,9 +141,9 @@ public final class BackgroundTaskManager: ObservableObject {
     /// follow-up message.
     public func interruptTask(_ backgroundId: UUID, message: String?) {
         guard let state = backgroundTasks[backgroundId], state.status.isActive else { return }
-        // `message` is currently ignored for chat tasks — there's no
-        // mid-stream redirect API on ChatSession the way WorkSession had.
-        // The user can open the window and send a follow-up message.
+        // `message` is ignored for chat tasks — ChatSession has no
+        // mid-stream redirect API. The user can open the window and send
+        // a follow-up message after the soft stop.
         _ = message
         state.chatSession?.stop()
     }

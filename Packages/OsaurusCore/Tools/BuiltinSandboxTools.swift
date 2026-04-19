@@ -222,13 +222,13 @@ private func jsonResult(_ dict: [String: Any]) -> String {
 }
 
 /// Cap a stream's worth of text before it lands in the model's context.
-/// Mirrors Hermes' `execute_code` head+tail strategy: keep the first 40% of
-/// the budget and the last 60%, with a marker in the middle so the model
-/// knows truncation happened. The tail bias matters because final lines
+/// Uses a head + tail strategy: keep the first 40% of the budget and the
+/// last 60%, with a marker in the middle so the model knows truncation
+/// happened. Tail bias matters because the final lines of a process
 /// (errors, summary prints) are usually the most important.
 ///
-/// Default budget is 50_000 chars (~12.5K tokens) — same number Hermes uses.
-/// When the input fits, returned untouched.
+/// Default budget is 50_000 chars (~12.5K tokens). When the input fits
+/// under the budget the text is returned untouched.
 private func truncateForModel(_ text: String, maxChars: Int = 50_000) -> String {
     if text.count <= maxChars { return text }
     let headChars = Int(Double(maxChars) * 0.4)

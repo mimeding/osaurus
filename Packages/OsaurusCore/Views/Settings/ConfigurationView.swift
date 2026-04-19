@@ -1990,7 +1990,7 @@ private struct AgentSettingsSection: View {
                 SettingsSubsection(label: "Permissions") {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(
-                            "Control how work folder tools execute when working with folders in Work mode.",
+                            "Control how folder tools execute when chat has access to a working folder.",
                             bundle: .module
                         )
                         .font(.system(size: 12))

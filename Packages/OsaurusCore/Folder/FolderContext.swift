@@ -32,9 +32,10 @@ public struct FolderContext: Sendable {
 
     /// Project-level guidance file loaded from the folder root, if present.
     /// First-found-wins across `.hermes.md` / `HERMES.md` → `AGENTS.md` →
-    /// `CLAUDE.md` → `.cursorrules`. Capped at 20K chars (head + tail
-    /// truncation, same shape Hermes uses). Pre-formatted with a `## <name>`
-    /// header so the prompt composer can drop it in as-is.
+    /// `CLAUDE.md` → `.cursorrules`. Capped at 20K chars with head + tail
+    /// truncation so the middle of a long file is dropped instead of the
+    /// trailing instructions. Pre-formatted with a `## <name>` header so
+    /// the prompt composer can drop it in as-is.
     public let contextFiles: String?
 
     public init(

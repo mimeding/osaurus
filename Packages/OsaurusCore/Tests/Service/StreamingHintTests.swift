@@ -60,11 +60,11 @@ struct StreamingHintTests {
     }
 
     // Issue #856 regression: the sentinel must NEVER appear in the
-    // visible text of an assistant message. The actual filtering
-    // happens in WorkExecutionEngine + ChatView. Here we lock in the
-    // contract that the decoder will correctly identify the sentinel
-    // so filtering is possible, and that the encoded form always
-    // carries the U+FFFE prefix that consumers check for.
+    // visible text of an assistant message. ChatView filters it out
+    // before render. Here we lock in the contract that the decoder
+    // will correctly identify the sentinel so filtering is possible,
+    // and that the encoded form always carries the U+FFFE prefix that
+    // consumers check for.
     @Test func statsHint_encodedForm_alwaysCarriesNoncharacterPrefix() {
         let samples: [(Int, Double)] = [
             (0, 0.0),

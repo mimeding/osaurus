@@ -2490,17 +2490,14 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 return
             }
 
-            // The clarify endpoint was a Work-mode-only API that allowed
-            // out-of-band response submission to a paused work session.
-            // Chat agents surface clarifications inline in the chat
-            // window via the `clarify` agent intercept, so there's no
-            // structured submit-from-HTTP path anymore. Keep the URL
-            // routable (so old callers don't 404) but return a clear
-            // error pointing them at the new flow.
+            // Clarifications now happen inline in the chat window via the
+            // `clarify` agent intercept — there is no out-of-band submit
+            // channel for HTTP callers. Keep the URL routable (so old
+            // callers don't 404) but return 410 Gone with a clear error.
             _ = taskId
             _ = response
             let responseBody =
-                #"{"error":"not_supported","message":"clarify was removed when work-mode issue tracking was retired"}"#
+                #"{"error":"not_supported","message":"clarify is no longer accepted over HTTP; the agent surfaces clarifications inline in the chat window"}"#
             hop {
                 var headers = [("Content-Type", "application/json; charset=utf-8")]
                 headers.append(contentsOf: cors)

@@ -3,11 +3,8 @@
 //  osaurus
 //
 //  Folder-context tool registration + the chat-side `share_artifact` tool.
-//
-//  Originally also hosted Work-mode-only tools (complete_task, create_issue,
-//  request_clarification, plan_task, etc.). Those were retired when the
-//  Work-mode backend was removed — agent loop helpers are now intercepts
-//  on `todo` / `complete` / `clarify` (see `AgentLoopTools.swift`).
+//  Agent loop helpers (todo / complete / clarify) live in
+//  `AgentLoopTools.swift` and are dispatched as engine intercepts.
 //
 
 import Foundation

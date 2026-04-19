@@ -2,9 +2,7 @@
 //  AgentTodoStore.swift
 //  osaurus
 //
-//  Per-session in-memory store for the agent's `todo` markdown. Replaces
-//  the older WorkPlanStore (per-issue, structured) — sessions are now
-//  the unit of identity since Work mode collapsed into Chat.
+//  Per-session in-memory store for the agent's `todo` markdown.
 //
 //  The agent's `todo` tool writes here; the chat session subscribes to
 //  `.agentTodoChanged` notifications and mirrors into `@Published`

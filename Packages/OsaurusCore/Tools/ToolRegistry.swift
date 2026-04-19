@@ -189,12 +189,14 @@ final class ToolRegistry: ObservableObject {
     /// by which tools are offered to the model (alwaysLoadedSpecs + capabilities_load).
     ///
     /// Unknown tools return a minimal `ToolErrorEnvelope(kind: .toolNotFound)`
-    /// — no suggestions list. Hermes' AGENTS.md calls out cross-tool
-    /// references in error responses as a primary hallucination cause; we
-    /// just say what failed and leave it to the model to either pick a real
-    /// tool from its schema or stop. The one exception is sandbox tools that
-    /// fail mid-startup race: those get a clear "sandbox is initialising"
-    /// notice so the model knows to wait and retry, not invent.
+    /// with no suggestions list — listing other tool names in an error
+    /// response is a primary hallucination trigger (the model treats the
+    /// suggestion as proof a tool exists and starts inventing siblings).
+    /// We just say what failed and leave it to the model to either pick
+    /// a real tool from its schema or stop. The one exception is sandbox
+    /// tools that fail mid-startup race: those get a clear "sandbox is
+    /// initialising" notice so the model knows to wait and retry, not
+    /// invent.
     func execute(name: String, argumentsJSON: String) async throws -> String {
         guard let tool = toolsByName[name] else {
             // Sandbox-startup race: the model called a sandbox tool before

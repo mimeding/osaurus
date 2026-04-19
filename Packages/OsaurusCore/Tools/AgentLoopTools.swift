@@ -8,10 +8,8 @@
 //    - `complete(summary)` — finish the task with a one-paragraph summary
 //    - `clarify(question)` — pause and wait for the user
 //
-//  These collapse the old Work-mode trio (plan_task / update_plan /
-//  report_progress) plus complete_task + request_clarification into three
-//  small tools with single required fields. Goal: minimum schema surface
-//  so small local models can call them without confusion, while remaining
+//  Each tool has a single required field — minimum schema surface so
+//  small local models can call them without confusion, while remaining
 //  expressive enough for frontier models.
 //
 //  The chat engine intercepts each of these BEFORE dispatching to the
@@ -80,9 +78,8 @@ public final class TodoTool: OsaurusTool, @unchecked Sendable {
 
 // MARK: - complete
 
-/// End the current task with a single-summary contract. Replaces the
-/// older five-field WorkCompletionContract entirely; the chat engine
-/// intercepts this and ends the loop, surfacing the summary to the UI.
+/// End the current task with a single-summary contract. The chat engine
+/// intercepts this call, ends the loop, and surfaces the summary to the UI.
 public final class CompleteTool: OsaurusTool, @unchecked Sendable {
     public let name = "complete"
     public let description =
