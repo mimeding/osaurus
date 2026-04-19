@@ -79,17 +79,32 @@ actor SessionToolStateStore {
 
     // MARK: - Cache fingerprint
 
-    /// Record this send's cache-hint and return the prior turn's hint (if
-    /// any) plus the new turn index. Used to log a single `[Cache]` line
-    /// per send for KV-reuse auditing.
-    func recordSendCacheHint(
-        _ sessionId: String,
-        hint: String
-    ) -> (turn: Int, previousHint: String?) {
+    /// Record this send's cache-hint, emit a one-line `[Cache]` log entry,
+    /// and stamp the matching TTFT trace fields. Lives on the store so the
+    /// turn counter + previous-hint comparison sit next to the state they
+    /// describe instead of being duplicated at every call site.
+    func recordSend(
+        sessionId: String,
+        cacheHint: String,
+        trace: TTFTTrace?
+    ) {
         let prev = lastSendCacheHint[sessionId]
         let turn = (prev?.turn ?? 0) + 1
-        lastSendCacheHint[sessionId] = (turn: turn, hint: hint)
-        return (turn: turn, previousHint: prev?.hint)
+        lastSendCacheHint[sessionId] = (turn: turn, hint: cacheHint)
+
+        let prevHintForLog = prev?.hint ?? "-"
+        let matchStr: String
+        if let prevHint = prev?.hint {
+            matchStr = (prevHint == cacheHint) ? "true" : "false"
+        } else {
+            matchStr = "n/a"
+        }
+        debugLog(
+            "[Cache] turn=\(turn) hint=\(cacheHint) prevHint=\(prevHintForLog) match=\(matchStr)"
+        )
+        trace?.set("cacheHint", cacheHint)
+        trace?.set("cacheTurn", turn)
+        trace?.set("cacheHintMatched", matchStr == "true" ? "1" : (matchStr == "n/a" ? "n/a" : "0"))
     }
 
     // MARK: - Invalidation

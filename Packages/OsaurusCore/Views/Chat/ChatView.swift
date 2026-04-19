@@ -1165,25 +1165,16 @@ final class ChatSession: ObservableObject {
                     debugLog(
                         "send: attempt=\(attempts) model=\(req.model) tools=\(req.tools?.count ?? 0) sessionId=\(req.session_id ?? "nil")"
                     )
-                    // Cache-fingerprint diagnostic: one line per send with
-                    // turn index, this turn's hint, the previous turn's
-                    // hint, and whether they matched. Lets us audit KV-cache
-                    // reuse from a single grep without instrumenting MLX.
+                    // Cache-fingerprint diagnostic: one `[Cache]` log line +
+                    // matching TTFT fields per send so we can audit KV reuse
+                    // without instrumenting MLX. Helper lives on the store
+                    // so the turn counter + previous-hint comparison sit
+                    // next to the state they describe.
                     if let sid = sessionId {
-                        let (turn, prevHint) = await SessionToolStateStore.shared.recordSendCacheHint(
-                            sessionStateKey(sid),
-                            hint: context.cacheHint
-                        )
-                        let matched = (prevHint == context.cacheHint)
-                        let matchStr = prevHint == nil ? "n/a" : (matched ? "true" : "false")
-                        debugLog(
-                            "[Cache] turn=\(turn) hint=\(context.cacheHint) prevHint=\(prevHint ?? "-") match=\(matchStr)"
-                        )
-                        ttftTrace?.set("cacheHint", context.cacheHint)
-                        ttftTrace?.set("cacheTurn", turn)
-                        ttftTrace?.set(
-                            "cacheHintMatched",
-                            prevHint == nil ? "n/a" : (matched ? "1" : "0")
+                        await SessionToolStateStore.shared.recordSend(
+                            sessionId: sessionStateKey(sid),
+                            cacheHint: context.cacheHint,
+                            trace: ttftTrace
                         )
                     }
                     // Tool calls parsed from this completion. Populated by

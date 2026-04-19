@@ -149,33 +149,33 @@ public final class SandboxToolRegistrar {
 
         Task { @MainActor in
             registerAllPluginTools()
-            // Auto-start the container BEFORE the initial registerTools call
-            // so the first compose sees real sandbox tools instead of the
-            // placeholder. Eliminates the launch race where `registerTools`
-            // ran with the container still `.notProvisioned`, set
-            // unavailability, and armed the 120 s cool-down before the
-            // detached auto-start task even fired.
-            //
-            // `startContainer` is coalesced inside `SandboxManager`, so this
-            // does not double-fire if some other code path already kicked
-            // a start. Failures are tolerated — the status publisher will
-            // re-trigger `registerTools` if/when the container comes up
-            // later, and `unavailability` carries the failure reason
-            // through to the system prompt + UI.
-            let availability = await SandboxManager.shared.refreshAvailability()
-            if availability.isAvailable {
-                let config = SandboxConfigurationStore.load()
-                if config.autoStart && config.setupComplete {
-                    do {
-                        try await SandboxManager.shared.startContainer()
-                    } catch {
-                        debugLog(
-                            "[Sandbox] Auto-start during launch failed: \(error.localizedDescription)"
-                        )
-                    }
-                }
-            }
+            await autoStartContainerIfConfigured()
             await registerTools(for: AgentManager.shared.activeAgent.id)
+        }
+    }
+
+    /// Refresh availability and, when the user has opted into auto-start,
+    /// boot the container BEFORE the initial `registerTools` call so the
+    /// first compose sees real sandbox tools instead of the placeholder.
+    /// Eliminates the launch race where `registerTools` ran with the
+    /// container still `.notProvisioned`, set unavailability, and armed
+    /// the 120 s cool-down before the auto-start fired.
+    ///
+    /// `startContainer` is coalesced inside `SandboxManager`, so this
+    /// does not double-fire if some other path already kicked a start.
+    /// Failures are tolerated — the status publisher re-triggers
+    /// `registerTools` when the container comes up later, and
+    /// `unavailability` carries the failure reason through to the system
+    /// prompt + UI.
+    private func autoStartContainerIfConfigured() async {
+        let availability = await SandboxManager.shared.refreshAvailability()
+        guard availability.isAvailable else { return }
+        let config = SandboxConfigurationStore.load()
+        guard config.autoStart, config.setupComplete else { return }
+        do {
+            try await SandboxManager.shared.startContainer()
+        } catch {
+            debugLog("[Sandbox] Auto-start during launch failed: \(error.localizedDescription)")
         }
     }
 

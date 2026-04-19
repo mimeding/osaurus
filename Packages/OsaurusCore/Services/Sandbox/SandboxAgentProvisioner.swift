@@ -78,22 +78,15 @@ public final class SandboxAgentProvisioner {
             return
         }
         let task = Task<Void, Error> { [agentId] in
-            try await Self.performProvision(agentId: agentId)
+            let agentName = Self.linuxName(for: agentId)
+            Self.ensureHostWorkspace(for: agentName)
+            try await SandboxManager.shared.startContainer()
+            try await SandboxManager.shared.ensureAgentUser(agentName)
+            SandboxAgentMap.register(linuxName: "agent-\(agentName)", agentId: agentId)
         }
         inFlight[agentId] = task
         defer { inFlight[agentId] = nil }
         try await task.value
-    }
-
-    private static func performProvision(agentId: String) async throws {
-        let agentName = linuxName(for: agentId)
-
-        await MainActor.run {
-            shared.ensureHostWorkspace(for: agentName)
-        }
-        try await SandboxManager.shared.startContainer()
-        try await SandboxManager.shared.ensureAgentUser(agentName)
-        SandboxAgentMap.register(linuxName: "agent-\(agentName)", agentId: agentId)
     }
 
     public func unprovision(agentId: UUID) async -> SandboxAgentCleanupResult {
@@ -133,7 +126,10 @@ public final class SandboxAgentProvisioner {
         )
     }
 
-    private func ensureHostWorkspace(for agentName: String) {
+    /// Make the on-host workspace directory for an agent. Static + nonisolated
+    /// so the provisioning task can call it from the cooperative thread pool
+    /// without hopping back to MainActor for what is just a `mkdir -p`.
+    nonisolated private static func ensureHostWorkspace(for agentName: String) {
         let fm = FileManager.default
         let agentDir = OsaurusPaths.containerAgentDir(agentName)
         let pluginsDir = agentDir.appendingPathComponent("plugins", isDirectory: true)

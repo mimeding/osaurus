@@ -402,49 +402,28 @@ public struct SystemPromptComposer: Sendable {
         additionalToolNames: Set<String>,
         trace: TTFTTrace?
     ) {
-        let toolSource: String
-        if effectiveToolsOff {
-            toolSource = "disabled"
-        } else if !preflight.toolSpecs.isEmpty {
-            toolSource = "preflight"
-        } else if toolMode == .manual {
-            toolSource = "manual"
-        } else {
-            toolSource = "alwaysLoaded"
-        }
+        let toolSource = resolveToolSource(
+            toolMode: toolMode,
+            preflight: preflight,
+            effectiveToolsOff: effectiveToolsOff
+        )
         let sandboxStatus = String(describing: SandboxManager.State.shared.status)
         let sortedNames = tools.map { $0.function.name }.sorted()
-
-        // Snapshot bookkeeping: count how many of the resolved tools came in
-        // via the additive sandbox carve-out (not in the frozen snapshot but
-        // recognised as a built-in sandbox tool that registered late).
-        let liveSandboxNames = ToolRegistry.shared.builtInSandboxToolNamesSnapshot
-        let additiveCount: Int
-        if let frozen = frozenAlwaysLoadedNames {
-            additiveCount = sortedNames.reduce(into: 0) { count, name in
-                if !frozen.contains(name), liveSandboxNames.contains(name) {
-                    count += 1
-                }
-            }
-        } else {
-            additiveCount = 0
-        }
         let frozenSize = frozenAlwaysLoadedNames?.count ?? 0
+        let additiveCount = countAdditiveSandboxTools(
+            in: sortedNames,
+            frozen: frozenAlwaysLoadedNames
+        )
 
         debugLog(
             "[Context:tools] mode=\(toolMode) source=\(toolSource) autonomous=\(autonomousEnabled) sandboxStatus=\(sandboxStatus) executionMode=\(executionMode) count=\(tools.count) frozen=\(frozenSize) additive=\(additiveCount) loaded=\(additionalToolNames.count) names=[\(sortedNames.joined(separator: ", "))]"
         )
-        if autonomousEnabled {
-            if tools.isEmpty {
-                debugLog(
-                    "[Context:tools] WARNING: autonomous execution is enabled but the resolved tool list is empty. The model will not be able to act on the user's request. sandboxStatus=\(sandboxStatus)."
-                )
-            } else if !executionMode.usesSandboxTools {
-                debugLog(
-                    "[Context:tools] WARNING: autonomous execution is enabled but real sandbox tools are not registered — system prompt will carry the 'Sandbox not ready' notice. sandboxStatus=\(sandboxStatus). If sandboxStatus is 'running', SandboxAgentProvisioner.ensureProvisioned likely threw — check earlier [Sandbox] log lines."
-                )
-            }
-        }
+        emitAutonomousWarningsIfNeeded(
+            tools: tools,
+            executionMode: executionMode,
+            autonomousEnabled: autonomousEnabled,
+            sandboxStatus: sandboxStatus
+        )
         trace?.set("toolMode", String(describing: toolMode))
         trace?.set("toolSource", toolSource)
         trace?.set("autonomous", autonomousEnabled ? "1" : "0")
@@ -452,6 +431,58 @@ public struct SystemPromptComposer: Sendable {
         trace?.set("toolFrozen", frozenSize)
         trace?.set("toolAdditive", additiveCount)
         trace?.set("toolLoaded", additionalToolNames.count)
+    }
+
+    /// Where this turn's tool list came from. Order matters: `disabled`
+    /// trumps everything; preflight trumps manual when both are populated
+    /// (preflight is auto-mode-only); manual trumps the always-loaded fallback.
+    private static func resolveToolSource(
+        toolMode: ToolSelectionMode,
+        preflight: PreflightResult,
+        effectiveToolsOff: Bool
+    ) -> String {
+        if effectiveToolsOff { return "disabled" }
+        if !preflight.toolSpecs.isEmpty { return "preflight" }
+        return toolMode == .manual ? "manual" : "alwaysLoaded"
+    }
+
+    /// Count how many resolved tools entered the schema via the additive
+    /// sandbox carve-out (not in the frozen snapshot but registered as a
+    /// built-in sandbox tool late). Returns 0 on the first turn (no snapshot).
+    @MainActor
+    private static func countAdditiveSandboxTools(
+        in toolNames: [String],
+        frozen: Set<String>?
+    ) -> Int {
+        guard let frozen else { return 0 }
+        let liveSandboxNames = ToolRegistry.shared.builtInSandboxToolNamesSnapshot
+        return toolNames.reduce(into: 0) { count, name in
+            if !frozen.contains(name), liveSandboxNames.contains(name) {
+                count += 1
+            }
+        }
+    }
+
+    /// Surface the two failure shapes that look identical to the user
+    /// (model produced no useful response) but have different root causes:
+    /// empty tool list (autonomous on but registry empty) vs sandbox tools
+    /// missing while autonomous is on (provisioning likely threw).
+    private static func emitAutonomousWarningsIfNeeded(
+        tools: [Tool],
+        executionMode: ExecutionMode,
+        autonomousEnabled: Bool,
+        sandboxStatus: String
+    ) {
+        guard autonomousEnabled else { return }
+        if tools.isEmpty {
+            debugLog(
+                "[Context:tools] WARNING: autonomous execution is enabled but the resolved tool list is empty. The model will not be able to act on the user's request. sandboxStatus=\(sandboxStatus)."
+            )
+        } else if !executionMode.usesSandboxTools {
+            debugLog(
+                "[Context:tools] WARNING: autonomous execution is enabled but real sandbox tools are not registered — system prompt will carry the 'Sandbox not ready' notice. sandboxStatus=\(sandboxStatus). If sandboxStatus is 'running', SandboxAgentProvisioner.ensureProvisioned likely threw — check earlier [Sandbox] log lines."
+            )
+        }
     }
 
     /// Did the current request resolve any dynamic (non-always-loaded,
