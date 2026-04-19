@@ -89,10 +89,6 @@ public enum SystemPromptTemplates {
     // MARK: - Sandbox Building Blocks
 
     static let sandboxSectionHeading = "## Linux Sandbox Environment"
-    static let sandboxScaffoldGuidance =
-        "Prefer one `sandbox_run_script` to scaffold or bulk-edit multiple files"
-    static let sandboxVerifyGuidance =
-        "Run tests or verification commands with `sandbox_exec`"
     static let sandboxReadFileHint =
         "`sandbox_read_file` with `start_line`/`line_count`/`tail_lines`"
 
@@ -175,35 +171,56 @@ public enum SystemPromptTemplates {
 
     // MARK: - Folder Context
 
+    /// Working-directory framing appended to the system prompt when chat
+    /// is mounted on a host folder (`ExecutionMode.hostFolder`). Carries
+    /// the path, project type, top-level layout, optional git status,
+    /// usage guidance, and any project-level context file
+    /// (AGENTS.md / CLAUDE.md / .hermes.md / .cursorrules) loaded at
+    /// folder-mount time. Returns `""` when no folder is mounted so the
+    /// composer can append unconditionally.
     public static func folderContext(from folderContext: FolderContext?) -> String {
         guard let folder = folderContext else { return "" }
 
-        var section = "\n## Working Directory\n"
-        section += "**Path:** \(folder.rootPath.path)\n"
-        section += "**Project Type:** \(folder.projectType.displayName)\n"
-
         let topLevel = buildTopLevelSummary(from: folder.tree)
-        section += "**Root contents:** \(topLevel)\n"
+        let gitBlock =
+            folder.gitStatus.flatMap { status -> String? in
+                let trimmed = String(status.prefix(300))
+                guard !trimmed.isEmpty else { return nil }
+                return "\n**Git status (uncommitted changes):**\n```\n\(trimmed)\n```\n"
+            } ?? ""
 
-        if let gitStatus = folder.gitStatus, !gitStatus.isEmpty {
-            let shortStatus = String(gitStatus.prefix(300))
-            section += "\n**Git status (uncommitted changes):**\n```\n\(shortStatus)\n```\n"
-        }
+        var section = """
 
-        section +=
-            "\nUse `file_read`, `file_search`, and `file_list` to explore the project structure. Always read files before editing.\n"
+            ## Working Directory
+            **Path:** \(folder.rootPath.path)
+            **Project Type:** \(folder.projectType.displayName)
+            **Root contents:** \(topLevel)
+            \(gitBlock)
+            **Tool `path` arguments must be relative to the Working Directory** — pass `README.md`, `src/app.py`, `docs/intro.md`. Absolute paths are rejected (the rule is a security boundary, not a convenience), even ones that point inside the directory. The path above is for your reference when describing the project to the user, not for tool calls.
 
-        // Project-level guidance (AGENTS.md / CLAUDE.md / .hermes.md /
-        // .cursorrules). Loaded once at folder-mount time and stamped onto
-        // the FolderContext, so it lives in the static prefix and doesn't
-        // break KV-cache reuse across turns. First-found-wins across the
-        // candidate filenames; capped at 20K chars with head+tail
-        // truncation so important leading and trailing instructions stay.
+            Use `file_read`, `file_search`, and `file_list` to explore the project structure. Always read files before editing.
+
+            For multi-step tasks: take the next concrete action each turn — read, write, run. Don't pause to describe what you're going to do; just do it. Stop only when the task is complete or you genuinely need user input.
+
+            **Artifact requests land on disk, not in chat.** When the user asks you to create, save, write, or generate a file (README, script, config, doc, code, etc.), call `file_write` with the file content and tell the user briefly what you wrote. Do NOT paste the file's contents into your reply — the chat is for interaction, the folder is for artifacts. The user can see the file directly.
+
+            """
+
+        // Project-level guidance file (first-found-wins across AGENTS.md,
+        // CLAUDE.md, .hermes.md, .cursorrules). Loaded once at folder-mount
+        // time and stamped onto the FolderContext so it lives in the static
+        // prefix and doesn't break KV-cache reuse across turns. Capped at
+        // 20K chars with head+tail truncation by FolderContextService.
         if let contextFiles = folder.contextFiles, !contextFiles.isEmpty {
-            section += "\n## Project Context\n\n"
-            section += "The following project context file has been loaded and should be followed:\n\n"
-            section += contextFiles
-            section += "\n"
+            section += """
+
+                ## Project Context
+
+                The following project context file has been loaded and should be followed:
+
+                \(contextFiles)
+
+                """
         }
 
         return section

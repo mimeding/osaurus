@@ -703,6 +703,18 @@ public struct SystemPromptComposer: Sendable {
                     content: SystemPromptTemplates.sandbox(compact: compact, secretNames: secretNames)
                 )
             )
+        } else if let folder = executionMode.folderContext {
+            // Working-directory framing for `.hostFolder`. Without it the
+            // model gets folder tools in its schema but no prose anchor for
+            // WHERE it is, which leads to generic exploration + "I'll do X"
+            // stalls. Static so it joins the cached prefix.
+            composer.append(
+                .static(
+                    id: "folderContext",
+                    label: "Working Directory",
+                    content: SystemPromptTemplates.folderContext(from: folder)
+                )
+            )
         }
         return composer
     }

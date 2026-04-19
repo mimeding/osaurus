@@ -135,8 +135,12 @@ enum ModelFamilyGuidance {
           deliver the final result.
         """
 
-    /// GLM / Qwen: small reminder. These models tend to be solid out of the
-    /// box; over-prompting them just inflates context.
+    /// GLM / Qwen: persistence + termination, both explicit. Without the
+    /// "keep going" bullet these models read a single tool result and
+    /// summarise instead of taking the next step; without the tightened
+    /// "stop only when genuinely done" bullet they invent extra steps to
+    /// look thorough. Pairs well with the folder-context act-don't-narrate
+    /// line for `.hostFolder` chats.
     static let glmQwenGuidance = """
         # Reminders
 
@@ -144,6 +148,11 @@ enum ModelFamilyGuidance {
           missing, work around it or tell the user.
         - Prefer one rich shell invocation over many small calls when the \
           steps are mechanical.
-        - When you've finished, say so plainly and stop calling tools.
+        - Keep going until the task is done. After a tool returns, take \
+          the next concrete action — read a file, write a file, run a \
+          command. Don't stop after a single exploration step to describe \
+          what you'll do next; just do the next step.
+        - When you've genuinely finished, say so plainly and stop calling \
+          tools. Don't invent extra steps to look thorough.
         """
 }

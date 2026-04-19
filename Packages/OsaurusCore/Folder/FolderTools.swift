@@ -33,13 +33,34 @@ enum FolderToolError: LocalizedError {
 
 /// Shared utilities for folder tools
 enum FolderToolHelpers {
-    /// Resolve and validate a relative path, ensuring it's within rootPath
+    /// Resolve a tool's `path` argument under the working folder, with
+    /// two hard rules:
+    ///
+    ///   1. Absolute paths are rejected outright. The relative-path
+    ///      requirement is a security boundary, not a convenience —
+    ///      accepting an absolute that happens to land inside root would
+    ///      quietly weaken the contract for any future change to the
+    ///      resolver. The error envelope tells the model exactly what to
+    ///      pass instead, so the next call self-corrects.
+    ///   2. After `..`/`.` standardisation, the resolved path must be
+    ///      either the root itself or a strict child (`hasPrefix(root + "/")`)
+    ///      so traversal tricks and sibling directories like
+    ///      `<root>-other` can't slip through a substring match.
     static func resolvePath(_ relativePath: String, rootPath: URL) throws -> URL {
-        let cleanPath = relativePath.hasPrefix("/") ? String(relativePath.dropFirst()) : relativePath
-        let resolvedURL = rootPath.appendingPathComponent(cleanPath).standardized
-        let rootPathString = rootPath.standardized.path
+        if relativePath.hasPrefix("/") {
+            throw FolderToolError.invalidArguments(
+                "path must be relative to the working directory (got absolute path "
+                    + "'\(relativePath)'). Pass just the file or directory name — e.g. "
+                    + "'README.md' or 'src/app.py' — not the full filesystem path."
+            )
+        }
 
-        guard resolvedURL.path.hasPrefix(rootPathString) else {
+        let rootStandardized = rootPath.standardized.path
+        let resolvedURL = rootPath.appendingPathComponent(relativePath).standardized
+        let isWithinRoot =
+            resolvedURL.path == rootStandardized
+            || resolvedURL.path.hasPrefix(rootStandardized + "/")
+        guard isWithinRoot else {
             throw FolderToolError.pathOutsideRoot(relativePath)
         }
         return resolvedURL
