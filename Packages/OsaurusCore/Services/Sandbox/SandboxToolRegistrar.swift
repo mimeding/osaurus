@@ -11,6 +11,7 @@
 //  Builtin sandbox tools remain per-agent.
 //
 
+import AppKit
 import Combine
 import Foundation
 
@@ -59,6 +60,18 @@ public final class SandboxToolRegistrar {
 
     /// Hard cap on automatic startup attempts per app launch.
     private static let maxStartupFailures: Int = 3
+
+    /// Per-agent record of whether a `provisioningFailed` retry has already
+    /// been scheduled. We only auto-retry once per failure event — further
+    /// recoveries require explicit user action (toggling autonomous off/on,
+    /// hitting "Retry" on the chip) to avoid silent loops.
+    private var provisioningRetryScheduled: Set<UUID> = []
+
+    /// Delay before the single auto-retry on `provisioningFailed`. Kept
+    /// short because most provisioning failures are transient (container
+    /// settling state, brief lock during user creation) and fail fast on
+    /// the second attempt or succeed.
+    private static let provisioningRetryDelay: TimeInterval = 5
 
     /// Returns the current unavailability reason for an agent, if any.
     public func unavailabilityReason(for agentId: UUID) -> UnavailabilityReason? {
@@ -119,8 +132,49 @@ public final class SandboxToolRegistrar {
             }
         )
 
+        // After macOS sleep / fast user-switch / dock-hide-and-return, the
+        // container can transition `.running -> .stopped -> .running` while
+        // `lastSeenStatus` already holds `.running`, so the status sink
+        // would short-circuit on the next change. Reset on foreground so
+        // we re-evaluate registration whenever the user returns.
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.handleAppDidBecomeActive() }
+            }
+        )
+
         Task { @MainActor in
             registerAllPluginTools()
+            // Auto-start the container BEFORE the initial registerTools call
+            // so the first compose sees real sandbox tools instead of the
+            // placeholder. Eliminates the launch race where `registerTools`
+            // ran with the container still `.notProvisioned`, set
+            // unavailability, and armed the 120 s cool-down before the
+            // detached auto-start task even fired.
+            //
+            // `startContainer` is coalesced inside `SandboxManager`, so this
+            // does not double-fire if some other code path already kicked
+            // a start. Failures are tolerated — the status publisher will
+            // re-trigger `registerTools` if/when the container comes up
+            // later, and `unavailability` carries the failure reason
+            // through to the system prompt + UI.
+            let availability = await SandboxManager.shared.refreshAvailability()
+            if availability.isAvailable {
+                let config = SandboxConfigurationStore.load()
+                if config.autoStart && config.setupComplete {
+                    do {
+                        try await SandboxManager.shared.startContainer()
+                    } catch {
+                        debugLog(
+                            "[Sandbox] Auto-start during launch failed: \(error.localizedDescription)"
+                        )
+                    }
+                }
+            }
             await registerTools(for: AgentManager.shared.activeAgent.id)
         }
     }
@@ -176,6 +230,7 @@ public final class SandboxToolRegistrar {
             // tools — clear any prior unavailability and bail.
             guard autonomousEnabled else {
                 unavailability.removeValue(forKey: agent.id)
+                publishActiveAgentUnavailability(for: agent.id, reason: nil)
                 return
             }
 
@@ -246,11 +301,14 @@ public final class SandboxToolRegistrar {
                     kind: .provisioningFailed,
                     message: "Failed to provision agent sandbox: \(error.localizedDescription)"
                 )
+                scheduleProvisioningAutoRetry(for: agent.id)
                 return
             }
         }
 
         unavailability.removeValue(forKey: agent.id)
+        provisioningRetryScheduled.remove(agent.id)
+        publishActiveAgentUnavailability(for: agent.id, reason: nil)
         BuiltinSandboxTools.register(
             agentId: agentIdStr,
             agentName: agentName,
@@ -271,8 +329,20 @@ public final class SandboxToolRegistrar {
         let next = UnavailabilityReason(kind: kind, message: message)
         unavailability[agentId] = next
         if prev != next {
-            NSLog("[SandboxToolRegistrar] \(message)")
+            debugLog("[Sandbox] \(message)")
         }
+        publishActiveAgentUnavailability(for: agentId, reason: next)
+    }
+
+    /// Mirror per-agent unavailability into `SandboxManager.State.shared`
+    /// so SwiftUI views (the sandbox chip + its tooltip) can react without
+    /// reaching into the registrar's `[UUID: …]` map.
+    private func publishActiveAgentUnavailability(
+        for agentId: UUID,
+        reason: UnavailabilityReason?
+    ) {
+        guard agentId == AgentManager.shared.activeAgent.id else { return }
+        SandboxManager.State.shared.activeAgentUnavailability = reason
     }
 
     /// Bumps the failure counter, arms the cool-down, scrubs any leftover
@@ -320,10 +390,37 @@ public final class SandboxToolRegistrar {
         try await SandboxAgentProvisioner.shared.ensureProvisioned(agentId: agentId)
     }
 
+    /// Schedule a single deferred retry of `registerTools` after a
+    /// `provisioningFailed` outcome. Bounded: only one retry per failure
+    /// event, cleared when the next call succeeds (so a real recovery
+    /// re-arms the auto-retry for the next time it's needed).
+    private func scheduleProvisioningAutoRetry(for agentId: UUID) {
+        guard !provisioningRetryScheduled.contains(agentId) else { return }
+        provisioningRetryScheduled.insert(agentId)
+        let delay = Self.provisioningRetryDelay
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self else { return }
+            // Only retry if the failure record is still present; if a status
+            // change or the user already kicked a retry, skip.
+            guard self.unavailability[agentId]?.kind == .provisioningFailed else {
+                self.provisioningRetryScheduled.remove(agentId)
+                return
+            }
+            debugLog("[Sandbox] Auto-retrying provisioning for agent \(agentId)")
+            await self.registerTools(for: agentId)
+        }
+    }
+
     // MARK: - Event Handlers
 
     private func handleAgentChanged() async {
-        await registerTools(for: AgentManager.shared.activeAgent.id)
+        let newId = AgentManager.shared.activeAgent.id
+        // Sync the published unavailability mirror immediately to the new
+        // agent's state so the sandbox chip doesn't briefly show the prior
+        // agent's failure while `registerTools` runs.
+        publishActiveAgentUnavailability(for: newId, reason: unavailability[newId])
+        await registerTools(for: newId)
     }
 
     private func handleAgentUpdated(agentId: UUID?) async {
@@ -340,6 +437,14 @@ public final class SandboxToolRegistrar {
     private func handlePluginUninstalled(pluginId: String?) async {
         guard let pluginId else { return }
         ToolRegistry.shared.unregisterSandboxPluginTools(pluginId: pluginId)
+    }
+
+    /// On app foreground, drop the cached container status so the status
+    /// publisher re-fires `handleContainerStatusChanged` even if the
+    /// running/not-running bit hasn't flipped from our perspective. Catches
+    /// silent transitions during sleep / fast user-switch.
+    private func handleAppDidBecomeActive() {
+        lastSeenStatus = nil
     }
 
     private var lastSeenStatus: ContainerStatus?

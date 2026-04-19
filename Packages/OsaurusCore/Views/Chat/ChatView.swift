@@ -54,13 +54,10 @@ final class ChatSession: ObservableObject {
     private var cachedContext: ComposedContext?
     private let budgetTracker = ContextBudgetTracker()
 
-    /// Per-session preflight + capabilities_load tool kit. The first send of
-    /// a session populates this with the LLM-resolved preflight result;
-    /// subsequent sends pass it back in via `cachedPreflight` so the LLM
-    /// preflight call only runs once per conversation. Tool names added by
-    /// `capabilities_load` mid-session accumulate in `loadedToolNames` so
-    /// they survive across sends without re-discovery.
-    private var sessionToolStates: [UUID: SessionToolState] = [:]
+    /// Per-session preflight + capabilities_load tool kit lives in the
+    /// process-wide `SessionToolStateStore` so chat sessions and the
+    /// HTTP/plugin path share one cache. Keyed by `sessionId.uuidString`.
+    private var sessionStateKey: (UUID) -> String { { $0.uuidString } }
 
     // MARK: - Agent Loop State (Chat-as-Agent)
 
@@ -469,7 +466,8 @@ final class ChatSession: ObservableObject {
         showVoiceOverlay = false
         // Clear session identity for new chat
         if let prev = sessionId {
-            sessionToolStates.removeValue(forKey: prev)
+            let key = sessionStateKey(prev)
+            Task { await SessionToolStateStore.shared.invalidate(key) }
         }
         sessionId = nil
         title = "New Chat"
@@ -734,11 +732,21 @@ final class ChatSession: ObservableObject {
     /// doesn't disagree with the prompt that's actually sent. Falls back to
     /// the autonomous flag when sandbox tools have not yet been registered
     /// (first send of a session before any tool call has provisioned the
-    /// container).
+    /// container). When the user has a host folder mounted but sandbox is
+    /// off, that wins — folder tools must enter the schema or
+    /// `excludedToolNames(.none)` will hide them entirely.
     private func estimatedChatExecutionMode(agentId: UUID) -> ExecutionMode {
-        let resolved = ToolRegistry.shared.resolveExecutionMode(folderContext: nil)
-        if resolved.usesSandboxTools { return resolved }
-        return AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true ? .sandbox : .none
+        let folder = FolderContextService.shared.currentContext
+        let autonomous = AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true
+        let resolved = ToolRegistry.shared.resolveExecutionMode(
+            folderContext: folder,
+            autonomousEnabled: autonomous
+        )
+        // Optimistic estimate: when autonomous is on but sandbox tools haven't
+        // registered yet, report `.sandbox` so the budget preview matches what
+        // the next send will most likely produce after `registerTools` runs.
+        if autonomous && resolved.usesSandboxTools == false { return .sandbox }
+        return resolved
     }
 
     private func completeRunCleanup() {
@@ -849,13 +857,20 @@ final class ChatSession: ObservableObject {
         ActivityTracker.shared.recordActivity(agentId: context.memoryAgentId)
     }
 
+    /// Resolve the execution mode for the next send. When sandbox is on we
+    /// `await registerTools` so the registry reflects the post-provision
+    /// state before `resolveExecutionMode` reads it. The single resolver on
+    /// `ToolRegistry` then applies the priority rule (sandbox > folder >
+    /// none) and decides whether sandbox tools actually came online.
     func prepareChatExecutionMode(agentId: UUID) async -> ExecutionMode {
-        guard AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true else {
-            return .none
+        let autonomous = AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true
+        if autonomous {
+            await SandboxToolRegistrar.shared.registerTools(for: agentId)
         }
-
-        await SandboxToolRegistrar.shared.registerTools(for: agentId)
-        return ToolRegistry.shared.resolveExecutionMode(folderContext: nil)
+        return ToolRegistry.shared.resolveExecutionMode(
+            folderContext: FolderContextService.shared.currentContext,
+            autonomousEnabled: autonomous
+        )
     }
 
     /// Synchronous manifest for offline token estimation (UI popover).
@@ -964,7 +979,12 @@ final class ChatSession: ObservableObject {
                 // LLM-based selection entirely; the agent uses
                 // capabilities_search / capabilities_load to pick up more
                 // tools mid-session.
-                let cachedSession = sessionId.flatMap { sessionToolStates[$0] }
+                let cachedSession: SessionToolState?
+                if let sid = sessionId {
+                    cachedSession = await SessionToolStateStore.shared.get(sessionStateKey(sid))
+                } else {
+                    cachedSession = nil
+                }
                 let context = await SystemPromptComposer.composeChatContext(
                     agentId: effectiveAgentId,
                     executionMode: executionMode,
@@ -1000,9 +1020,10 @@ final class ChatSession: ObservableObject {
                 // mid-session. Preserves any capabilities_load names
                 // already accumulated this session.
                 if let sid = sessionId, cachedSession == nil {
-                    sessionToolStates[sid] = SessionToolState(
-                        initialPreflight: context.preflight,
-                        initialAlwaysLoadedNames: context.alwaysLoadedNames
+                    await SessionToolStateStore.shared.setInitial(
+                        sessionStateKey(sid),
+                        preflight: context.preflight,
+                        alwaysLoadedNames: context.alwaysLoadedNames
                     )
                 }
 
@@ -1144,6 +1165,27 @@ final class ChatSession: ObservableObject {
                     debugLog(
                         "send: attempt=\(attempts) model=\(req.model) tools=\(req.tools?.count ?? 0) sessionId=\(req.session_id ?? "nil")"
                     )
+                    // Cache-fingerprint diagnostic: one line per send with
+                    // turn index, this turn's hint, the previous turn's
+                    // hint, and whether they matched. Lets us audit KV-cache
+                    // reuse from a single grep without instrumenting MLX.
+                    if let sid = sessionId {
+                        let (turn, prevHint) = await SessionToolStateStore.shared.recordSendCacheHint(
+                            sessionStateKey(sid),
+                            hint: context.cacheHint
+                        )
+                        let matched = (prevHint == context.cacheHint)
+                        let matchStr = prevHint == nil ? "n/a" : (matched ? "true" : "false")
+                        debugLog(
+                            "[Cache] turn=\(turn) hint=\(context.cacheHint) prevHint=\(prevHint ?? "-") match=\(matchStr)"
+                        )
+                        ttftTrace?.set("cacheHint", context.cacheHint)
+                        ttftTrace?.set("cacheTurn", turn)
+                        ttftTrace?.set(
+                            "cacheHintMatched",
+                            prevHint == nil ? "n/a" : (matched ? "1" : "0")
+                        )
+                    }
                     // Tool calls parsed from this completion. Populated by
                     // either the single-throw or batch-throw catch below; the
                     // shared per-tool block then iterates through it.
@@ -1398,16 +1440,15 @@ final class ChatSession: ObservableObject {
                                 // so they survive the next compose call
                                 // without re-running preflight.
                                 if let sid = sessionId {
-                                    var entry =
-                                        sessionToolStates[sid]
-                                        ?? SessionToolState(
-                                            initialPreflight: context.preflight,
-                                            initialAlwaysLoadedNames: context.alwaysLoadedNames
-                                        )
-                                    for tool in newTools {
-                                        entry.loadedToolNames.insert(tool.function.name)
-                                    }
-                                    sessionToolStates[sid] = entry
+                                    let names = newTools.map { $0.function.name }
+                                    let preflight = context.preflight
+                                    let snapshot = context.alwaysLoadedNames
+                                    await SessionToolStateStore.shared.appendLoadedTools(
+                                        sessionStateKey(sid),
+                                        names: names,
+                                        fallbackPreflight: preflight,
+                                        fallbackAlwaysLoadedNames: snapshot
+                                    )
                                 }
                             }
 

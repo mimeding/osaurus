@@ -116,9 +116,13 @@ struct SystemPromptComposerToolResolutionTests {
                     agentId: agentId,
                     executionMode: .sandbox
                 )
-                // No manual selection → only sandbox built-ins remain.
-                let names = tools.map { $0.function.name }
-                #expect(names.allSatisfy { $0.hasPrefix("sandbox_") } || names.isEmpty)
+                // No manual selection → only sandbox built-ins remain. The
+                // built-in set includes `share_artifact` alongside the
+                // `sandbox_*` family, so we assert membership in the live
+                // registry's snapshot rather than a name prefix.
+                let names = Set(tools.map { $0.function.name })
+                let allowed = ToolRegistry.shared.builtInSandboxToolNamesSnapshot
+                #expect(names.isSubset(of: allowed) || names.isEmpty)
                 // Built-ins like capabilities_search MUST NOT be there.
                 #expect(names.contains("capabilities_search") == false)
             }

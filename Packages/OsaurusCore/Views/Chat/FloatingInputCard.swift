@@ -1364,6 +1364,27 @@ extension FloatingInputCard {
         sandboxState.status.isRunning
     }
 
+    /// Visible failure for the active agent, surfaced by the registrar via
+    /// `SandboxManager.State.shared.activeAgentUnavailability`. When set we
+    /// paint the chip red and put the reason in the tooltip so the user
+    /// has an in-app signal that something went wrong (instead of finding
+    /// out only via the model paraphrasing the system-prompt notice).
+    private var sandboxFailure: SandboxToolRegistrar.UnavailabilityReason? {
+        sandboxState.activeAgentUnavailability
+    }
+
+    private var isSandboxFailed: Bool {
+        isSandboxEnabled && sandboxFailure != nil
+    }
+
+    private func retrySandbox() {
+        let agentId = effectiveAgentId
+        Task {
+            SandboxToolRegistrar.shared.resetStartupFailures()
+            await SandboxToolRegistrar.shared.registerTools(for: agentId)
+        }
+    }
+
     private func toggleSandbox() {
         let currentConfig = agentManager.effectiveAutonomousExec(for: effectiveAgentId)
         var newConfig = currentConfig ?? .default
@@ -1389,8 +1410,8 @@ extension FloatingInputCard {
                 // roll the persisted toggle back so the chip flips back to
                 // its previous state. The failure reason still flows to the
                 // model via SandboxToolRegistrar's unavailability notice.
-                NSLog(
-                    "[FloatingInputCard] Sandbox toggle failed for agent \(agentId): \(error.localizedDescription)"
+                debugLog(
+                    "[Sandbox] Toggle failed for agent \(agentId): \(error.localizedDescription)"
                 )
                 var rollback = newConfig
                 rollback.enabled.toggle()
@@ -1409,8 +1430,8 @@ extension FloatingInputCard {
         do {
             try await agentManager.updateAutonomousExec(config, for: effectiveAgentId)
         } catch {
-            NSLog(
-                "[FloatingInputCard] Failed to disable sandbox for folder backend switch: \(error.localizedDescription)"
+            debugLog(
+                "[Sandbox] Failed to disable sandbox for folder backend switch: \(error.localizedDescription)"
             )
         }
     }
@@ -1426,7 +1447,9 @@ extension FloatingInputCard {
     }
 
     private var sandboxHelpText: String {
-        if isSandboxLoading {
+        if let failure = sandboxFailure, isSandboxEnabled {
+            return "Sandbox unavailable: \(failure.message)\nRight-click for Retry."
+        } else if isSandboxLoading {
             return "Sandbox is starting up…"
         } else if isSandboxEnabled && isSandboxRunning {
             return "Sandbox is active — click to disable. Right-click for settings."
@@ -1437,10 +1460,24 @@ extension FloatingInputCard {
         }
     }
 
+    /// Foreground tint for the chip's icon + dot. Failure beats running so a
+    /// briefly-flapping container that came up but failed to provision still
+    /// reads as red.
+    private var sandboxChipAccent: Color {
+        if isSandboxFailed { return .red }
+        if isSandboxLoading { return .orange }
+        if isSandboxEnabled && isSandboxRunning { return .green }
+        return theme.tertiaryText
+    }
+
     private var sandboxToggleChip: some View {
         Button(action: toggleSandbox) {
             HStack(spacing: 5) {
-                if isSandboxLoading {
+                if isSandboxFailed {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.red)
+                } else if isSandboxLoading {
                     ProgressView()
                         .controlSize(.mini)
                         .scaleEffect(0.6)
@@ -1454,18 +1491,16 @@ extension FloatingInputCard {
 
                 Image(systemName: isSandboxEnabled ? "shippingbox.fill" : "shippingbox")
                     .font(.system(size: CGFloat(theme.captionSize) - 2, weight: .medium))
-                    .foregroundColor(
-                        isSandboxEnabled && isSandboxRunning
-                            ? Color.green
-                            : (isSandboxLoading ? Color.orange : theme.tertiaryText)
-                    )
+                    .foregroundColor(sandboxChipAccent)
 
                 Text("Sandbox", bundle: .module)
                     .font(theme.font(size: CGFloat(theme.captionSize), weight: .medium))
                     .foregroundColor(
-                        isSandboxEnabled
-                            ? (isSandboxRunning ? theme.primaryText : theme.secondaryText)
-                            : theme.tertiaryText
+                        isSandboxFailed
+                            ? .red
+                            : (isSandboxEnabled
+                                ? (isSandboxRunning ? theme.primaryText : theme.secondaryText)
+                                : theme.tertiaryText)
                     )
                     .lineLimit(1)
                     .opacity(isSandboxLoading ? sandboxPulseAmount : 1.0)
@@ -1476,9 +1511,11 @@ extension FloatingInputCard {
             .clipShape(Capsule())
             .overlay(sandboxChipBorder)
             .shadow(
-                color: isSandboxEnabled && isSandboxRunning
-                    ? Color.green.opacity(0.12)
-                    : (isSandboxHovered ? theme.accentColor.opacity(0.1) : .clear),
+                color: isSandboxFailed
+                    ? Color.red.opacity(0.15)
+                    : (isSandboxEnabled && isSandboxRunning
+                        ? Color.green.opacity(0.12)
+                        : (isSandboxHovered ? theme.accentColor.opacity(0.1) : .clear)),
                 radius: 4,
                 x: 0,
                 y: 1
@@ -1493,6 +1530,13 @@ extension FloatingInputCard {
         }
         .help(sandboxHelpText)
         .contextMenu {
+            if isSandboxFailed {
+                Button {
+                    retrySandbox()
+                } label: {
+                    Text("Retry Sandbox", bundle: .module)
+                }
+            }
             Button {
                 AppDelegate.shared?.showManagementWindow(initialTab: .sandbox)
             } label: {
@@ -1527,7 +1571,10 @@ extension FloatingInputCard {
             Capsule()
                 .fill(theme.secondaryBackground.opacity(isSandboxHovered || isSandboxEnabled ? 0.95 : 0.8))
 
-            if isSandboxEnabled && isSandboxRunning {
+            if isSandboxFailed {
+                Capsule()
+                    .fill(Color.red.opacity(isSandboxHovered ? 0.16 : 0.10))
+            } else if isSandboxEnabled && isSandboxRunning {
                 Capsule()
                     .fill(Color.green.opacity(isSandboxHovered ? 0.14 : 0.08))
             } else if isSandboxLoading {
@@ -1548,7 +1595,10 @@ extension FloatingInputCard {
 
     @ViewBuilder
     private var sandboxChipBorder: some View {
-        if isSandboxEnabled && isSandboxRunning {
+        if isSandboxFailed {
+            Capsule()
+                .strokeBorder(Color.red.opacity(isSandboxHovered ? 0.45 : 0.30), lineWidth: 1)
+        } else if isSandboxEnabled && isSandboxRunning {
             Capsule()
                 .strokeBorder(Color.green.opacity(isSandboxHovered ? 0.4 : 0.25), lineWidth: 1)
         } else if isSandboxLoading {

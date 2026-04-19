@@ -49,6 +49,14 @@ public struct SandboxAgentCleanupResult: Sendable {
 public final class SandboxAgentProvisioner {
     public static let shared = SandboxAgentProvisioner()
 
+    /// In-flight provisioning tasks keyed by agent id (uuidString form).
+    /// Coalesces concurrent `ensureProvisioned` calls for the same agent so
+    /// the notification-driven path (`SandboxToolRegistrar.handleAgentUpdated`)
+    /// and any direct caller share one attempt instead of racing each other
+    /// through `ensureAgentUser` (which is not itself coalesced and can fail
+    /// with confusing "user already being created" symptoms when interleaved).
+    private var inFlight: [String: Task<Void, Error>] = [:]
+
     private init() {}
 
     public static func linuxName(for agentId: String) -> String {
@@ -65,9 +73,24 @@ public final class SandboxAgentProvisioner {
     }
 
     public func ensureProvisioned(agentId: String) async throws {
-        let agentName = Self.linuxName(for: agentId)
+        if let existing = inFlight[agentId] {
+            try await existing.value
+            return
+        }
+        let task = Task<Void, Error> { [agentId] in
+            try await Self.performProvision(agentId: agentId)
+        }
+        inFlight[agentId] = task
+        defer { inFlight[agentId] = nil }
+        try await task.value
+    }
 
-        ensureHostWorkspace(for: agentName)
+    private static func performProvision(agentId: String) async throws {
+        let agentName = linuxName(for: agentId)
+
+        await MainActor.run {
+            shared.ensureHostWorkspace(for: agentName)
+        }
         try await SandboxManager.shared.startContainer()
         try await SandboxManager.shared.ensureAgentUser(agentName)
         SandboxAgentMap.register(linuxName: "agent-\(agentName)", agentId: agentId)

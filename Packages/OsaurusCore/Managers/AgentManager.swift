@@ -261,6 +261,16 @@ extension AgentManager {
     }
 
     /// Update sandbox execution config for an agent.
+    ///
+    /// Provisioning is delegated to the notification-driven path:
+    /// `SandboxToolRegistrar.handleAgentUpdated` observes `.agentUpdated`
+    /// and calls `registerTools`, which calls
+    /// `SandboxAgentProvisioner.ensureProvisioned` (now coalesced per
+    /// agent). We deliberately do NOT also call `ensureProvisioned`
+    /// directly here — having two callers race through `ensureAgentUser`
+    /// caused the duplicate-attempt spam noted in the audit and
+    /// occasionally produced a `provisioningFailed` envelope even when
+    /// the second attempt would have succeeded.
     public func updateAutonomousExec(_ config: AutonomousExecConfig?, for agentId: UUID) async throws {
         let wasEnabled = effectiveAutonomousExec(for: agentId)?.enabled ?? false
         let willBeEnabled = config?.enabled ?? false
@@ -280,9 +290,9 @@ extension AgentManager {
 
         if willBeEnabled && !wasEnabled {
             // Toggling autonomous on is an explicit user action — clear any
-            // prior failure cool-down so this attempt isn't suppressed.
+            // prior failure cool-down so the registrar's next provisioning
+            // attempt isn't suppressed.
             SandboxToolRegistrar.shared.resetStartupFailures()
-            try await SandboxAgentProvisioner.shared.ensureProvisioned(agentId: agentId)
         }
     }
 

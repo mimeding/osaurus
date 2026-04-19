@@ -149,7 +149,7 @@ enum BuiltinSandboxTools {
             "share_artifact",
             "sandbox_secret_check", "sandbox_secret_set",
             "sandbox_plugin_register",
-            "sandbox_init_pending",
+            BuiltinSandboxTools.initPendingToolName,
         ]
         ToolRegistry.shared.unregister(names: names)
     }
@@ -157,12 +157,19 @@ enum BuiltinSandboxTools {
 
 // MARK: - sandbox_init_pending (placeholder while sandbox boots)
 
+extension BuiltinSandboxTools {
+    /// Name of the placeholder tool registered while the sandbox container
+    /// provisions. Exposed so the prompt composer can suppress it from
+    /// snapshots / schemas without duplicating the literal.
+    public static let initPendingToolName = "sandbox_init_pending"
+}
+
 /// Placeholder tool registered when sandbox is enabled but the container
 /// isn't running yet. Always returns the same "still initialising" envelope.
 /// Designed to keep the model's schema non-empty (so it has *something*
 /// to call) while the container provisions in the background.
 private struct SandboxInitPendingTool: OsaurusTool, @unchecked Sendable {
-    let name = "sandbox_init_pending"
+    let name = BuiltinSandboxTools.initPendingToolName
     let description =
         "Sandbox is starting in the background. Call this tool to confirm it isn't ready, "
         + "then either reply without sandbox tools or tell the user to wait. The real "

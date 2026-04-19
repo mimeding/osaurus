@@ -224,19 +224,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
         // Initialize WatcherManager to start file system watchers
         _ = WatcherManager.shared
 
-        // Start sandbox tool registrar so it observes container status changes
+        // Start sandbox tool registrar. Internally awaits container
+        // auto-start before the initial `registerTools` call, so the first
+        // compose for the active agent sees real sandbox tools instead of
+        // the placeholder. (Replaces a separate `Task.detached` startContainer
+        // call that used to race the registrar's first registration.)
         SandboxToolRegistrar.shared.start()
-
-        // Initialize sandbox container (if available and configured to auto-start)
-        Task.detached {
-            let availability = await SandboxManager.shared.refreshAvailability()
-            if availability.isAvailable {
-                let config = SandboxConfigurationStore.load()
-                if config.autoStart && config.setupComplete {
-                    try? await SandboxManager.shared.startContainer()
-                }
-            }
-        }
 
         // Show onboarding for first-time users
         if OnboardingService.shared.shouldShowOnboarding {

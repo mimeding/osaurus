@@ -613,26 +613,65 @@ final class ToolRegistry: ObservableObject {
         builtInSandboxToolNames
     }
 
+    /// Tools that should be hidden from the model in this execution mode.
+    ///
+    /// Three orthogonal rules, each derivable from `mode`:
+    ///   - if mode does NOT claim folder tools → exclude all folder tools
+    ///   - if mode does NOT claim sandbox tools → exclude all built-in sandbox tools
+    ///   - if mode is agentic at all (folder OR sandbox) → exclude any
+    ///     plugin/MCP tool that overlaps a folder tool name (the folder
+    ///     surface is treated as authoritative when active)
+    ///
+    /// Replaces the older per-mode switch so adding a new mode means
+    /// teaching `ExecutionMode` two booleans, not editing this function.
     private func excludedToolNames(for mode: ExecutionMode) -> Set<String> {
-        let conflicting = folderConflictingToolNames
-        switch mode {
-        case .hostFolder:
-            return builtInSandboxToolNames.union(conflicting)
-        case .sandbox:
-            return Self.folderToolNames.union(conflicting)
-        case .none:
-            return Self.folderToolNames.union(builtInSandboxToolNames)
+        var excluded: Set<String> = []
+        if !mode.usesHostFolderTools {
+            excluded.formUnion(Self.folderToolNames)
         }
+        if !mode.usesSandboxTools {
+            excluded.formUnion(builtInSandboxToolNames)
+        }
+        if mode.usesHostFolderTools || mode.usesSandboxTools {
+            excluded.formUnion(folderConflictingToolNames)
+        }
+        return excluded
     }
 
-    /// Resolve the active execution mode from current context and registered runtime tools.
-    func resolveExecutionMode(folderContext: FolderContext?) -> ExecutionMode {
+    /// Resolve the active execution mode for a chat send. Single source of
+    /// truth: callers pass the user's explicit intent (autonomous toggle +
+    /// optional folder context) and we apply the priority rule once.
+    ///
+    /// Priority: sandbox > host folder > none. Sandbox wins because the
+    /// container takes longer to provision and a user who toggled it on is
+    /// signalling "use this when ready"; folder mode requires an explicit
+    /// folder selection so it only fires when sandbox is off.
+    ///
+    /// Sandbox mode is only returned when both autonomous is enabled AND
+    /// `sandbox_exec` is registered. If autonomous is on but sandbox tools
+    /// haven't registered yet (provision still in flight), we return `.none`
+    /// — the composer's "Sandbox not ready" notice + the placeholder tool
+    /// take it from there. Avoids the hidden assumption that
+    /// `autonomousEnabled` alone implied `.sandbox`.
+    func resolveExecutionMode(
+        folderContext: FolderContext?,
+        autonomousEnabled: Bool
+    ) -> ExecutionMode {
+        if autonomousEnabled, toolsByName.keys.contains("sandbox_exec") {
+            return .sandbox
+        }
         if let folderContext {
             return .hostFolder(folderContext)
         }
+        return .none
+    }
 
-        let hasSandboxExec = toolsByName.keys.contains("sandbox_exec")
-        return hasSandboxExec ? .sandbox : .none
+    /// Backwards-compatible overload for callers that haven't been migrated.
+    /// Folder context wins when present; otherwise sandbox is reported when
+    /// `sandbox_exec` is registered. Prefer the two-argument form.
+    func resolveExecutionMode(folderContext: FolderContext?) -> ExecutionMode {
+        if let folderContext { return .hostFolder(folderContext) }
+        return toolsByName.keys.contains("sandbox_exec") ? .sandbox : .none
     }
 
     /// Runtime-managed tools for diagnostics and execution-mode decisions.

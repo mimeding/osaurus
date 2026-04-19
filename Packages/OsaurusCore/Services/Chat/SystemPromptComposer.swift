@@ -229,17 +229,23 @@ public struct SystemPromptComposer: Sendable {
             frozenAlwaysLoadedNames: frozenAlwaysLoadedNames
         )
         trace?.mark("resolve_tools_done")
-        // Capture the always-loaded names actually present in this turn's
-        // schema so callers can stash the snapshot for the next turn. When
-        // a snapshot was supplied, just echo it; otherwise compute fresh
-        // from the registry.
-        let alwaysLoadedNames: Set<String> =
-            frozenAlwaysLoadedNames
-            ?? {
-                let live = ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)
-                let toolNames = Set(tools.map { $0.function.name })
-                return Set(live.map { $0.function.name }).intersection(toolNames)
-            }()
+        // Capture the always-loaded names present in this turn's schema so
+        // callers can stash the snapshot for the next turn. When a snapshot
+        // was supplied, just echo it; otherwise compute fresh from the
+        // registry. The transient `sandbox_init_pending` placeholder is
+        // dropped from a fresh snapshot so it doesn't pin into future turns
+        // — see the `filterFrozen` carve-outs in `resolveTools` for why.
+        let alwaysLoadedNames: Set<String>
+        if let frozenAlwaysLoadedNames {
+            alwaysLoadedNames = frozenAlwaysLoadedNames
+        } else {
+            let live = ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)
+                .map { $0.function.name }
+            let resolved = Set(tools.map { $0.function.name })
+            alwaysLoadedNames = Set(live)
+                .intersection(resolved)
+                .subtracting([BuiltinSandboxTools.initPendingToolName])
+        }
 
         // Capability-discovery nudge: explain how to recover when the
         // current tool kit is incomplete. Gated to auto mode + presence of
@@ -303,6 +309,8 @@ public struct SystemPromptComposer: Sendable {
             executionMode: executionMode,
             autonomousEnabled: autonomousEnabled,
             effectiveToolsOff: effectiveToolsOff,
+            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
+            additionalToolNames: additionalToolNames,
             trace: trace
         )
 
@@ -325,26 +333,63 @@ public struct SystemPromptComposer: Sendable {
         )
     }
 
+    /// Build the "sandbox not ready" notice, branching on failure kind so
+    /// transient startup races read as "try again" while hard failures
+    /// suggest the user open the Sandbox settings panel.
     private static func sandboxUnavailableNotice(
         reason: SandboxToolRegistrar.UnavailabilityReason
     ) -> String {
-        """
-        ## Sandbox unavailable
+        let (situation, guidance): (String, String) = {
+            switch reason.kind {
+            case .containerUnavailable:
+                return (
+                    "The sandbox container is still starting up — the user enabled "
+                        + "autonomous execution but the container hasn't reported running yet.",
+                    "Help with whatever doesn't need sandbox tools (explain, draft files "
+                        + "inline, ask a clarifying question). Mention that the sandbox is "
+                        + "still spinning up so the user can retry once it comes online."
+                )
+            case .startupFailed:
+                return (
+                    "The sandbox container failed to start. Detail: \(reason.message)",
+                    "Tell the user the sandbox couldn't start and suggest opening the "
+                        + "Sandbox settings panel to retry or inspect the failure. Then "
+                        + "help with whatever doesn't need sandbox tools."
+                )
+            case .provisioningFailed:
+                return (
+                    "The sandbox container is running, but provisioning this agent "
+                        + "inside it failed. Detail: \(reason.message)",
+                    "Tell the user provisioning failed and suggest toggling autonomous "
+                        + "execution off and on, or restarting the app. Then help with "
+                        + "anything that doesn't need sandbox tools."
+                )
+            }
+        }()
 
-        The user has enabled autonomous execution for this chat, but the \
-        sandbox container is not currently available, so sandbox tools \
-        (file IO, shell, etc.) are NOT in your tool list this turn. \
-        Reason: \(reason.message)
+        return """
+            ## Sandbox not ready
 
-        Do not attempt to call any sandbox tool by name; you will not \
-        receive a result. Tell the user briefly that the sandbox is \
-        unavailable and what they could try (e.g. check the sandbox \
-        container status), then proceed with text-only assistance.
-        """
+            \(situation)
+
+            Sandbox tools (file IO, shell, etc.) are NOT in your tool list this \
+            turn. Do not invent or guess sandbox tool names — they will not run.
+
+            \(guidance)
+            """
     }
 
     /// Emit structured tool diagnostics so silent "model can't see the
     /// tools" failures are visible in logs and traces.
+    ///
+    /// Single line carries every dimension that decides the schema:
+    ///   - `mode` / `executionMode`: requested + resolved
+    ///   - `source`: where the tools came from this turn
+    ///   - `count` / `names`: actual schema delivered
+    ///   - `frozen` / `additive` / `loaded`: snapshot bookkeeping —
+    ///     `frozen` is the snapshot size from turn 1, `additive` is the
+    ///     count of late-arriving sandbox tools that joined via the
+    ///     carve-out, `loaded` is the running `capabilities_load` union.
     @MainActor
     private static func emitToolDiagnostics(
         tools: [Tool],
@@ -353,6 +398,8 @@ public struct SystemPromptComposer: Sendable {
         executionMode: ExecutionMode,
         autonomousEnabled: Bool,
         effectiveToolsOff: Bool,
+        frozenAlwaysLoadedNames: Set<String>?,
+        additionalToolNames: Set<String>,
         trace: TTFTTrace?
     ) {
         let toolSource: String
@@ -367,18 +414,44 @@ public struct SystemPromptComposer: Sendable {
         }
         let sandboxStatus = String(describing: SandboxManager.State.shared.status)
         let sortedNames = tools.map { $0.function.name }.sorted()
+
+        // Snapshot bookkeeping: count how many of the resolved tools came in
+        // via the additive sandbox carve-out (not in the frozen snapshot but
+        // recognised as a built-in sandbox tool that registered late).
+        let liveSandboxNames = ToolRegistry.shared.builtInSandboxToolNamesSnapshot
+        let additiveCount: Int
+        if let frozen = frozenAlwaysLoadedNames {
+            additiveCount = sortedNames.reduce(into: 0) { count, name in
+                if !frozen.contains(name), liveSandboxNames.contains(name) {
+                    count += 1
+                }
+            }
+        } else {
+            additiveCount = 0
+        }
+        let frozenSize = frozenAlwaysLoadedNames?.count ?? 0
+
         debugLog(
-            "[Context:tools] mode=\(toolMode) source=\(toolSource) autonomous=\(autonomousEnabled) sandboxStatus=\(sandboxStatus) executionMode=\(executionMode) count=\(tools.count) names=[\(sortedNames.joined(separator: ", "))]"
+            "[Context:tools] mode=\(toolMode) source=\(toolSource) autonomous=\(autonomousEnabled) sandboxStatus=\(sandboxStatus) executionMode=\(executionMode) count=\(tools.count) frozen=\(frozenSize) additive=\(additiveCount) loaded=\(additionalToolNames.count) names=[\(sortedNames.joined(separator: ", "))]"
         )
-        if autonomousEnabled && tools.isEmpty {
-            debugLog(
-                "[Context:tools] WARNING: autonomous execution is enabled but the resolved tool list is empty. The model will not be able to act on the user's request. Check sandbox container status (\(sandboxStatus))."
-            )
+        if autonomousEnabled {
+            if tools.isEmpty {
+                debugLog(
+                    "[Context:tools] WARNING: autonomous execution is enabled but the resolved tool list is empty. The model will not be able to act on the user's request. sandboxStatus=\(sandboxStatus)."
+                )
+            } else if !executionMode.usesSandboxTools {
+                debugLog(
+                    "[Context:tools] WARNING: autonomous execution is enabled but real sandbox tools are not registered — system prompt will carry the 'Sandbox not ready' notice. sandboxStatus=\(sandboxStatus). If sandboxStatus is 'running', SandboxAgentProvisioner.ensureProvisioned likely threw — check earlier [Sandbox] log lines."
+                )
+            }
         }
         trace?.set("toolMode", String(describing: toolMode))
         trace?.set("toolSource", toolSource)
         trace?.set("autonomous", autonomousEnabled ? "1" : "0")
         trace?.set("sandboxStatus", sandboxStatus)
+        trace?.set("toolFrozen", frozenSize)
+        trace?.set("toolAdditive", additiveCount)
+        trace?.set("toolLoaded", additionalToolNames.count)
     }
 
     /// Did the current request resolve any dynamic (non-always-loaded,
@@ -440,27 +513,38 @@ public struct SystemPromptComposer: Sendable {
             }
         }
 
-        // When `frozenAlwaysLoadedNames` is non-nil this is NOT the first
-        // turn of the session — the schema must stay byte-stable, so we
-        // intersect the live always-loaded set against the snapshot. New
-        // tools that registered after turn 1 (e.g. sandbox finally coming
-        // online) are deliberately suppressed; the agent has to use
-        // `capabilities_load` to bring them in, which writes loadedToolNames
-        // and persists them across turns explicitly.
-        func filterFrozen(_ specs: [Tool]) -> [Tool] {
-            guard let frozen = frozenAlwaysLoadedNames else { return specs }
-            return specs.filter { frozen.contains($0.function.name) }
+        // Filter rule for always-loaded specs:
+        //   - `sandbox_init_pending` is never returned to the model (apology
+        //     stub crowds the schema; the system-prompt notice already covers
+        //     "sandbox not ready"),
+        //   - on turn 1 (`frozenAlwaysLoadedNames == nil`) keep everything,
+        //   - on turn N intersect with the snapshot to keep the schema
+        //     byte-stable for KV-cache reuse, plus an additive carve-out so
+        //     real sandbox tools that registered late (container booted
+        //     between turn 1 and now) join the schema instead of being
+        //     suppressed forever as "new mid-session tools".
+        // Late-arriving plugin / MCP tools still need explicit
+        // `capabilities_load` to appear — that path is the only sanctioned
+        // way to grow the dynamic surface mid-session.
+        let liveSandboxNames = ToolRegistry.shared.builtInSandboxToolNamesSnapshot
+        let filtered: ([Tool]) -> [Tool] = { specs in
+            specs.filter { spec in
+                let name = spec.function.name
+                if name == BuiltinSandboxTools.initPendingToolName { return false }
+                guard let frozen = frozenAlwaysLoadedNames else { return true }
+                return frozen.contains(name) || liveSandboxNames.contains(name)
+            }
         }
 
         if isManual {
             if executionMode.usesSandboxTools {
-                add(filterFrozen(ToolRegistry.shared.sandboxBuiltInSpecs(mode: executionMode)))
+                add(filtered(ToolRegistry.shared.sandboxBuiltInSpecs(mode: executionMode)))
             }
             if let manualNames = AgentManager.shared.effectiveManualToolNames(for: agentId) {
                 add(ToolRegistry.shared.specs(forTools: manualNames))
             }
         } else {
-            add(filterFrozen(ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)))
+            add(filtered(ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)))
             add(preflight.toolSpecs)
         }
 
@@ -625,33 +709,32 @@ public struct SystemPromptComposer: Sendable {
         )
     }
 
-    static func injectSystemContent(
+    /// Merge `content` into the message list's system role. When `prepend`
+    /// is true the content lands at the top of an existing system message;
+    /// false appends to the bottom. With no existing system message, a new
+    /// one is inserted at index 0 in either case.
+    static func mergeSystemContent(
         _ content: String,
-        into messages: inout [ChatMessage]
+        into messages: inout [ChatMessage],
+        prepend: Bool
     ) {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if let idx = messages.firstIndex(where: { $0.role == "system" }),
             let existing = messages[idx].content, !existing.isEmpty
         {
-            messages[idx] = ChatMessage(role: "system", content: trimmed + "\n\n" + existing)
+            let combined = prepend ? trimmed + "\n\n" + existing : existing + "\n\n" + trimmed
+            messages[idx] = ChatMessage(role: "system", content: combined)
         } else {
             messages.insert(ChatMessage(role: "system", content: trimmed), at: 0)
         }
     }
 
-    static func appendSystemContent(
-        _ content: String,
-        into messages: inout [ChatMessage]
-    ) {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        if let idx = messages.firstIndex(where: { $0.role == "system" }),
-            let existing = messages[idx].content, !existing.isEmpty
-        {
-            messages[idx] = ChatMessage(role: "system", content: existing + "\n\n" + trimmed)
-        } else {
-            messages.insert(ChatMessage(role: "system", content: trimmed), at: 0)
-        }
+    static func injectSystemContent(_ content: String, into messages: inout [ChatMessage]) {
+        mergeSystemContent(content, into: &messages, prepend: true)
+    }
+
+    static func appendSystemContent(_ content: String, into messages: inout [ChatMessage]) {
+        mergeSystemContent(content, into: &messages, prepend: false)
     }
 }

@@ -67,6 +67,12 @@
             @Published public var provisioningPhase: String?
             @Published public var provisioningProgress: Double?
             @Published public var isProvisioning: Bool = false
+            /// Mirror of `SandboxToolRegistrar.unavailabilityReason(for:)`
+            /// for the currently active agent. Lets SwiftUI views (e.g. the
+            /// sandbox chip) observe failures without coupling to the
+            /// registrar singleton's internal `[UUID: …]` map. `nil` means
+            /// "no failure recorded for the active agent".
+            @Published public var activeAgentUnavailability: SandboxToolRegistrar.UnavailabilityReason?
 
             private static var initialAvailability: SandboxAvailability {
                 let osVersion = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
@@ -124,7 +130,7 @@
                 // forciblyRemove walks the tree so a stuck FUSE mount or
                 // locked socket file from a crashed run can't keep the
                 // directory around to confuse `manager.create` later.
-                NSLog("[SandboxManager] Cleaning up stale container state from previous session")
+                debugLog("[Sandbox] Cleaning up stale container state from previous session")
                 try? Self.forciblyRemove(at: staleContainerDir)
                 _status = .stopped
             } else if hasRequiredAssets {
@@ -159,7 +165,7 @@
                 // here as a clear error instead of bubbling up later as the
                 // misleading "file already exists" from `manager.create`.
                 if FileManager.default.fileExists(atPath: staleContainerDir.path) {
-                    NSLog("[SandboxManager] Cleaning up stale container state")
+                    debugLog("[Sandbox] Cleaning up stale container state")
                     try Self.forciblyRemove(at: staleContainerDir)
                 }
 
@@ -228,7 +234,7 @@
                     SandboxConfigurationStore.save(savedConfig)
                 }
             } catch {
-                NSLog("[SandboxManager] Provision failed: \(error)")
+                debugLog("[Sandbox] Provision failed: \(error)")
                 await setProvisioningPhase(nil)
                 await cleanupAfterFailure()
                 throw error
@@ -685,7 +691,7 @@
             try? FileManager.default.removeItem(at: kernelPath)
             try FileManager.default.copyItem(at: resolvedKernel, to: kernelPath)
 
-            NSLog("[SandboxManager] Kernel installed at \(kernelPath.path)")
+            debugLog("[Sandbox] Kernel installed at \(kernelPath.path)")
             return Kernel(path: kernelPath, platform: .linuxArm)
         }
 
@@ -706,7 +712,7 @@
             for urlString in urls {
                 guard let url = URL(string: urlString) else { continue }
                 do {
-                    NSLog("[SandboxManager] Downloading from \(urlString)...")
+                    debugLog("[Sandbox] Downloading from \(urlString)...")
                     let (tempURL, response) = try await session.download(from: url)
                     guard let httpResponse = response as? HTTPURLResponse,
                         (200 ... 299).contains(httpResponse.statusCode)
@@ -719,11 +725,11 @@
 
                     try? FileManager.default.removeItem(at: destination)
                     try FileManager.default.moveItem(at: tempURL, to: destination)
-                    NSLog("[SandboxManager] Downloaded to \(destination.path)")
+                    debugLog("[Sandbox] Downloaded to \(destination.path)")
                     return
                 } catch {
                     lastError = error
-                    NSLog("[SandboxManager] Download failed from \(urlString): \(error)")
+                    debugLog("[Sandbox] Download failed from \(urlString): \(error)")
                 }
             }
 
@@ -904,7 +910,7 @@
                     timeout: 5
                 )
                 if result?.stdout.contains("ok") == true { return }
-                NSLog("[SandboxManager] Network not ready yet (attempt \(attempt)/5)")
+                debugLog("[Sandbox] Network not ready yet (attempt \(attempt)/5)")
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }

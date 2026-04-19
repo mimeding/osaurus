@@ -586,30 +586,34 @@ final class PluginHostContext: @unchecked Sendable {
 
     // MARK: Preflight Capability Search
 
-    /// Session-scoped preflight cache. Once a preflight result is computed for a session,
-    /// it is reused for all subsequent turns in that session. This keeps the tool list and
-    /// system-prompt snippet stable across turns, which is required for KV-cache reuse:
-    /// any change to the tool list causes prompt divergence before token ~1000 and forces
-    /// a full re-prefill even when the conversation content is otherwise identical.
-    private nonisolated(unsafe) static var preflightCache: [String: SessionToolState] = [:]
-    private static let preflightCacheLock = NSLock()
+    /// Session-scoped preflight cache lives in the shared
+    /// `SessionToolStateStore` so HTTP/plugin and chat windows hit the same
+    /// snapshot. Once a preflight result is computed for a session it is
+    /// reused for all subsequent turns; any change to the tool list causes
+    /// prompt divergence before token ~1000 and forces a full re-prefill,
+    /// so stability matters more than freshness here.
 
     /// Call when a session ends (e.g. chat window closes) to release the memoized result.
     static func invalidatePreflightCache(sessionId: String) {
-        _ = preflightCacheLock.withLock { preflightCache.removeValue(forKey: sessionId) }
+        Task { await SessionToolStateStore.shared.invalidate(sessionId) }
     }
 
     /// Persist newly loaded tool names (from `capabilities_load`) onto a
     /// session's preflight cache entry so subsequent requests with the same
     /// `session_id` re-include them via `additionalToolNames` instead of
-    /// losing them when preflight is reused.
+    /// losing them when preflight is reused. No-op when the session has
+    /// no entry yet (load before first compose) — the next preflight will
+    /// rediscover what the model needs.
     private static func recordSessionLoadedTools(sessionId: String, names: [String]) {
         guard !names.isEmpty else { return }
-        preflightCacheLock.withLock {
-            if var entry = preflightCache[sessionId] {
-                for name in names { entry.loadedToolNames.insert(name) }
-                preflightCache[sessionId] = entry
-            }
+        Task {
+            guard await SessionToolStateStore.shared.get(sessionId) != nil else { return }
+            await SessionToolStateStore.shared.appendLoadedTools(
+                sessionId,
+                names: names,
+                fallbackPreflight: .empty,
+                fallbackAlwaysLoadedNames: nil
+            )
         }
     }
 
@@ -651,7 +655,7 @@ final class PluginHostContext: @unchecked Sendable {
 
         // Auto mode: RAG-based preflight
         if let sid = inference.request.session_id {
-            let cached = preflightCacheLock.withLock { preflightCache[sid] }
+            let cached = await SessionToolStateStore.shared.get(sid)
             if let cached {
                 // Honour the session's first-turn always-loaded snapshot
                 // when present: filter the live registry result down to
@@ -691,12 +695,11 @@ final class PluginHostContext: @unchecked Sendable {
             // Snapshot the always-loaded names this turn so subsequent
             // turns freeze against them.
             let builtInNames = Set(builtInTools.map { $0.function.name })
-            preflightCacheLock.withLock {
-                preflightCache[sid] = SessionToolState(
-                    initialPreflight: preflight,
-                    initialAlwaysLoadedNames: builtInNames
-                )
-            }
+            await SessionToolStateStore.shared.setInitial(
+                sid,
+                preflight: preflight,
+                alwaysLoadedNames: builtInNames
+            )
         }
 
         return applyPreflightResult(preflight, to: inference, builtInTools: builtInTools)
