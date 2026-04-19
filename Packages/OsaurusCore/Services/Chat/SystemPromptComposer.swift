@@ -2,9 +2,9 @@
 //  SystemPromptComposer.swift
 //  osaurus
 //
-//  Builder for structured system prompt assembly. Provides both low-level
-//  section-by-section composition and high-level single-call methods
-//  (composeChatContext, composeWorkPrompt) that handle the full pipeline.
+//  Builder for structured system prompt assembly. Provides low-level
+//  section-by-section composition plus the high-level `composeChatContext`
+//  entry point that handles the full pipeline.
 //
 //  Compact prompt selection is automatic: pass the model ID and the composer
 //  resolves whether to use compact or full prompt variants via isLocalModel.
@@ -96,13 +96,14 @@ public struct SystemPromptComposer: Sendable {
     @MainActor
     static func composeChatContext(
         agentId: UUID,
-        executionMode: WorkExecutionMode,
+        executionMode: ExecutionMode,
         model: String? = nil,
         query: String = "",
         messages: [ChatMessage] = [],
         toolsDisabled: Bool = false,
         cachedPreflight: PreflightResult? = nil,
         additionalToolNames: Set<String> = [],
+        frozenAlwaysLoadedNames: Set<String>? = nil,
         trace: TTFTTrace? = nil
     ) async -> ComposedContext {
         trace?.mark("compose_context_start")
@@ -115,6 +116,7 @@ public struct SystemPromptComposer: Sendable {
             toolsDisabled: toolsDisabled,
             cachedPreflight: cachedPreflight,
             additionalToolNames: additionalToolNames,
+            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
             model: model,
             trace: trace
         )
@@ -149,11 +151,12 @@ public struct SystemPromptComposer: Sendable {
     private static func finalizeContext(
         composer: SystemPromptComposer,
         agentId: UUID,
-        executionMode: WorkExecutionMode,
+        executionMode: ExecutionMode,
         query: String,
         toolsDisabled: Bool,
         cachedPreflight: PreflightResult? = nil,
         additionalToolNames: Set<String> = [],
+        frozenAlwaysLoadedNames: Set<String>? = nil,
         model: String? = nil,
         trace: TTFTTrace? = nil
     ) async -> ComposedContext {
@@ -222,9 +225,21 @@ public struct SystemPromptComposer: Sendable {
             executionMode: executionMode,
             toolsDisabled: effectiveToolsOff,
             preflight: preflight,
-            additionalToolNames: additionalToolNames
+            additionalToolNames: additionalToolNames,
+            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames
         )
         trace?.mark("resolve_tools_done")
+        // Capture the always-loaded names actually present in this turn's
+        // schema so callers can stash the snapshot for the next turn. When
+        // a snapshot was supplied, just echo it; otherwise compute fresh
+        // from the registry.
+        let alwaysLoadedNames: Set<String> =
+            frozenAlwaysLoadedNames
+            ?? {
+                let live = ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)
+                let toolNames = Set(tools.map { $0.function.name })
+                return Set(live.map { $0.function.name }).intersection(toolNames)
+            }()
 
         // Capability-discovery nudge: explain how to recover when the
         // current tool kit is incomplete. Gated to auto mode + presence of
@@ -240,6 +255,23 @@ public struct SystemPromptComposer: Sendable {
                     id: "capabilityNudge",
                     label: "Capability Discovery",
                     content: SystemPromptTemplates.capabilityDiscoveryNudge
+                )
+            )
+        }
+
+        // Per-model-family nudge — small, targeted blocks for known model
+        // weaknesses (Gemma over-enumerates, GPT under-acts, etc.). Static
+        // section so it joins the cached prefix. We deliberately ship NO
+        // universal "agentic workflow" addendum: it inflates context and
+        // encourages tool enumeration. See ModelFamilyGuidance.swift.
+        if !effectiveToolsOff,
+            let familyGuidance = ModelFamilyGuidance.guidance(forModelId: model)
+        {
+            comp.append(
+                .static(
+                    id: "modelFamilyGuidance",
+                    label: "Model Family Guidance",
+                    content: familyGuidance
                 )
             )
         }
@@ -287,6 +319,7 @@ public struct SystemPromptComposer: Sendable {
             preflightItems: preflight.items,
             preflight: preflight,
             memorySection: memorySection,
+            alwaysLoadedNames: alwaysLoadedNames,
             cacheHint: manifest.staticPrefixHash(toolNames: toolNames),
             staticPrefix: manifest.staticPrefixContent
         )
@@ -317,7 +350,7 @@ public struct SystemPromptComposer: Sendable {
         tools: [Tool],
         toolMode: ToolSelectionMode,
         preflight: PreflightResult,
-        executionMode: WorkExecutionMode,
+        executionMode: ExecutionMode,
         autonomousEnabled: Bool,
         effectiveToolsOff: Bool,
         trace: TTFTTrace?
@@ -388,10 +421,11 @@ public struct SystemPromptComposer: Sendable {
     @MainActor
     static func resolveTools(
         agentId: UUID,
-        executionMode: WorkExecutionMode,
+        executionMode: ExecutionMode,
         toolsDisabled: Bool = false,
         preflight: PreflightResult = .empty,
-        additionalToolNames: Set<String> = []
+        additionalToolNames: Set<String> = [],
+        frozenAlwaysLoadedNames: Set<String>? = nil
     ) -> [Tool] {
         guard !toolsDisabled else { return [] }
 
@@ -406,15 +440,27 @@ public struct SystemPromptComposer: Sendable {
             }
         }
 
+        // When `frozenAlwaysLoadedNames` is non-nil this is NOT the first
+        // turn of the session — the schema must stay byte-stable, so we
+        // intersect the live always-loaded set against the snapshot. New
+        // tools that registered after turn 1 (e.g. sandbox finally coming
+        // online) are deliberately suppressed; the agent has to use
+        // `capabilities_load` to bring them in, which writes loadedToolNames
+        // and persists them across turns explicitly.
+        func filterFrozen(_ specs: [Tool]) -> [Tool] {
+            guard let frozen = frozenAlwaysLoadedNames else { return specs }
+            return specs.filter { frozen.contains($0.function.name) }
+        }
+
         if isManual {
             if executionMode.usesSandboxTools {
-                add(ToolRegistry.shared.sandboxBuiltInSpecs(mode: executionMode))
+                add(filterFrozen(ToolRegistry.shared.sandboxBuiltInSpecs(mode: executionMode)))
             }
             if let manualNames = AgentManager.shared.effectiveManualToolNames(for: agentId) {
                 add(ToolRegistry.shared.specs(forTools: manualNames))
             }
         } else {
-            add(ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode))
+            add(filterFrozen(ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)))
             add(preflight.toolSpecs)
         }
 
@@ -448,68 +494,6 @@ public struct SystemPromptComposer: Sendable {
         }
 
         return tools.sorted { sortKey($0) < sortKey($1) }
-    }
-
-    /// Compose the full work system prompt: base + workMode + sandbox.
-    @MainActor
-    public static func composeWorkPrompt(
-        agentId: UUID,
-        executionMode: WorkExecutionMode,
-        model: String? = nil,
-        secretNames: [String] = []
-    ) -> (prompt: String, manifest: PromptManifest) {
-        let compact = resolveCompact(model: model, agentId: agentId)
-        let composer = forWork(
-            agentId: agentId,
-            executionMode: executionMode,
-            compact: compact,
-            secretNames: secretNames
-        )
-        return (composer.render(), composer.manifest())
-    }
-
-    /// Compose a work prompt from a pre-resolved base string (e.g. base+memory from WorkEngine).
-    public static func composeWorkPrompt(
-        base: String,
-        executionMode: WorkExecutionMode,
-        model: String? = nil,
-        secretNames: [String] = []
-    ) -> (prompt: String, manifest: PromptManifest) {
-        let compact = model.map { SystemPromptTemplates.isLocalModel($0) } ?? false
-        let composer = forWork(base: base, executionMode: executionMode, compact: compact, secretNames: secretNames)
-        return (composer.render(), composer.manifest())
-    }
-
-    /// Full work context: base + workMode + sandbox + tools, with memory and
-    /// preflight returned on the result so callers can cache preflight per
-    /// issue and prepend memory to the latest user message.
-    @MainActor
-    static func composeWorkContext(
-        agentId: UUID,
-        executionMode: WorkExecutionMode,
-        model: String? = nil,
-        secretNames: [String] = [],
-        query: String = "",
-        toolsDisabled: Bool = false,
-        cachedPreflight: PreflightResult? = nil,
-        additionalToolNames: Set<String> = []
-    ) async -> ComposedContext {
-        let compact = resolveCompact(model: model, agentId: agentId)
-        let composer = forWork(
-            agentId: agentId,
-            executionMode: executionMode,
-            compact: compact,
-            secretNames: secretNames
-        )
-        return await finalizeContext(
-            composer: composer,
-            agentId: agentId,
-            executionMode: executionMode,
-            query: query,
-            toolsDisabled: toolsDisabled,
-            cachedPreflight: cachedPreflight,
-            additionalToolNames: additionalToolNames
-        )
     }
 
     /// Compose from a pre-resolved base with an optional dynamic skills section.
@@ -580,7 +564,7 @@ public struct SystemPromptComposer: Sendable {
     @MainActor
     public static func forChat(
         agentId: UUID,
-        executionMode: WorkExecutionMode,
+        executionMode: ExecutionMode,
         model: String? = nil
     ) -> SystemPromptComposer {
         let compact = resolveCompact(model: model, agentId: agentId)
@@ -590,7 +574,7 @@ public struct SystemPromptComposer: Sendable {
     @MainActor
     static func forChat(
         agentId: UUID,
-        executionMode: WorkExecutionMode,
+        executionMode: ExecutionMode,
         compact: Bool
     ) -> SystemPromptComposer {
         var composer = SystemPromptComposer()
@@ -601,60 +585,11 @@ public struct SystemPromptComposer: Sendable {
                 .static(
                     id: "sandbox",
                     label: "Chat Sandbox",
-                    content: SystemPromptTemplates.sandbox(mode: .chat, compact: compact, secretNames: secretNames)
+                    content: SystemPromptTemplates.sandbox(compact: compact, secretNames: secretNames)
                 )
             )
         }
         return composer
-    }
-
-    @MainActor
-    static func forWork(
-        agentId: UUID,
-        executionMode: WorkExecutionMode,
-        compact: Bool,
-        secretNames: [String] = []
-    ) -> SystemPromptComposer {
-        var composer = SystemPromptComposer()
-        composer.appendBasePrompt(agentId: agentId)
-        return composer.withWorkSections(executionMode: executionMode, compact: compact, secretNames: secretNames)
-    }
-
-    static func forWork(
-        base: String,
-        executionMode: WorkExecutionMode,
-        compact: Bool,
-        secretNames: [String] = []
-    ) -> SystemPromptComposer {
-        var composer = SystemPromptComposer()
-        composer.append(.static(id: "base", label: "Base Prompt", content: base))
-        return composer.withWorkSections(executionMode: executionMode, compact: compact, secretNames: secretNames)
-    }
-
-    private func withWorkSections(
-        executionMode: WorkExecutionMode,
-        compact: Bool,
-        secretNames: [String]
-    ) -> SystemPromptComposer {
-        let variant: SystemPromptTemplates.WorkModeVariant = compact ? .compact : .full
-        var result = self
-        result.append(
-            .static(
-                id: "workMode",
-                label: "Work Mode",
-                content: SystemPromptTemplates.workMode(variant, hasSandbox: executionMode.usesSandboxTools)
-            )
-        )
-        if case .sandbox = executionMode {
-            result.append(
-                .static(
-                    id: "sandbox",
-                    label: "Sandbox",
-                    content: SystemPromptTemplates.sandbox(mode: .work, compact: compact, secretNames: secretNames)
-                )
-            )
-        }
-        return result
     }
 
     // MARK: - Message Array Helpers

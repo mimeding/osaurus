@@ -120,6 +120,22 @@ enum BuiltinSandboxTools {
         }
     }
 
+    /// Register a single transient placeholder when sandbox is enabled but
+    /// the container isn't ready yet. Gives the model exactly one tool it
+    /// can call and get a clear "still initialising" envelope back, instead
+    /// of either having an empty schema or hallucinating sandbox names that
+    /// will fail with `toolNotFound`. The placeholder is registered as a
+    /// runtime-managed sandbox tool so it gets swept by
+    /// `unregisterAllBuiltinSandboxTools()` the moment real sandbox tools
+    /// come online.
+    @MainActor
+    static func registerInitPending() {
+        ToolRegistry.shared.registerSandboxTool(
+            SandboxInitPendingTool(),
+            runtimeManaged: true
+        )
+    }
+
     /// Unregister all built-in sandbox tools.
     @MainActor
     static func unregisterAll() {
@@ -133,8 +149,39 @@ enum BuiltinSandboxTools {
             "share_artifact",
             "sandbox_secret_check", "sandbox_secret_set",
             "sandbox_plugin_register",
+            "sandbox_init_pending",
         ]
         ToolRegistry.shared.unregister(names: names)
+    }
+}
+
+// MARK: - sandbox_init_pending (placeholder while sandbox boots)
+
+/// Placeholder tool registered when sandbox is enabled but the container
+/// isn't running yet. Always returns the same "still initialising" envelope.
+/// Designed to keep the model's schema non-empty (so it has *something*
+/// to call) while the container provisions in the background.
+private struct SandboxInitPendingTool: OsaurusTool, @unchecked Sendable {
+    let name = "sandbox_init_pending"
+    let description =
+        "Sandbox is starting in the background. Call this tool to confirm it isn't ready, "
+        + "then either reply without sandbox tools or tell the user to wait. The real "
+        + "sandbox tools (file ops, shell) appear in your schema once the container boots — "
+        + "do NOT invent or guess sandbox tool names in the meantime."
+
+    var parameters: JSONValue? {
+        .object(["type": .string("object"), "properties": .object([:])])
+    }
+
+    func execute(argumentsJSON: String) async throws -> String {
+        ToolErrorEnvelope(
+            kind: .unavailable,
+            reason:
+                "Sandbox is still initializing. Real sandbox tools will register on "
+                + "the next turn. Reply without sandbox tools, or wait and try again.",
+            toolName: name,
+            retryable: true
+        ).toJSONString()
     }
 }
 
@@ -172,6 +219,27 @@ private func jsonResult(_ dict: [String: Any]) -> String {
         let json = String(data: data, encoding: .utf8)
     else { return "{}" }
     return json
+}
+
+/// Cap a stream's worth of text before it lands in the model's context.
+/// Mirrors Hermes' `execute_code` head+tail strategy: keep the first 40% of
+/// the budget and the last 60%, with a marker in the middle so the model
+/// knows truncation happened. The tail bias matters because final lines
+/// (errors, summary prints) are usually the most important.
+///
+/// Default budget is 50_000 chars (~12.5K tokens) — same number Hermes uses.
+/// When the input fits, returned untouched.
+private func truncateForModel(_ text: String, maxChars: Int = 50_000) -> String {
+    if text.count <= maxChars { return text }
+    let headChars = Int(Double(maxChars) * 0.4)
+    let tailChars = maxChars - headChars
+    let head = String(text.prefix(headChars))
+    let tail = String(text.suffix(tailChars))
+    let omitted = text.count - headChars - tailChars
+    return
+        head
+        + "\n\n... [output truncated — \(omitted) chars omitted out of \(text.count) total] ...\n\n"
+        + tail
 }
 
 protocol SandboxToolCommandRunning: Sendable {
@@ -477,7 +545,7 @@ private struct SandboxListDirectoryTool: OsaurusTool, @unchecked Sendable {
 private struct SandboxSearchFilesTool: OsaurusTool, @unchecked Sendable {
     let name = "sandbox_search_files"
     let description =
-        "Search file contents with ripgrep in the sandbox. Returns matching lines with file paths and line numbers. For finding files by name, use sandbox_find_files instead."
+        "Search file contents with ripgrep in the sandbox. Returns matching lines with file paths and line numbers. Searches inside file bodies — does not match against file names."
     let agentName: String
     let home: String
 
@@ -549,7 +617,7 @@ private struct SandboxSearchFilesTool: OsaurusTool, @unchecked Sendable {
 private struct SandboxFindFilesTool: OsaurusTool, @unchecked Sendable {
     let name = "sandbox_find_files"
     let description =
-        "Find files by name pattern in the sandbox. Use this to locate files by glob (e.g. '*.py', '*.swift'). For searching file contents, use sandbox_search_files instead."
+        "Find files by name pattern in the sandbox. Use this to locate files by glob (e.g. '*.py', '*.swift'). Matches file names only — does not look inside file contents."
     let agentName: String
     let home: String
 
@@ -642,7 +710,7 @@ private struct SandboxWriteFileTool: OsaurusTool, @unchecked Sendable {
 private struct SandboxEditFileTool: OsaurusTool, @unchecked Sendable {
     let name = "sandbox_edit_file"
     let description =
-        "Edit a file by replacing an exact string match. old_string must uniquely match exactly one location in the file — include surrounding context lines if needed. Fails if old_string is not found or matches multiple locations. Prefer this over sandbox_write_file for targeted edits."
+        "Edit a file by replacing an exact string match. old_string must uniquely match exactly one location in the file — include surrounding context lines if needed. Fails if old_string is not found or matches multiple locations. Use this for targeted in-place edits when you do not want to rewrite the whole file."
     let agentName: String
     let home: String
 
@@ -827,7 +895,39 @@ private struct SandboxDeleteTool: OsaurusTool, @unchecked Sendable {
 
 private struct SandboxExecTool: OsaurusTool, @unchecked Sendable {
     let name = "sandbox_exec"
-    let description = "Run a shell command in the agent's sandbox environment."
+    let description = """
+        Run a shell command (bash) in the agent's sandbox. This is your \
+        most powerful tool — `bash` is a programming language. Prefer ONE \
+        rich invocation over many round-trips.
+
+        WHEN TO USE:
+        - Three or more shell operations that depend on each other — chain \
+          them with `&&`, `;`, or pipes in a single call instead of N tool \
+          calls.
+        - Batch file work — `for f in src/*.swift; do wc -l "$f"; done`.
+        - Output you'll want to filter before reading — `grep`, `awk`, `head`, \
+          `tail`, `jq`, `sed` keep the result small enough to reason over.
+        - Conditional logic — `if [ -f config.json ]; then ...; else ...; fi`.
+        - One-off processing — `python3 -c '...'` or `node -e '...'` inline \
+          for parsing, JSON manipulation, math.
+        - Network calls (`curl`, `wget`) when you need data the model doesn't have.
+
+        WHEN NOT TO USE:
+        - You need to reason over a result and only THEN decide what to run \
+          next — make the smaller call, look at the result, then continue.
+        - You need user input or interactive prompts (none are available).
+
+        LIMITS:
+        - Default timeout 30s, max 300s (set via `timeout`).
+        - Stdout is truncated at ~50KB (40% head + 60% tail). If you expect \
+          a lot of output, pipe through `head`, `tail`, `grep`, or `wc` to \
+          keep what matters.
+        - Per-turn command count is capped — chain inside one call rather \
+          than burning the cap on N small ones.
+
+        Pass the command as a single string in `command`. Use `cwd` to run \
+        in a different directory; default is the agent home.
+        """
     let agentId: String
     let agentName: String
     let home: String
@@ -892,8 +992,8 @@ private struct SandboxExecTool: OsaurusTool, @unchecked Sendable {
         )
 
         return jsonResult([
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "stdout": truncateForModel(result.stdout),
+            "stderr": truncateForModel(result.stderr, maxChars: 10_000),
             "exit_code": Int(result.exitCode),
         ])
     }
@@ -1144,10 +1244,30 @@ private struct SandboxNpmInstallTool: OsaurusTool, @unchecked Sendable {
 
 private struct SandboxRunScriptTool: OsaurusTool, @unchecked Sendable {
     let name = "sandbox_run_script"
-    let description =
-        "Write and execute a script in the sandbox. Saves to a temp file and runs it. "
-        + "Use for multi-step operations: file analysis, bulk edits, data processing, build scripts. "
-        + "You MUST provide the script contents in the `script` parameter."
+    let description = """
+        Write a multi-line script to a temp file in the sandbox and run it. \
+        Use this when the program is long enough that an inline `bash -c '...'` \
+        gets unwieldy — multi-screen scripts, anything with non-trivial \
+        quoting, anything you want isolated in its own file.
+
+        WHEN TO USE:
+        - Bulk file analysis or transformation that needs more than a one-liner.
+        - Data processing with proper data structures (use `python` and pandas/json).
+        - Build orchestration where exit-code semantics matter.
+
+        WHEN NOT TO USE:
+        - The work fits in a single shell invocation — use the smaller \
+          shell-exec tool with chained commands instead.
+        - You only need a single file written — use the file-write tool.
+
+        LIMITS:
+        - Default timeout 60s, max 300s.
+        - Combined stdout+stderr is truncated at ~50KB (40% head + 60% tail).
+        - Per-turn command count is shared with other shell-exec calls.
+
+        `language` is one of `python`, `bash`, `node`. Pass the full script in \
+        `script`. Use `cwd` to run in a different directory.
+        """
     let agentId: String
     let agentName: String
     let home: String
@@ -1222,7 +1342,7 @@ private struct SandboxRunScriptTool: OsaurusTool, @unchecked Sendable {
         )
 
         return jsonResult([
-            "output": result.stdout + result.stderr,
+            "output": truncateForModel(result.stdout + result.stderr),
             "exit_code": Int(result.exitCode),
         ])
     }

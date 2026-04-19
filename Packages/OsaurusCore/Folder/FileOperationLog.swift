@@ -1,5 +1,5 @@
 //
-//  WorkFileOperationLog.swift
+//  FileOperationLog.swift
 //  osaurus
 //
 //  Actor for managing file operation history and undo functionality.
@@ -11,12 +11,12 @@ import Foundation
 
 extension Notification.Name {
     /// Posted when a file operation is logged or undone
-    public static let workFileOperationsDidChange = Notification.Name("workFileOperationsDidChange")
+    public static let fileOperationsDidChange = Notification.Name("fileOperationsDidChange")
 }
 
 // MARK: - Undo Errors
 
-public enum WorkFileUndoError: LocalizedError {
+public enum FileUndoError: LocalizedError {
     case operationNotFound
     case cannotUndo(String)
     case fileSystemError(String)
@@ -35,12 +35,12 @@ public enum WorkFileUndoError: LocalizedError {
 
 // MARK: - File Operation Log
 
-/// Actor for managing file operation history per issue
-public actor WorkFileOperationLog {
-    public static let shared = WorkFileOperationLog()
+/// Actor for managing folder file-operation history per chat session.
+public actor FileOperationLog {
+    public static let shared = FileOperationLog()
 
-    /// Operations grouped by issue ID (most recent last)
-    private var operations: [String: [WorkFileOperation]] = [:]
+    /// Operations grouped by chat session id (most recent last)
+    private var operations: [String: [FileOperation]] = [:]
 
     /// Root path for file operations (set when folder context is active)
     private var rootPath: URL?
@@ -57,33 +57,33 @@ public actor WorkFileOperationLog {
     // MARK: - Logging
 
     /// Log a file operation
-    public func log(_ operation: WorkFileOperation) {
-        operations[operation.issueId, default: []].append(operation)
+    public func log(_ operation: FileOperation) {
+        operations[operation.sessionId, default: []].append(operation)
         notifyChange()
     }
 
     /// Post notification that operations changed (on main thread)
     private func notifyChange() {
         Task { @MainActor in
-            NotificationCenter.default.post(name: .workFileOperationsDidChange, object: nil)
+            NotificationCenter.default.post(name: .fileOperationsDidChange, object: nil)
         }
     }
 
     // MARK: - Queries
 
-    /// Get all operations for an issue (oldest first)
-    public func operations(for issueId: String) -> [WorkFileOperation] {
-        operations[issueId] ?? []
+    /// Get all operations for a session (oldest first)
+    public func operations(for sessionId: String) -> [FileOperation] {
+        operations[sessionId] ?? []
     }
 
-    /// Get operations for a specific file path within an issue
-    public func operations(for issueId: String, path: String) -> [WorkFileOperation] {
-        operations[issueId]?.filter { $0.path == path } ?? []
+    /// Get operations for a specific file path within a session
+    public func operations(for sessionId: String, path: String) -> [FileOperation] {
+        operations[sessionId]?.filter { $0.path == path } ?? []
     }
 
-    /// Get unique file paths affected by operations for an issue
-    public func affectedPaths(for issueId: String) -> [String] {
-        let ops = operations[issueId] ?? []
+    /// Get unique file paths affected by operations for a session
+    public func affectedPaths(for sessionId: String) -> [String] {
+        let ops = operations[sessionId] ?? []
         var seen = Set<String>()
         var result: [String] = []
         for op in ops {
@@ -99,39 +99,39 @@ public actor WorkFileOperationLog {
         return result
     }
 
-    /// Check if there are any operations for an issue
-    public func hasOperations(for issueId: String) -> Bool {
-        !(operations[issueId]?.isEmpty ?? true)
+    /// Check if there are any operations for a session
+    public func hasOperations(for sessionId: String) -> Bool {
+        !(operations[sessionId]?.isEmpty ?? true)
     }
 
     // MARK: - Undo Operations
 
-    /// Undo the last operation for an issue
+    /// Undo the last operation for a session
     @discardableResult
-    public func undoLast(issueId: String) throws -> WorkFileOperation? {
-        guard var issueOps = operations[issueId], !issueOps.isEmpty else {
+    public func undoLast(sessionId: String) throws -> FileOperation? {
+        guard var sessionOps = operations[sessionId], !sessionOps.isEmpty else {
             return nil
         }
 
-        let operation = issueOps.removeLast()
-        operations[issueId] = issueOps
+        let operation = sessionOps.removeLast()
+        operations[sessionId] = sessionOps
 
         try performUndo(operation)
         notifyChange()
         return operation
     }
 
-    /// Undo all operations for an issue (in reverse order)
+    /// Undo all operations for a session (in reverse order)
     @discardableResult
-    public func undoAll(issueId: String) throws -> [WorkFileOperation] {
-        guard let issueOps = operations[issueId], !issueOps.isEmpty else {
+    public func undoAll(sessionId: String) throws -> [FileOperation] {
+        guard let sessionOps = operations[sessionId], !sessionOps.isEmpty else {
             return []
         }
 
-        var undone: [WorkFileOperation] = []
+        var undone: [FileOperation] = []
 
         // Undo in reverse order
-        for operation in issueOps.reversed() {
+        for operation in sessionOps.reversed() {
             do {
                 try performUndo(operation)
                 undone.append(operation)
@@ -141,22 +141,22 @@ public actor WorkFileOperationLog {
             }
         }
 
-        operations[issueId] = []
+        operations[sessionId] = []
         notifyChange()
         return undone
     }
 
     /// Undo operations for a specific file path
     @discardableResult
-    public func undoFile(issueId: String, path: String) throws -> [WorkFileOperation] {
-        guard var issueOps = operations[issueId] else {
+    public func undoFile(sessionId: String, path: String) throws -> [FileOperation] {
+        guard var sessionOps = operations[sessionId] else {
             return []
         }
 
-        let fileOps = issueOps.filter { $0.path == path || $0.destinationPath == path }
+        let fileOps = sessionOps.filter { $0.path == path || $0.destinationPath == path }
         guard !fileOps.isEmpty else { return [] }
 
-        var undone: [WorkFileOperation] = []
+        var undone: [FileOperation] = []
 
         // Undo in reverse order
         for operation in fileOps.reversed() {
@@ -170,8 +170,8 @@ public actor WorkFileOperationLog {
 
         // Remove undone operations from the list
         let undoneIds = Set(undone.map { $0.id })
-        issueOps.removeAll { undoneIds.contains($0.id) }
-        operations[issueId] = issueOps
+        sessionOps.removeAll { undoneIds.contains($0.id) }
+        operations[sessionId] = sessionOps
 
         notifyChange()
         return undone
@@ -179,35 +179,35 @@ public actor WorkFileOperationLog {
 
     /// Undo a specific operation by ID
     @discardableResult
-    public func undo(issueId: String, operationId: UUID) throws -> WorkFileOperation? {
-        guard var issueOps = operations[issueId],
-            let index = issueOps.firstIndex(where: { $0.id == operationId })
+    public func undo(sessionId: String, operationId: UUID) throws -> FileOperation? {
+        guard var sessionOps = operations[sessionId],
+            let index = sessionOps.firstIndex(where: { $0.id == operationId })
         else {
-            throw WorkFileUndoError.operationNotFound
+            throw FileUndoError.operationNotFound
         }
 
-        let operation = issueOps[index]
+        let operation = sessionOps[index]
         try performUndo(operation)
 
-        issueOps.remove(at: index)
-        operations[issueId] = issueOps
+        sessionOps.remove(at: index)
+        operations[sessionId] = sessionOps
 
         notifyChange()
         return operation
     }
 
-    /// Undo all operations for a specific batch (in reverse order)
-    /// Continues on error, returning only successfully undone operations
+    /// Undo all operations for a specific batch (in reverse order).
+    /// Continues on error, returning only successfully undone operations.
     @discardableResult
-    public func undoBatch(issueId: String, batchId: UUID) throws -> [WorkFileOperation] {
-        guard var issueOps = operations[issueId] else {
+    public func undoBatch(sessionId: String, batchId: UUID) throws -> [FileOperation] {
+        guard var sessionOps = operations[sessionId] else {
             return []
         }
 
-        let batchOps = issueOps.filter { $0.batchId == batchId }
+        let batchOps = sessionOps.filter { $0.batchId == batchId }
         guard !batchOps.isEmpty else { return [] }
 
-        var undone: [WorkFileOperation] = []
+        var undone: [FileOperation] = []
 
         // Undo in reverse order
         for operation in batchOps.reversed() {
@@ -222,8 +222,8 @@ public actor WorkFileOperationLog {
 
         // Remove undone operations from the list
         let undoneIds = Set(undone.map { $0.id })
-        issueOps.removeAll { undoneIds.contains($0.id) }
-        operations[issueId] = issueOps
+        sessionOps.removeAll { undoneIds.contains($0.id) }
+        operations[sessionId] = sessionOps
 
         notifyChange()
         return undone
@@ -231,9 +231,9 @@ public actor WorkFileOperationLog {
 
     // MARK: - Cleanup
 
-    /// Clear all operations for an issue
-    public func clear(issueId: String) {
-        operations[issueId] = nil
+    /// Clear all operations for a session
+    public func clear(sessionId: String) {
+        operations[sessionId] = nil
     }
 
     /// Clear all operations
@@ -243,9 +243,9 @@ public actor WorkFileOperationLog {
 
     // MARK: - Private Undo Implementation
 
-    private func performUndo(_ operation: WorkFileOperation) throws {
+    private func performUndo(_ operation: FileOperation) throws {
         guard let root = rootPath else {
-            throw WorkFileUndoError.cannotUndo("No root path configured")
+            throw FileUndoError.cannotUndo("No root path configured")
         }
 
         let fm = FileManager.default
@@ -258,7 +258,7 @@ public actor WorkFileOperationLog {
                 do {
                     try fm.removeItem(at: fileURL)
                 } catch {
-                    throw WorkFileUndoError.fileSystemError(
+                    throw FileUndoError.fileSystemError(
                         "Failed to delete created file: \(error.localizedDescription)"
                     )
                 }
@@ -270,7 +270,7 @@ public actor WorkFileOperationLog {
                 do {
                     try previousContent.write(to: fileURL, atomically: true, encoding: .utf8)
                 } catch {
-                    throw WorkFileUndoError.fileSystemError(
+                    throw FileUndoError.fileSystemError(
                         "Failed to restore file content: \(error.localizedDescription)"
                     )
                 }
@@ -284,7 +284,7 @@ public actor WorkFileOperationLog {
         case .move:
             // Undo move: move back from destination to source
             guard let destPath = operation.destinationPath else {
-                throw WorkFileUndoError.cannotUndo("Move operation missing destination path")
+                throw FileUndoError.cannotUndo("Move operation missing destination path")
             }
             let destURL = root.appendingPathComponent(destPath)
 
@@ -295,14 +295,14 @@ public actor WorkFileOperationLog {
                     try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
                     try fm.moveItem(at: destURL, to: fileURL)
                 } catch {
-                    throw WorkFileUndoError.fileSystemError("Failed to move file back: \(error.localizedDescription)")
+                    throw FileUndoError.fileSystemError("Failed to move file back: \(error.localizedDescription)")
                 }
             }
 
         case .copy:
             // Undo copy: delete the destination
             guard let destPath = operation.destinationPath else {
-                throw WorkFileUndoError.cannotUndo("Copy operation missing destination path")
+                throw FileUndoError.cannotUndo("Copy operation missing destination path")
             }
             let destURL = root.appendingPathComponent(destPath)
 
@@ -310,7 +310,7 @@ public actor WorkFileOperationLog {
                 do {
                     try fm.removeItem(at: destURL)
                 } catch {
-                    throw WorkFileUndoError.fileSystemError(
+                    throw FileUndoError.fileSystemError(
                         "Failed to delete copied file: \(error.localizedDescription)"
                     )
                 }
@@ -319,7 +319,7 @@ public actor WorkFileOperationLog {
         case .delete:
             // Undo delete: recreate file from previous content
             guard let previousContent = operation.previousContent else {
-                throw WorkFileUndoError.cannotUndo("Delete operation missing previous content")
+                throw FileUndoError.cannotUndo("Delete operation missing previous content")
             }
 
             do {
@@ -328,7 +328,7 @@ public actor WorkFileOperationLog {
                 try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
                 try previousContent.write(to: fileURL, atomically: true, encoding: .utf8)
             } catch {
-                throw WorkFileUndoError.fileSystemError(
+                throw FileUndoError.fileSystemError(
                     "Failed to restore deleted file: \(error.localizedDescription)"
                 )
             }
@@ -341,12 +341,12 @@ public actor WorkFileOperationLog {
                     do {
                         try fm.removeItem(at: fileURL)
                     } catch {
-                        throw WorkFileUndoError.fileSystemError(
+                        throw FileUndoError.fileSystemError(
                             "Failed to remove directory: \(error.localizedDescription)"
                         )
                     }
                 } else {
-                    throw WorkFileUndoError.cannotUndo("Directory is not empty")
+                    throw FileUndoError.cannotUndo("Directory is not empty")
                 }
             }
         }

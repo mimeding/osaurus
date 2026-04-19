@@ -368,7 +368,6 @@ private final class HostAPIBridgeHandler: ChannelInboundHandler, RemovableChanne
         }
 
         let request = DispatchRequest(
-            mode: .chat,
             prompt: task,
             agentId: UUID(uuidString: agentId),
             sourcePluginId: "sandbox:\(callingUser)"

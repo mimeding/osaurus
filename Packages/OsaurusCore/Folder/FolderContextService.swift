@@ -1,5 +1,5 @@
 //
-//  WorkFolderContextService.swift
+//  FolderContextService.swift
 //  osaurus
 //
 //  Service for managing work folder context with security-scoped bookmarks,
@@ -17,10 +17,10 @@ private nonisolated(unsafe) var _folderCachedRootPath: URL?
 
 /// Service for managing work folder context
 @MainActor
-public final class WorkFolderContextService: ObservableObject {
-    public static let shared = WorkFolderContextService()
+public final class FolderContextService: ObservableObject {
+    public static let shared = FolderContextService()
 
-    @Published public private(set) var currentContext: WorkFolderContext? {
+    @Published public private(set) var currentContext: FolderContext? {
         didSet {
             _folderRootPathLock.withLock {
                 _folderCachedRootPath = currentContext?.rootPath
@@ -35,7 +35,7 @@ public final class WorkFolderContextService: ObservableObject {
         _folderRootPathLock.withLock { _folderCachedRootPath }
     }
 
-    private let bookmarkKey = "WorkFolderContextBookmark"
+    private let bookmarkKey = "FolderContextBookmark"
     private var securityScopedResource: URL?
 
     private init() {
@@ -46,7 +46,7 @@ public final class WorkFolderContextService: ObservableObject {
 
     /// Select a folder via NSOpenPanel, build context, and register tools
     @discardableResult
-    public func selectFolder() async -> WorkFolderContext? {
+    public func selectFolder() async -> FolderContext? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -65,7 +65,7 @@ public final class WorkFolderContextService: ObservableObject {
 
     /// Set a folder programmatically and build context
     @discardableResult
-    public func setFolder(_ url: URL) async -> WorkFolderContext? {
+    public func setFolder(_ url: URL) async -> FolderContext? {
         // Stop accessing previous resource
         clearFolderInternal(unregisterTools: true)
 
@@ -90,7 +90,7 @@ public final class WorkFolderContextService: ObservableObject {
             hasActiveFolder = true
 
             // Register folder tools
-            WorkToolManager.shared.registerFolderTools(for: context)
+            FolderToolManager.shared.registerFolderTools(for: context)
 
             return context
 
@@ -106,24 +106,71 @@ public final class WorkFolderContextService: ObservableObject {
     }
 
     /// Build context from a URL (assumes access is already granted)
-    public func buildContext(from url: URL) async -> WorkFolderContext {
+    public func buildContext(from url: URL) async -> FolderContext {
         let projectType = detectProjectType(url)
-        let options = WorkFileTreeOptions(
+        let options = FileTreeOptions(
             ignorePatterns: projectType.ignorePatterns
         )
         let tree = buildFileTree(url, options: options)
         let manifest = readManifest(url, projectType: projectType)
         let isGitRepo = checkIsGitRepo(url)
         let gitStatus = isGitRepo ? await getGitStatus(url) : nil
+        let contextFiles = readContextFiles(url)
 
-        return WorkFolderContext(
+        return FolderContext(
             rootPath: url,
             projectType: projectType,
             tree: tree,
             manifest: manifest,
             gitStatus: gitStatus,
-            isGitRepo: isGitRepo
+            isGitRepo: isGitRepo,
+            contextFiles: contextFiles
         )
+    }
+
+    // MARK: - Context Files
+
+    /// Maximum total size for the loaded context block. Matches Hermes'
+    /// `CONTEXT_FILE_MAX_CHARS` so the model sees the same upper bound it
+    /// was trained against.
+    private static let contextFileMaxChars = 20_000
+
+    /// Search order for the project-level context file. First found wins —
+    /// loading multiple would either confuse the model with conflicting
+    /// guidance or balloon the static prefix and hurt KV-cache reuse.
+    private static let contextFileCandidates: [String] = [
+        ".hermes.md", "HERMES.md",
+        "AGENTS.md", "agents.md",
+        "CLAUDE.md", "claude.md",
+        ".cursorrules",
+    ]
+
+    /// Find and read the first present project-context file from `url`.
+    /// Returns a pre-formatted `## <filename>\n\n<content>` block, truncated
+    /// to `contextFileMaxChars`, or `nil` if no candidate exists.
+    private func readContextFiles(_ url: URL) -> String? {
+        for name in Self.contextFileCandidates {
+            let candidate = url.appendingPathComponent(name)
+            guard let raw = try? String(contentsOf: candidate, encoding: .utf8) else { continue }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            return "## \(name)\n\n\(Self.truncateContextContent(trimmed, label: name))"
+        }
+        return nil
+    }
+
+    /// Head + tail truncation with a `[truncated ...]` marker in the middle.
+    /// Matches Hermes' 70/20 split — the head usually contains the most
+    /// important framing while the tail catches sign-off / configuration.
+    private static func truncateContextContent(_ content: String, label: String) -> String {
+        guard content.count > contextFileMaxChars else { return content }
+        let headChars = Int(Double(contextFileMaxChars) * 0.7)
+        let tailChars = Int(Double(contextFileMaxChars) * 0.2)
+        let head = String(content.prefix(headChars))
+        let tail = String(content.suffix(tailChars))
+        let marker =
+            "\n\n[truncated \(label): kept \(headChars)+\(tailChars) of \(content.count) chars]\n\n"
+        return head + marker + tail
     }
 
     /// Refresh the current context (rebuild tree, git status, etc.)
@@ -142,7 +189,7 @@ public final class WorkFolderContextService: ObservableObject {
         hasActiveFolder = false
 
         if unregisterTools {
-            WorkToolManager.shared.unregisterFolderTools()
+            FolderToolManager.shared.unregisterFolderTools()
         }
     }
 
@@ -176,7 +223,7 @@ public final class WorkFolderContextService: ObservableObject {
                 let context = await buildContext(from: url)
                 self.currentContext = context
                 self.hasActiveFolder = true
-                WorkToolManager.shared.registerFolderTools(for: context)
+                FolderToolManager.shared.registerFolderTools(for: context)
             }
 
         } catch {
@@ -186,11 +233,11 @@ public final class WorkFolderContextService: ObservableObject {
 
     // MARK: - Project Type Detection
 
-    private func detectProjectType(_ url: URL) -> WorkProjectType {
+    private func detectProjectType(_ url: URL) -> ProjectType {
         let fm = FileManager.default
 
         // Check for manifest files in order of specificity
-        for projectType in WorkProjectType.allCases where projectType != .unknown {
+        for projectType in ProjectType.allCases where projectType != .unknown {
             for manifestFile in projectType.manifestFiles {
                 let manifestPath = url.appendingPathComponent(manifestFile)
                 if fm.fileExists(atPath: manifestPath.path) {
@@ -220,7 +267,7 @@ public final class WorkFolderContextService: ObservableObject {
         return false
     }
 
-    private func buildFileTree(_ url: URL, options: WorkFileTreeOptions) -> String {
+    private func buildFileTree(_ url: URL, options: FileTreeOptions) -> String {
         // Adaptive depth: inspect top-level item count to choose depth automatically.
         // This prevents bloated trees for broad directories like ~/Downloads (2000+ files)
         // while preserving full detail for well-structured projects (e.g., a Swift package).
@@ -356,7 +403,7 @@ public final class WorkFolderContextService: ObservableObject {
     /// Well-structured projects (<=50 top-level items): depth 3 (full detail)
     /// Medium directories (51-200): depth 2
     /// Broad flat directories (>200, e.g. Downloads): depth 1 + extension grouping
-    private func computeAdaptiveDepth(_ url: URL, options: WorkFileTreeOptions) -> Int {
+    private func computeAdaptiveDepth(_ url: URL, options: FileTreeOptions) -> Int {
         let visibleCount = visibleChildCount(of: url, patterns: options.ignorePatterns)
 
         if visibleCount <= 50 {
@@ -419,7 +466,7 @@ public final class WorkFolderContextService: ObservableObject {
 
     // MARK: - Manifest Reading
 
-    private func readManifest(_ url: URL, projectType: WorkProjectType) -> String? {
+    private func readManifest(_ url: URL, projectType: ProjectType) -> String? {
         guard let manifestFile = projectType.primaryManifest else { return nil }
 
         let manifestURL = url.appendingPathComponent(manifestFile)
@@ -448,7 +495,7 @@ public final class WorkFolderContextService: ObservableObject {
 
     private func getGitStatus(_ url: URL) async -> String? {
         do {
-            let (output, _) = try await WorkFolderToolHelpers.runGitCommand(
+            let (output, _) = try await FolderToolHelpers.runGitCommand(
                 arguments: ["status", "--short", "--branch"],
                 in: url
             )

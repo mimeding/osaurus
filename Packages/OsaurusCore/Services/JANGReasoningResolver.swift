@@ -79,8 +79,8 @@ enum JANGReasoningResolver {
     /// Convenience: resolve by display/picker name. Returns `nil` if the
     /// name doesn't map to an installed model (osaurus's existing
     /// ModelManager.findInstalledModel handles symlinks and case).
-    /// Used by UI-layer code (ChatView / WorkSession) that has the model
-    /// name but shouldn't need to know the on-disk directory layout.
+    /// Used by UI-layer code (ChatView) that has the model name but
+    /// shouldn't need to know the on-disk directory layout.
     static func resolve(modelKey: String) -> Resolution? {
         guard !modelKey.isEmpty else { return nil }
         guard let match = ModelManager.findInstalledModel(named: modelKey) else {

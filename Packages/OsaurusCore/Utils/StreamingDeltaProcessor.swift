@@ -2,9 +2,9 @@
 //  StreamingDeltaProcessor.swift
 //  osaurus
 //
-//  Shared streaming delta processing pipeline used by both ChatView (chat mode)
-//  and WorkSession (work mode). Handles delta buffering, <think> tag parsing,
-//  adaptive flush tuning, and throttled UI sync.
+//  Streaming delta processing pipeline used by ChatView. Handles delta
+//  buffering, <think> tag parsing, adaptive flush tuning, and throttled
+//  UI sync.
 //
 
 import Foundation
@@ -28,8 +28,8 @@ final class StreamingDeltaProcessor {
     /// Delta buffering
     private var deltaBuffer = ""
 
-    /// Fallback timer — safety net for push-based consumers (e.g. WorkSession
-    /// delegate callbacks) where no more deltas may arrive to trigger an inline flush.
+    /// Fallback timer — safety net for push-based consumers where no more
+    /// deltas may arrive to trigger an inline flush.
     private var flushTimer: Timer?
     private static let fallbackFlushInterval: TimeInterval = 0.1
 
@@ -74,9 +74,9 @@ final class StreamingDeltaProcessor {
         self.onSync = onSync
         self.middleware = StreamingMiddlewareResolver.resolve(for: modelId, modelOptions: modelOptions)
         // Non-nil only when the caller resolved a JANG-stamped model AND
-        // the user hasn't toggled thinking off — see callers in ChatView /
-        // WorkSession. When non-nil, `parseAndRoute` defers to vmlx's
-        // parser instead of the in-house `<think>` scanner.
+        // the user hasn't toggled thinking off — see callers in ChatView.
+        // When non-nil, `parseAndRoute` defers to vmlx's parser instead
+        // of the in-house `<think>` scanner.
         self.vmlxReasoningParser = vmlxReasoningParser
     }
 

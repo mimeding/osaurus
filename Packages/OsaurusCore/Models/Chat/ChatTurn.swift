@@ -189,8 +189,6 @@ final class ChatTurn: ObservableObject, Identifiable {
     var pendingToolArgPreview: String? = nil
     /// Total bytes of tool arguments received during streaming
     var pendingToolArgSize: Int = 0
-    /// Pending clarification request for work mode (displayed as ClarificationCardView)
-    var pendingClarification: ClarificationRequest? = nil
     /// Capabilities selected by preflight search (ephemeral, not persisted)
     var preflightCapabilities: [PreflightCapabilityItem]? = nil
 

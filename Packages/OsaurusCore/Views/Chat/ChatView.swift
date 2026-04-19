@@ -62,6 +62,26 @@ final class ChatSession: ObservableObject {
     /// they survive across sends without re-discovery.
     private var sessionToolStates: [UUID: SessionToolState] = [:]
 
+    // MARK: - Agent Loop State (Chat-as-Agent)
+
+    /// The agent's current todo for this chat, mirrored from
+    /// `AgentTodoStore` via `.agentTodoChanged`. Read-only from the UI's
+    /// perspective — only the `todo` tool writes to it.
+    @Published var currentTodo: AgentTodo?
+
+    /// Last `complete(summary)` payload from the agent. Populated when
+    /// the engine intercepts `complete` and breaks the loop. The chat
+    /// view renders it as a "Completed" banner inline.
+    @Published var lastCompletionSummary: String?
+
+    /// Last `clarify(question)` payload from the agent. Populated when
+    /// the engine intercepts `clarify` and pauses for user input. The
+    /// chat view renders it as an inline question bubble.
+    @Published var lastClarifyQuestion: String?
+
+    /// Notification observer for AgentTodoStore updates. Removed in deinit.
+    nonisolated(unsafe) private var agentTodoObserver: NSObjectProtocol?
+
     /// Callback when session needs to be saved (called after streaming completes)
     var onSessionChanged: (() -> Void)?
 
@@ -107,6 +127,24 @@ final class ChatSession: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in await self?.refreshPickerItems() }
+        }
+
+        // Mirror AgentTodoStore -> currentTodo so the inline UI block
+        // updates whenever the agent calls `todo`. Filter by this window's
+        // current sessionId so cross-window writes don't leak across.
+        agentTodoObserver = NotificationCenter.default.addObserver(
+            forName: .agentTodoChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self,
+                let sid = note.userInfo?["sessionId"] as? String,
+                sid == self.expectedTodoSessionId
+            else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.currentTodo = await AgentTodoStore.shared.todo(for: sid)
+            }
         }
 
         // Auto-persist model selection and unload unused models on switch
@@ -163,7 +201,39 @@ final class ChatSession: ObservableObject {
         if let observer = localModelsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = agentTodoObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         modelSelectionCancellable = nil
+    }
+
+    /// Stable session id used as the AgentTodoStore key. Falls back to a
+    /// per-window sentinel when no session has been created yet so brand-new
+    /// chats still have a place to write their todo.
+    var expectedTodoSessionId: String {
+        sessionId?.uuidString ?? "chatwindow-\(ObjectIdentifier(self).hashValue)"
+    }
+
+    /// Pull `summary` out of a `complete(...)` tool call's JSON body.
+    /// Returns nil when the JSON is malformed; the caller falls back to
+    /// the raw tool result string.
+    static func parseCompleteSummary(from json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let summary = dict["summary"] as? String
+        else { return nil }
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Pull `question` out of a `clarify(...)` tool call's JSON body.
+    static func parseClarifyQuestion(from json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let question = dict["question"] as? String
+        else { return nil }
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Apply initial model selection after agentId is set (for cached picker items)
@@ -406,6 +476,13 @@ final class ChatSession: ObservableObject {
         createdAt = Date()
         updatedAt = Date()
         isDirty = false
+
+        // Reset agent-loop UI state.
+        currentTodo = nil
+        lastCompletionSummary = nil
+        lastClarifyQuestion = nil
+        let oldSid = expectedTodoSessionId
+        Task { await AgentTodoStore.shared.clear(for: oldSid) }
         // Keep current agentId - don't reset when creating new chat within same agent
 
         // Clear caches
@@ -600,7 +677,7 @@ final class ChatSession: ObservableObject {
     /// and enrich the result metadata for ContentBlock display.
     private func processShareArtifactResult(
         toolResult: String,
-        executionMode: WorkExecutionMode
+        executionMode: ExecutionMode
     ) -> String {
         guard let sessionId else { return toolResult }
         let agentName = SandboxAgentProvisioner.linuxName(
@@ -658,8 +735,8 @@ final class ChatSession: ObservableObject {
     /// the autonomous flag when sandbox tools have not yet been registered
     /// (first send of a session before any tool call has provisioned the
     /// container).
-    private func estimatedChatExecutionMode(agentId: UUID) -> WorkExecutionMode {
-        let resolved = ToolRegistry.shared.resolveWorkExecutionMode(folderContext: nil)
+    private func estimatedChatExecutionMode(agentId: UUID) -> ExecutionMode {
+        let resolved = ToolRegistry.shared.resolveExecutionMode(folderContext: nil)
         if resolved.usesSandboxTools { return resolved }
         return AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true ? .sandbox : .none
     }
@@ -772,19 +849,19 @@ final class ChatSession: ObservableObject {
         ActivityTracker.shared.recordActivity(agentId: context.memoryAgentId)
     }
 
-    func prepareChatExecutionMode(agentId: UUID) async -> WorkExecutionMode {
+    func prepareChatExecutionMode(agentId: UUID) async -> ExecutionMode {
         guard AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true else {
             return .none
         }
 
         await SandboxToolRegistrar.shared.registerTools(for: agentId)
-        return ToolRegistry.shared.resolveWorkExecutionMode(folderContext: nil)
+        return ToolRegistry.shared.resolveExecutionMode(folderContext: nil)
     }
 
     /// Synchronous manifest for offline token estimation (UI popover).
     private func buildPreviewManifest(
         agentId: UUID,
-        executionMode: WorkExecutionMode,
+        executionMode: ExecutionMode,
         memoryContext: String = ""
     ) -> PromptManifest {
         var composer = SystemPromptComposer.forChat(
@@ -801,6 +878,12 @@ final class ChatSession: ObservableObject {
         let hasContent = !trimmed.isEmpty || !attachments.isEmpty
         let isRegeneration = !hasContent && !turns.isEmpty
         guard hasContent || isRegeneration else { return }
+
+        // Any new user input dismisses a pending clarify bubble (the user's
+        // text IS the clarification answer) and a prior completion banner
+        // (we're moving on to a follow-up).
+        lastClarifyQuestion = nil
+        lastCompletionSummary = nil
 
         if hasContent {
             turns.append(ChatTurn(role: .user, content: trimmed, attachments: attachments))
@@ -891,6 +974,7 @@ final class ChatSession: ObservableObject {
                     toolsDisabled: chatCfg.disableTools,
                     cachedPreflight: cachedSession?.initialPreflight,
                     additionalToolNames: cachedSession?.loadedToolNames ?? [],
+                    frozenAlwaysLoadedNames: cachedSession?.initialAlwaysLoadedNames,
                     trace: ttftTrace
                 )
                 guard isRunActive(runId) else { return }
@@ -909,11 +993,17 @@ final class ChatSession: ObservableObject {
                 let isManualTools = AgentManager.shared.effectiveToolSelectionMode(for: effectiveAgentId) == .manual
                 cachedContext = context
 
-                // Persist the (possibly fresh) preflight back onto the
-                // session so the next send reuses it. Preserves any
-                // capabilities_load names already accumulated this session.
+                // Persist the (possibly fresh) preflight + always-loaded
+                // snapshot back onto the session so the next send reuses
+                // both — preflight skips the LLM call, the always-loaded
+                // snapshot freezes the schema against tools that register
+                // mid-session. Preserves any capabilities_load names
+                // already accumulated this session.
                 if let sid = sessionId, cachedSession == nil {
-                    sessionToolStates[sid] = SessionToolState(initialPreflight: context.preflight)
+                    sessionToolStates[sid] = SessionToolState(
+                        initialPreflight: context.preflight,
+                        initialAlwaysLoadedNames: context.alwaysLoadedNames
+                    )
                 }
 
                 if !context.preflightItems.isEmpty {
@@ -1257,13 +1347,41 @@ final class ChatSession: ObservableObject {
                                 if !isRunActive(runId) { break outer }
                             }
 
-                            resultText = try await WorkExecutionContext.$currentAgentId.withValue(effectiveAgentId) {
-                                try await ToolRegistry.shared.execute(
-                                    name: inv.toolName,
-                                    argumentsJSON: inv.jsonArguments
-                                )
+                            // Bind the session id so the unified Chat agent
+                            // tools (`todo`, etc.) can address per-session
+                            // state in their stores. Falls back to a stable
+                            // string when no session has been created yet so
+                            // brand-new chats still get a todo store entry.
+                            let sessionIdForTools =
+                                sessionId?.uuidString ?? "chatwindow-\(ObjectIdentifier(self).hashValue)"
+                            resultText = try await ChatExecutionContext.$currentAgentId.withValue(effectiveAgentId) {
+                                try await ChatExecutionContext.$currentSessionId.withValue(sessionIdForTools) {
+                                    try await ToolRegistry.shared.execute(
+                                        name: inv.toolName,
+                                        argumentsJSON: inv.jsonArguments
+                                    )
+                                }
                             }
                             if !isRunActive(runId) { break outer }
+
+                            // Agent-loop intercepts: `complete` and `clarify`
+                            // end the iteration loop. `todo` already wrote
+                            // into AgentTodoStore via TaskLocal; the session
+                            // observer mirrors it into the inline UI block.
+                            // Break out of the outer iteration loop so we
+                            // don't keep prompting the model for more.
+                            if inv.toolName == "complete" {
+                                self.lastCompletionSummary =
+                                    Self.parseCompleteSummary(from: inv.jsonArguments) ?? resultText
+                                self.lastClarifyQuestion = nil
+                                break outer
+                            }
+                            if inv.toolName == "clarify" {
+                                self.lastClarifyQuestion =
+                                    Self.parseClarifyQuestion(from: inv.jsonArguments)
+                                self.lastCompletionSummary = nil
+                                break outer
+                            }
 
                             // Hot-load tools injected by capabilities_load or sandbox_plugin_register.
                             // Skipped in manual mode — the user's explicit tool set is fixed.
@@ -1282,7 +1400,10 @@ final class ChatSession: ObservableObject {
                                 if let sid = sessionId {
                                     var entry =
                                         sessionToolStates[sid]
-                                        ?? SessionToolState(initialPreflight: context.preflight)
+                                        ?? SessionToolState(
+                                            initialPreflight: context.preflight,
+                                            initialAlwaysLoadedNames: context.alwaysLoadedNames
+                                        )
                                     for tool in newTools {
                                         entry.loadedToolNames.insert(tool.function.name)
                                     }
@@ -1502,58 +1623,17 @@ struct ChatView: View {
     }
 
     var body: some View {
-        Group {
-            // Switch between Chat and Work modes
-            if windowState.mode == .work, let workSession = windowState.workSession {
-                WorkView(windowState: windowState, session: workSession)
-            } else {
-                chatModeContent
-            }
-        }
-        .themedAlert(
-            "Work Task Running",
-            isPresented: workCloseConfirmationPresented,
-            message:
-                "This work task is still active. You can keep it running in the background (with a live toast), or stop it and close this window.",
-            buttons: [
-                .primary("Run in Background") {
-                    if let session = windowState.workSession {
-                        BackgroundTaskManager.shared.detachWindow(
-                            windowState.windowId,
-                            session: session,
-                            windowState: windowState
-                        )
+        chatModeContent
+            .themedAlertScope(.chat(windowState.windowId))
+            .overlay(ThemedAlertHost(scope: .chat(windowState.windowId)))
+            .overlay {
+                if let promptState = session.pendingSecretPrompt {
+                    SecretPromptOverlay(state: promptState) {
+                        promptState.cancel()
+                        session.pendingSecretPrompt = nil
                     }
-                    ChatWindowManager.shared.closeWindow(id: windowState.windowId)
-                },
-                .destructive("Stop Task & Close") {
-                    windowState.workSession?.cancelExecution()
-                    ChatWindowManager.shared.closeWindow(id: windowState.windowId)
-                },
-                .cancel("Cancel"),
-            ]
-        )
-        .themedAlertScope(.chat(windowState.windowId))
-        .overlay(ThemedAlertHost(scope: .chat(windowState.windowId)))
-        .overlay {
-            if let promptState = session.pendingSecretPrompt {
-                SecretPromptOverlay(state: promptState) {
-                    promptState.cancel()
-                    session.pendingSecretPrompt = nil
                 }
             }
-        }
-    }
-
-    private var workCloseConfirmationPresented: Binding<Bool> {
-        Binding(
-            get: { windowState.workCloseConfirmation != nil },
-            set: { newValue in
-                if !newValue {
-                    windowState.workCloseConfirmation = nil
-                }
-            }
-        )
     }
 
     /// Chat mode content - the original ChatView implementation
@@ -1940,29 +2020,15 @@ struct ChatView: View {
         let lastAssistantTurnId = session.lastAssistantTurnIdForThread
 
         return ZStack {
-            MessageThreadView(
-                blocks: blocks,
-                groupHeaderMap: groupHeaderMap,
-                width: width,
-                agentName: displayName,
-                isStreaming: session.isStreaming,
-                lastAssistantTurnId: lastAssistantTurnId,
-                expandedBlocksStore: session.expandedBlocksStore,
-                scrollToBottomTrigger: scrollToBottomTrigger,
-                onScrolledToBottom: { isPinnedToBottom = true },
-                onScrolledAwayFromBottom: { isPinnedToBottom = false },
-                onCopy: copyTurnContent,
-                onRegenerate: regenerateTurn,
-                onEdit: beginEditingTurn,
-                onDelete: deleteTurn,
-                editingTurnId: editingTurnId,
-                editText: $editText,
-                onConfirmEdit: confirmEditAndRegenerate,
-                onCancelEdit: cancelEditing,
-                onUserImagePreview: openUserAttachmentPreview(attachmentId:)
-            )
-            .onReceive(NotificationCenter.default.publisher(for: .chatOverlayActivated)) { _ in
-                isPinnedToBottom = true
+            VStack(spacing: 8) {
+                agentInlineBlocks
+                threadCore(
+                    blocks: blocks,
+                    groupHeaderMap: groupHeaderMap,
+                    width: width,
+                    displayName: displayName,
+                    lastAssistantTurnId: lastAssistantTurnId
+                )
             }
 
             // Scroll button overlay - isolated from content
@@ -1991,6 +2057,64 @@ struct ChatView: View {
                 ImageFullScreenView(image: img, altText: "")
                     .imageFullScreenSheetPresentation()
             }
+        }
+    }
+
+    /// Inline agent-loop blocks rendered above the message thread. Each
+    /// is gated on the corresponding `@Published` state on
+    /// `ChatWindowState`; nothing renders when the state is nil/empty.
+    /// Order: completion banner first (most recent terminal event),
+    /// then clarify question (waiting on user), then todo (ongoing
+    /// state).
+    @ViewBuilder
+    private var agentInlineBlocks: some View {
+        if let summary = session.lastCompletionSummary {
+            InlineCompleteBlock(summary: summary)
+                .padding(.top, 8)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+        if let question = session.lastClarifyQuestion {
+            InlineClarifyBlock(question: question)
+                .padding(.top, 8)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+        if let todo = session.currentTodo {
+            InlineTodoBlock(todo: todo)
+                .padding(.top, 8)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+    }
+
+    private func threadCore(
+        blocks: [ContentBlock],
+        groupHeaderMap: [UUID: UUID],
+        width: CGFloat,
+        displayName: String,
+        lastAssistantTurnId: UUID?
+    ) -> some View {
+        MessageThreadView(
+            blocks: blocks,
+            groupHeaderMap: groupHeaderMap,
+            width: width,
+            agentName: displayName,
+            isStreaming: session.isStreaming,
+            lastAssistantTurnId: lastAssistantTurnId,
+            expandedBlocksStore: session.expandedBlocksStore,
+            scrollToBottomTrigger: scrollToBottomTrigger,
+            onScrolledToBottom: { isPinnedToBottom = true },
+            onScrolledAwayFromBottom: { isPinnedToBottom = false },
+            onCopy: copyTurnContent,
+            onRegenerate: regenerateTurn,
+            onEdit: beginEditingTurn,
+            onDelete: deleteTurn,
+            editingTurnId: editingTurnId,
+            editText: $editText,
+            onConfirmEdit: confirmEditAndRegenerate,
+            onCancelEdit: cancelEditing,
+            onUserImagePreview: openUserAttachmentPreview(attachmentId:)
+        )
+        .onReceive(NotificationCenter.default.publisher(for: .chatOverlayActivated)) { _ in
+            isPinnedToBottom = true
         }
     }
 

@@ -120,7 +120,7 @@ final class MethodsReportTool: OsaurusTool, @unchecked Sendable {
         try await MethodService.shared.reportOutcome(
             methodId: id,
             outcome: outcome,
-            agentId: WorkExecutionContext.currentIssueId,
+            agentId: ChatExecutionContext.currentSessionId,
             notes: notes
         )
 

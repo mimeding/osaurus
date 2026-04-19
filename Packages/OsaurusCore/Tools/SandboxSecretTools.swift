@@ -146,3 +146,34 @@ enum SecretToolResult {
         encode(["stored": false, "key": key, "reason": "User cancelled"])
     }
 }
+
+// MARK: - Prompt Marker Parsing
+
+/// Parses the JSON marker emitted by `sandbox_secret_set` when no value
+/// was provided. The chat loop intercepts this marker, opens a secure
+/// input overlay, and replaces the tool result with a stored/cancelled
+/// envelope.
+struct SecretPromptParser {
+    let key: String
+    let description: String
+    let instructions: String
+    let agentId: String
+
+    static func parse(_ resultText: String) -> SecretPromptParser? {
+        guard let data = resultText.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let action = json["action"] as? String,
+            action == SecretPromptAction.actionKey,
+            let key = json["key"] as? String,
+            let desc = json["description"] as? String,
+            let instructions = json["instructions"] as? String,
+            let agentId = json["agent_id"] as? String
+        else { return nil }
+        return SecretPromptParser(
+            key: key,
+            description: desc,
+            instructions: instructions,
+            agentId: agentId
+        )
+    }
+}

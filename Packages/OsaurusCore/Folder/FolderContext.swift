@@ -1,5 +1,5 @@
 //
-//  WorkFolderContext.swift
+//  FolderContext.swift
 //  osaurus
 //
 //  Models for work folder context integration.
@@ -11,12 +11,12 @@ import Foundation
 // MARK: - Folder Context
 
 /// Context information about a selected working folder for work operations
-public struct WorkFolderContext: Sendable {
+public struct FolderContext: Sendable {
     /// The root path of the selected folder
     public let rootPath: URL
 
     /// Detected project type based on manifest files
-    public let projectType: WorkProjectType
+    public let projectType: ProjectType
 
     /// File tree representation (may be summarized for large directories)
     public let tree: String
@@ -30,13 +30,21 @@ public struct WorkFolderContext: Sendable {
     /// Whether this folder is a git repository
     public let isGitRepo: Bool
 
+    /// Project-level guidance file loaded from the folder root, if present.
+    /// First-found-wins across `.hermes.md` / `HERMES.md` → `AGENTS.md` →
+    /// `CLAUDE.md` → `.cursorrules`. Capped at 20K chars (head + tail
+    /// truncation, same shape Hermes uses). Pre-formatted with a `## <name>`
+    /// header so the prompt composer can drop it in as-is.
+    public let contextFiles: String?
+
     public init(
         rootPath: URL,
-        projectType: WorkProjectType,
+        projectType: ProjectType,
         tree: String,
         manifest: String?,
         gitStatus: String?,
-        isGitRepo: Bool
+        isGitRepo: Bool,
+        contextFiles: String? = nil
     ) {
         self.rootPath = rootPath
         self.projectType = projectType
@@ -44,13 +52,14 @@ public struct WorkFolderContext: Sendable {
         self.manifest = manifest
         self.gitStatus = gitStatus
         self.isGitRepo = isGitRepo
+        self.contextFiles = contextFiles
     }
 }
 
 // MARK: - Project Type
 
 /// Detected project type for a folder
-public enum WorkProjectType: String, Sendable, CaseIterable {
+public enum ProjectType: String, Sendable, CaseIterable {
     case swift
     case node
     case python
@@ -128,7 +137,7 @@ public enum WorkProjectType: String, Sendable, CaseIterable {
 // MARK: - File Tree Options
 
 /// Options for building file tree representation
-public struct WorkFileTreeOptions {
+public struct FileTreeOptions {
     /// Maximum depth to traverse (default: 3)
     public var maxDepth: Int
 
@@ -154,7 +163,7 @@ public struct WorkFileTreeOptions {
     }
 
     /// Default options for building file tree
-    public static var `default`: WorkFileTreeOptions {
-        WorkFileTreeOptions()
+    public static var `default`: FileTreeOptions {
+        FileTreeOptions()
     }
 }

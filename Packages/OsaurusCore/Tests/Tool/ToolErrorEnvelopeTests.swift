@@ -56,39 +56,24 @@ struct ToolErrorEnvelopeTests {
         #expect(ToolErrorEnvelope.isErrorResult("{\"value\": 42}") == false)
     }
 
-    @Test func toolNotFoundWithSuggestionsBecomesRetryable() throws {
+    @Test func envelopeNeverIncludesSuggestedTools() throws {
+        // Hermes-style: suggestions in error envelopes were causing the model
+        // to invent neighbouring tool names. The envelope should now carry
+        // only error/reason/retryable/(tool) — no list of "you might mean...".
         let env = ToolErrorEnvelope(
             kind: .toolNotFound,
-            reason: "Tool 'pdf_extract' is not loaded in this session.",
-            toolName: "pdf_extract",
-            suggestions: ["tool/pdf_extract", "tool/pdf_render"]
+            reason: "Tool 'mystery' is not available in this session.",
+            toolName: "mystery"
         )
-        // Default `toolNotFound` is not retryable, but the presence of
-        // suggestions promotes it to retryable so the model knows to call
-        // capabilities_load instead of giving up.
-        #expect(env.retryable == true)
-
         let json = env.toJSONString()
         let data = json.data(using: .utf8)!
         let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
 
         #expect(parsed?["error"] as? String == "toolNotFound")
-        #expect(parsed?["retryable"] as? Bool == true)
-        #expect(parsed?["suggested_tools"] as? [String] == ["tool/pdf_extract", "tool/pdf_render"])
-
-        // Plain-text fallback hint surfaces in the reason field for models
-        // that don't pick up the structured suggestions.
+        #expect(parsed?["retryable"] as? Bool == false)
+        #expect(parsed?["suggested_tools"] == nil)
         let reason = parsed?["reason"] as? String ?? ""
-        #expect(reason.contains("capabilities_load"))
-        #expect(reason.contains("tool/pdf_extract"))
-    }
-
-    @Test func toolNotFoundWithoutSuggestionsStaysNonRetryable() {
-        let env = ToolErrorEnvelope(
-            kind: .toolNotFound,
-            reason: "Tool 'mystery' is not loaded in this session.",
-            toolName: "mystery"
-        )
-        #expect(env.retryable == false)
+        #expect(!reason.contains("capabilities_load"))
+        #expect(!reason.contains("Try:"))
     }
 }

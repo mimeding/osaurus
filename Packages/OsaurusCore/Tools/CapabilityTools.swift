@@ -73,7 +73,7 @@ final class CapabilitiesSearchTool: OsaurusTool, @unchecked Sendable {
 
         if hits.isEmpty {
             let id: UUID
-            if let existingId = agentId ?? WorkExecutionContext.currentAgentId {
+            if let existingId = agentId ?? ChatExecutionContext.currentAgentId {
                 id = existingId
             } else {
                 id = await MainActor.run { AgentManager.shared.activeAgent.id }
@@ -206,11 +206,11 @@ final class CapabilitiesLoadTool: OsaurusTool, @unchecked Sendable {
                 return "Error: Method '\(methodId)' not found.\n"
             }
 
-            let issueId = WorkExecutionContext.currentIssueId
+            let sessionId = ChatExecutionContext.currentSessionId
             try await MethodService.shared.reportOutcome(
                 methodId: methodId,
                 outcome: .loaded,
-                agentId: issueId
+                agentId: sessionId
             )
 
             var output = "# Method: \(method.name)\n\n"

@@ -7,7 +7,7 @@
 //  installs, and container lifecycle events.
 //
 //  Plugin tools are registered globally (agent-agnostic). Agent
-//  identity is resolved at execution time via WorkExecutionContext.
+//  identity is resolved at execution time via ChatExecutionContext.
 //  Builtin sandbox tools remain per-agent.
 //
 
@@ -158,6 +158,18 @@ public final class SandboxToolRegistrar {
             autonomousEnabled
             || SandboxPluginManager.shared.plugins(for: agentIdStr).contains { $0.status == .ready }
 
+        // Whenever autonomous is on but we leave this method without
+        // registering the real sandbox tools, drop the placeholder into
+        // the schema so the model has *something* sandbox-shaped to call
+        // (it'll get a "still initialising" envelope back). The success
+        // path flips `realToolsRegistered` so the defer skips it.
+        var realToolsRegistered = false
+        defer {
+            if autonomousEnabled && !realToolsRegistered {
+                BuiltinSandboxTools.registerInitPending()
+            }
+        }
+
         let containerStatus = SandboxManager.State.shared.status
         if containerStatus != .running {
             // Without autonomous execution there's no expectation of sandbox
@@ -244,6 +256,7 @@ public final class SandboxToolRegistrar {
             agentName: agentName,
             config: execConfig
         )
+        realToolsRegistered = true
     }
 
     private func recordUnavailability(

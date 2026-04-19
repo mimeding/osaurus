@@ -194,9 +194,6 @@ final class PluginHostContext: @unchecked Sendable {
                 )
             }
 
-            let modeStr = json["mode"] as? String ?? "work"
-            let mode: ChatMode = modeStr == "chat" ? .chat : .work
-
             var requestId = UUID()
             if let idStr = json["id"] as? String, let parsed = UUID(uuidString: idStr) {
                 requestId = parsed
@@ -231,7 +228,6 @@ final class PluginHostContext: @unchecked Sendable {
 
             let request = DispatchRequest(
                 id: requestId,
-                mode: mode,
                 prompt: prompt,
                 agentId: resolvedAgent,
                 title: title,
@@ -285,14 +281,13 @@ final class PluginHostContext: @unchecked Sendable {
         }
     }
 
+    /// Removed in the work-mode deletion. Chat agent uses the inline
+    /// `clarify` intercept rendered in the chat window; there is no
+    /// programmatic clarification submission API anymore. The C ABI slot
+    /// is preserved so old plugins keep loading; the call is a no-op.
     func dispatchClarify(taskId: String, response: String) {
-        guard let uuid = UUID(uuidString: taskId) else { return }
-        Self.blockingMainActor { [pluginId] in
-            guard let state = BackgroundTaskManager.shared.taskState(for: uuid),
-                state.sourcePluginId == pluginId
-            else { return }
-            BackgroundTaskManager.shared.submitClarification(uuid, response: response)
-        }
+        _ = taskId
+        _ = response
     }
 
     func listActiveTasks() -> String {
@@ -325,33 +320,6 @@ final class PluginHostContext: @unchecked Sendable {
         }
     }
 
-    func dispatchAddIssue(taskId: String, issueJSON: String) -> String {
-        guard let uuid = UUID(uuidString: taskId) else {
-            return Self.jsonString(["error": "invalid_task_id", "message": "Invalid UUID format"])
-        }
-
-        let data = Data(issueJSON.utf8)
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let title = json["title"] as? String
-        else {
-            return Self.jsonString(["error": "invalid_request", "message": "Missing required field: title"])
-        }
-        let query = json["description"] as? String ?? title
-
-        return Self.blockingMainActor { [pluginId] in
-            guard let state = BackgroundTaskManager.shared.taskState(for: uuid),
-                state.sourcePluginId == pluginId,
-                state.status.isActive, state.mode == .work,
-                let session = state.session
-            else {
-                return Self.jsonString(["error": "not_found", "message": "Active work task not found"])
-            }
-
-            Task { await session.addIssueFromPlugin(query: query) }
-            return Self.jsonString(["status": "queued", "title": title])
-        }
-    }
-
     // MARK: - Inference Callbacks
 
     private static let toolExecutionTimeout: UInt64 = 120
@@ -367,7 +335,7 @@ final class PluginHostContext: @unchecked Sendable {
         let temperature: Float?
         let maxTokens: Int?
         let tools: [Tool]?
-        let executionMode: WorkExecutionMode
+        let executionMode: ExecutionMode
         var cacheHint: String?
         var staticPrefix: String?
 
@@ -427,7 +395,7 @@ final class PluginHostContext: @unchecked Sendable {
         let engine: ChatEngine
         let budgetManager: ContextBudgetManager?
         let agentId: UUID?
-        let executionMode: WorkExecutionMode
+        let executionMode: ExecutionMode
         let contextId: String
     }
 
@@ -526,7 +494,7 @@ final class PluginHostContext: @unchecked Sendable {
             await SandboxToolRegistrar.shared.registerTools(for: agentId)
         }
 
-        let execMode = await MainActor.run { ToolRegistry.shared.resolveWorkExecutionMode(folderContext: nil) }
+        let execMode = await MainActor.run { ToolRegistry.shared.resolveExecutionMode(folderContext: nil) }
         let composed = await SystemPromptComposer.composeChatContext(agentId: agentId, executionMode: execMode)
         return await MainActor.run {
             let mgr = AgentManager.shared
@@ -652,7 +620,7 @@ final class PluginHostContext: @unchecked Sendable {
 
     private static func applyPreflightSearch(
         to inference: EnrichedInference,
-        executionMode: WorkExecutionMode = .none,
+        executionMode: ExecutionMode = .none,
         agentId: UUID = Agent.defaultId
     ) async -> EnrichedInference {
         let toolMode = await MainActor.run {
@@ -686,7 +654,17 @@ final class PluginHostContext: @unchecked Sendable {
         if let sid = inference.request.session_id {
             let cached = preflightCacheLock.withLock { preflightCache[sid] }
             if let cached {
-                let builtInTools = await MainActor.run { ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode) }
+                // Honour the session's first-turn always-loaded snapshot
+                // when present: filter the live registry result down to
+                // those names so a tool that registered late doesn't
+                // sneak into turn 2's schema.
+                let builtInTools = await MainActor.run { () -> [Tool] in
+                    let live = ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)
+                    if let frozen = cached.initialAlwaysLoadedNames {
+                        return live.filter { frozen.contains($0.function.name) }
+                    }
+                    return live
+                }
                 let extraSpecs = await MainActor.run {
                     ToolRegistry.shared.specs(forTools: Array(cached.loadedToolNames))
                 }
@@ -711,8 +689,14 @@ final class PluginHostContext: @unchecked Sendable {
         let preflight = await PreflightCapabilitySearch.search(query: query, mode: preflightMode, agentId: agentId)
 
         if let sid = inference.request.session_id {
+            // Snapshot the always-loaded names this turn so subsequent
+            // turns freeze against them.
+            let builtInNames = Set(builtInTools.map { $0.function.name })
             preflightCacheLock.withLock {
-                preflightCache[sid] = SessionToolState(initialPreflight: preflight)
+                preflightCache[sid] = SessionToolState(
+                    initialPreflight: preflight,
+                    initialAlwaysLoadedNames: builtInNames
+                )
             }
         }
 
@@ -870,7 +854,7 @@ final class PluginHostContext: @unchecked Sendable {
         name: String,
         argumentsJSON: String,
         agentId: UUID? = nil,
-        executionMode: WorkExecutionMode = .none
+        executionMode: ExecutionMode = .none
     ) async -> String {
         if executionMode.usesSandboxTools, let agentId {
             await SandboxToolRegistrar.shared.registerTools(for: agentId)
@@ -879,7 +863,7 @@ final class PluginHostContext: @unchecked Sendable {
         return await withTaskGroup(of: String?.self) { group in
             group.addTask {
                 do {
-                    return try await WorkExecutionContext.$currentAgentId.withValue(agentId) {
+                    return try await ChatExecutionContext.$currentAgentId.withValue(agentId) {
                         try await ToolRegistry.shared.execute(
                             name: name,
                             argumentsJSON: argumentsJSON
@@ -1676,7 +1660,6 @@ extension PluginHostContext {
         var result: [String: Any] = [
             "id": id.uuidString,
             "title": state.taskTitle,
-            "mode": state.mode == .work ? "work" : "chat",
         ]
 
         if let draft = state.draftText, let parsed = parseJSON(draft) { result["draft"] = parsed }
@@ -1684,10 +1667,9 @@ extension PluginHostContext {
         switch state.status {
         case .running:
             result["status"] = "running"
-            result["progress"] = state.progress
             if let step = state.currentStep { result["current_step"] = step }
 
-            if let output = state.session?.streamingContent, !output.isEmpty {
+            if let output = state.chatSession?.turns.last?.content, !output.isEmpty {
                 result["output"] = output
             }
 
@@ -1703,16 +1685,11 @@ extension PluginHostContext {
             if !activity.isEmpty { result["activity"] = activity }
 
         case .awaitingClarification:
+            // Reachable only via legacy state transitions; chat tasks
+            // surface clarification inline via the agent intercept and
+            // do NOT mark the task awaiting from the manager's POV.
             result["status"] = "awaiting_clarification"
-            result["progress"] = state.progress
             result["current_step"] = "Needs input"
-            if let clarification = state.pendingClarification {
-                var clarObj: [String: Any] = ["question": clarification.question]
-                if let options = clarification.options, !options.isEmpty {
-                    clarObj["options"] = options
-                }
-                result["clarification"] = clarObj
-            }
 
         case .completed(let success, let summary):
             result["status"] = success ? "completed" : "failed"
@@ -1755,7 +1732,6 @@ extension PluginHostContext {
     static func serializeStartedEvent(state: BackgroundTaskState) -> String {
         jsonString([
             "status": "running",
-            "mode": state.mode == .work ? "work" : "chat",
             "title": state.taskTitle,
         ])
     }
@@ -1781,18 +1757,6 @@ extension PluginHostContext {
     static func serializeProgressEvent(progress: Double, currentStep: String?, taskTitle: String) -> String {
         var dict: [String: Any] = ["progress": progress, "title": taskTitle]
         if let step = currentStep { dict["current_step"] = step }
-        return jsonString(dict)
-    }
-
-    @MainActor
-    static func serializeClarificationEvent(clarification: ClarificationRequest) -> String {
-        var dict: [String: Any] = ["question": clarification.question]
-        if let options = clarification.options, !options.isEmpty {
-            dict["options"] = options
-        }
-        if let context = clarification.context, !context.isEmpty {
-            dict["context"] = context
-        }
         return jsonString(dict)
     }
 
@@ -2233,19 +2197,24 @@ extension PluginHostContext {
         )
     }
 
-    static let trampolineDispatchAddIssue: osr_dispatch_add_issue_t = { taskIdPtr, issuePtr in
-        guard let taskIdPtr, let issuePtr, let ctx = activeContext() else { return nil }
+    /// Removed in the work-mode deletion: issues no longer exist as a
+    /// concept. The C ABI slot is retained so old plugins keep loading;
+    /// the call returns a clean error envelope so plugins notice and fall
+    /// back to plain `dispatch`.
+    static let trampolineDispatchAddIssue: osr_dispatch_add_issue_t = { taskIdPtr, _ in
+        guard let taskIdPtr, let ctx = activeContext() else { return nil }
         let taskId = String(cString: taskIdPtr)
-        let issueJSON = String(cString: issuePtr)
-        var result = ""
-        let ms = measureMs { result = ctx.dispatchAddIssue(taskId: taskId, issueJSON: issueJSON) }
+        let result = jsonString([
+            "error": "not_supported",
+            "message":
+                "dispatch_add_issue was removed when work-mode issue tracking was retired. Use `dispatch` for a fresh task.",
+        ])
         logPluginCall(
             pluginId: ctx.pluginId,
             method: "POST",
             path: "/host-api/tasks/\(taskId)/issues",
-            statusCode: responseContainsError(result) ? 400 : 201,
-            durationMs: ms,
-            requestBody: issueJSON,
+            statusCode: 410,
+            durationMs: 0,
             responseBody: result
         )
         return makeCString(result)

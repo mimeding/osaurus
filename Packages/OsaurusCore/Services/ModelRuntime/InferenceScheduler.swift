@@ -29,9 +29,9 @@ public enum InferencePriority: Int, Sendable, Comparable, CaseIterable {
     /// Internal background work — preflight capability search, memory
     /// extraction, summarization, anything the user didn't explicitly request.
     case maintenance = 0
-    /// Scheduled / detached background tasks (work mode dispatched via plugin
-    /// or schedule). The user knows it's running; they don't expect typing
-    /// latency from it.
+    /// Scheduled / detached background tasks (chat dispatched via plugin,
+    /// schedule, watcher, or HTTP). The user knows it's running; they
+    /// don't expect typing latency from it.
     case background = 25
     /// Live plugin inference (`complete`, `complete_stream`, `embed`). Treated
     /// below interactive so a webhook flood can't starve a user mid-typing.

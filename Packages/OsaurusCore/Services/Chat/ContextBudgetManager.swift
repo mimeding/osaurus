@@ -42,7 +42,6 @@ public struct ContextBreakdown: Equatable, Sendable {
     static func tint(for sectionId: String) -> Tint {
         switch sectionId {
         case "base": return .purple
-        case "workMode": return .indigo
         case "sandbox": return .teal
         case "memory": return .blue
         case "preflight": return .cyan
@@ -422,7 +421,7 @@ public struct ContextBudgetManager: Sendable {
 
 /// Tracks the active request's token breakdown during streaming/execution.
 ///
-/// Both `ChatSession` and `WorkSession` own an instance. The lifecycle is:
+/// `ChatSession` owns an instance. The lifecycle is:
 /// 1. `snapshot()` — captures context from ComposedContext or manifest
 /// 2. `updateConversation()` — at each agent-loop iteration, updates conversation + output tokens
 /// 3. `activeBreakdown()` — O(1) read returning the snapshot with live message tokens

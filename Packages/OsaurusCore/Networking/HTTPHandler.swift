@@ -1971,8 +1971,8 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             // Load tools: use sandbox mode when the agent has Autonomous Execution enabled
             let tools = await MainActor.run {
                 let autonomousEnabled = AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true
-                let mode: WorkExecutionMode =
-                    autonomousEnabled ? ToolRegistry.shared.resolveWorkExecutionMode(folderContext: nil) : .none
+                let mode: ExecutionMode =
+                    autonomousEnabled ? ToolRegistry.shared.resolveExecutionMode(folderContext: nil) : .none
                 return ToolRegistry.shared.alwaysLoadedSpecs(mode: mode)
             }
 
@@ -2088,8 +2088,8 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
                     let toolResult: String
                     do {
-                        toolResult = try await WorkExecutionContext.$currentIssueId.withValue(requestId) {
-                            try await WorkExecutionContext.$currentAgentId.withValue(agentId) {
+                        toolResult = try await ChatExecutionContext.$currentSessionId.withValue(requestId) {
+                            try await ChatExecutionContext.$currentAgentId.withValue(agentId) {
                                 try await ToolRegistry.shared.execute(
                                     name: invocation.toolName,
                                     argumentsJSON: invocation.jsonArguments
@@ -2247,14 +2247,11 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 return
             }
 
-            let modeStr = json["mode"] as? String ?? "work"
-            let mode: ChatMode = modeStr == "chat" ? .chat : .work
             let title = json["title"] as? String
             let requestId = UUID()
 
             let request = DispatchRequest(
                 id: requestId,
-                mode: mode,
                 prompt: prompt,
                 agentId: agentId,
                 title: title,
@@ -2493,18 +2490,24 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 return
             }
 
-            await MainActor.run {
-                BackgroundTaskManager.shared.submitClarification(taskId, response: response)
-            }
-
-            let responseBody = #"{"status":"ok"}"#
+            // The clarify endpoint was a Work-mode-only API that allowed
+            // out-of-band response submission to a paused work session.
+            // Chat agents surface clarifications inline in the chat
+            // window via the `clarify` agent intercept, so there's no
+            // structured submit-from-HTTP path anymore. Keep the URL
+            // routable (so old callers don't 404) but return a clear
+            // error pointing them at the new flow.
+            _ = taskId
+            _ = response
+            let responseBody =
+                #"{"error":"not_supported","message":"clarify was removed when work-mode issue tracking was retired"}"#
             hop {
                 var headers = [("Content-Type", "application/json; charset=utf-8")]
                 headers.append(contentsOf: cors)
                 self.sendResponse(
                     context: ctx.value,
                     version: head.version,
-                    status: .ok,
+                    status: .gone,
                     headers: headers,
                     body: responseBody
                 )
@@ -2931,10 +2934,9 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 } catch {
                     // Map ChatEngine.EngineError to its intended HTTP
                     // status (e.g. 404 for unknown model) instead of
-                    // blanket-500 on every failure. The WorkView
-                    // classifier / external API consumers rely on the
-                    // status code to give users actionable feedback.
-                    // See PR #863 / issue #858.
+                    // blanket-500 on every failure. External API
+                    // consumers rely on the status code to give users
+                    // actionable feedback. See PR #863 / issue #858.
                     let status: HTTPResponseStatus
                     let body: String
                     if let engineError = error as? ChatEngine.EngineError {

@@ -17,6 +17,14 @@ final class ToolRegistry: ObservableObject {
     /// Names of tools registered via registerBuiltInTools (always loaded).
     private(set) var builtInToolNames: Set<String> = []
 
+    /// Tool names that are reserved for agent-loop intercepts and must NOT
+    /// appear in the schema sent to the model. They stay registered so the
+    /// chat engine can dispatch them internally if it ever needs to surface
+    /// them (e.g. mid-loop nudge), but the model never sees them by default.
+    /// Hiding them keeps the schema small and prevents the model from
+    /// pattern-matching the names into "I should plan" behaviour.
+    static let agentInterceptToolNames: Set<String> = ["todo", "complete", "clarify"]
+
     /// Tool names that require the sandbox container to be running
     private var sandboxToolNames: Set<String> = []
     /// Built-in sandbox execution tools managed by runtime context.
@@ -89,6 +97,12 @@ final class ToolRegistry: ObservableObject {
     /// (built-in tools are always loaded regardless, but this keeps config consistent).
     private func registerBuiltInTools() {
         let builtIns: [OsaurusTool] = [
+            // Unified Chat agent loop tools (always on; chat engine
+            // intercepts these to drive the inline UI + loop control).
+            TodoTool(),
+            CompleteTool(),
+            ClarifyTool(),
+            // Existing chat-side built-ins.
             CapabilitiesSearchTool(),
             CapabilitiesLoadTool(),
             MethodsSaveTool(),
@@ -160,10 +174,13 @@ final class ToolRegistry: ObservableObject {
         tool.asOpenAITool().function.name.count + (tool.description.count / 4)
     }
 
-    /// Get specs for specific tools by name (ignores enabled state)
+    /// Get specs for specific tools by name (ignores enabled state).
+    /// Agent-intercept tools are filtered out — they never appear in the
+    /// schema sent to the model.
     func specs(forTools toolNames: [String]) -> [Tool] {
         return toolNames.compactMap { name in
-            toolsByName[name]?.asOpenAITool()
+            guard !Self.agentInterceptToolNames.contains(name) else { return nil }
+            return toolsByName[name]?.asOpenAITool()
         }
     }
 
@@ -171,25 +188,32 @@ final class ToolRegistry: ObservableObject {
     /// Any registered tool can execute — access control is handled upstream
     /// by which tools are offered to the model (alwaysLoadedSpecs + capabilities_load).
     ///
-    /// Unknown tools self-heal: instead of throwing, we return a
-    /// `ToolErrorEnvelope(kind: .toolNotFound)` whose `suggested_tools`
-    /// field carries the top capabilities_search hits so the model can
-    /// recover with a `capabilities_load` call on the next iteration. This
-    /// keeps the agent loop alive (callers don't see an exception, so the
-    /// turn isn't rejected) while still surfacing the failure in a way
-    /// trained models recognise.
+    /// Unknown tools return a minimal `ToolErrorEnvelope(kind: .toolNotFound)`
+    /// — no suggestions list. Hermes' AGENTS.md calls out cross-tool
+    /// references in error responses as a primary hallucination cause; we
+    /// just say what failed and leave it to the model to either pick a real
+    /// tool from its schema or stop. The one exception is sandbox tools that
+    /// fail mid-startup race: those get a clear "sandbox is initialising"
+    /// notice so the model knows to wait and retry, not invent.
     func execute(name: String, argumentsJSON: String) async throws -> String {
         guard let tool = toolsByName[name] else {
-            let hits = await CapabilitySearch.search(
-                query: name,
-                topK: (methods: 0, tools: 5, skills: 0)
-            )
-            let suggestions = hits.tools.map { "tool/\($0.entry.id)" }
+            // Sandbox-startup race: the model called a sandbox tool before
+            // the container finished provisioning. Tell it the truth so it
+            // doesn't pivot to a hallucinated alternative.
+            if name.hasPrefix("sandbox_") {
+                return ToolErrorEnvelope(
+                    kind: .unavailable,
+                    reason:
+                        "Sandbox is still initializing — \(name) isn't registered yet. "
+                        + "Wait a moment and try again.",
+                    toolName: name,
+                    retryable: true
+                ).toJSONString()
+            }
             return ToolErrorEnvelope(
                 kind: .toolNotFound,
-                reason: "Tool '\(name)' is not loaded in this session.",
-                toolName: name,
-                suggestions: suggestions
+                reason: "Tool '\(name)' is not available in this session.",
+                toolName: name
             ).toJSONString()
         }
         // Permission gating
@@ -429,7 +453,7 @@ final class ToolRegistry: ObservableObject {
     }
 
     /// Register all tools from a sandbox plugin (agent-agnostic).
-    /// Agent identity is resolved at execution time via WorkExecutionContext.
+    /// Agent identity is resolved at execution time via ChatExecutionContext.
     func registerSandboxPluginTools(plugin: SandboxPlugin) {
         guard let tools = plugin.tools else { return }
         for spec in tools {
@@ -549,41 +573,35 @@ final class ToolRegistry: ObservableObject {
 
     // MARK: - Work-Conflicting Plugin Tools
 
-    /// Plugins that duplicate built-in work folder/git tools and bypass undo + sandboxing.
-    static let workConflictingPluginIds: Set<String> = [
+    /// Plugins that duplicate built-in folder/git tools and bypass undo + sandboxing.
+    static let folderConflictingPluginIds: Set<String> = [
         "osaurus.filesystem",
         "osaurus.git",
     ]
 
-    /// Registered tool names from work-conflicting plugins. Disabled in work mode.
-    var workConflictingToolNames: Set<String> {
+    /// Registered tool names from plugins that conflict with the built-in
+    /// folder tools. Excluded from the schema while the folder backend is
+    /// active so the model has a single canonical entry point.
+    var folderConflictingToolNames: Set<String> {
         Set(
             toolsByName.values
                 .compactMap { $0 as? ExternalTool }
-                .filter { Self.workConflictingPluginIds.contains($0.pluginId) }
+                .filter { Self.folderConflictingPluginIds.contains($0.pluginId) }
                 .map { $0.name }
         )
     }
 
     // MARK: - User-Facing Tool List
 
-    /// Work tool names that should be excluded from user-facing tool lists.
-    /// These tools are always included by default in work mode.
-    static var workToolNames: Set<String> {
-        Set(WorkToolManager.shared.toolNames)
-    }
-
     /// Folder tool names that should be excluded from user-facing tool lists.
     /// These tools are automatically managed based on folder selection.
     static var folderToolNames: Set<String> {
-        Set(WorkToolManager.shared.folderToolNames)
+        Set(FolderToolManager.shared.folderToolNames)
     }
 
     /// Runtime-managed tools are execution infrastructure, always loaded when registered.
     var runtimeManagedToolNames: Set<String> {
-        Self.workToolNames
-            .union(Self.folderToolNames)
-            .union(builtInSandboxToolNames)
+        Self.folderToolNames.union(builtInSandboxToolNames)
     }
 
     /// Read-only snapshot of the built-in sandbox tool names. Exposed so the
@@ -593,8 +611,8 @@ final class ToolRegistry: ObservableObject {
         builtInSandboxToolNames
     }
 
-    private func excludedToolNames(for mode: WorkExecutionMode) -> Set<String> {
-        let conflicting = workConflictingToolNames
+    private func excludedToolNames(for mode: ExecutionMode) -> Set<String> {
+        let conflicting = folderConflictingToolNames
         switch mode {
         case .hostFolder:
             return builtInSandboxToolNames.union(conflicting)
@@ -605,8 +623,8 @@ final class ToolRegistry: ObservableObject {
         }
     }
 
-    /// Resolve the active work execution mode from current context and registered runtime tools.
-    func resolveWorkExecutionMode(folderContext: WorkFolderContext?) -> WorkExecutionMode {
+    /// Resolve the active execution mode from current context and registered runtime tools.
+    func resolveExecutionMode(folderContext: FolderContext?) -> ExecutionMode {
         if let folderContext {
             return .hostFolder(folderContext)
         }
@@ -615,7 +633,7 @@ final class ToolRegistry: ObservableObject {
         return hasSandboxExec ? .sandbox : .none
     }
 
-    /// Runtime-managed tools for diagnostics and work-mode execution decisions.
+    /// Runtime-managed tools for diagnostics and execution-mode decisions.
     func listRuntimeManagedTools() -> [ToolEntry] {
         listTools().filter { runtimeManagedToolNames.contains($0.name) }
     }
@@ -657,7 +675,7 @@ final class ToolRegistry: ObservableObject {
     /// When `excludeCapabilityTools` is true (manual tool selection mode),
     /// dynamic discovery tools are stripped so the model only sees
     /// the user's explicitly chosen tools.
-    func alwaysLoadedSpecs(mode: WorkExecutionMode, excludeCapabilityTools: Bool = false) -> [Tool] {
+    func alwaysLoadedSpecs(mode: ExecutionMode, excludeCapabilityTools: Bool = false) -> [Tool] {
         let builtInNames = Set(builtInToolNames)
         let runtimeNames = runtimeManagedToolNames
         let excluded = excludedToolNames(for: mode)
@@ -667,6 +685,7 @@ final class ToolRegistry: ObservableObject {
                 builtInNames.contains(tool.name) || runtimeNames.contains(tool.name)
             }
             .filter { !excluded.contains($0.name) }
+            .filter { !Self.agentInterceptToolNames.contains($0.name) }
             .filter { !excludeCapabilityTools || !Self.capabilityToolNames.contains($0.name) }
             .sorted { $0.name < $1.name }
             .map { $0.asOpenAITool() }
@@ -675,7 +694,7 @@ final class ToolRegistry: ObservableObject {
     /// Sandbox built-in tool specs available for the given execution mode.
     /// Used by manual tool-selection mode to keep sandbox tools discoverable
     /// even when the user has not explicitly opted into them.
-    func sandboxBuiltInSpecs(mode: WorkExecutionMode) -> [Tool] {
+    func sandboxBuiltInSpecs(mode: ExecutionMode) -> [Tool] {
         let excluded = excludedToolNames(for: mode)
         return toolsByName.values
             .filter { builtInSandboxToolNames.contains($0.name) }

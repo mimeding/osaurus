@@ -1,16 +1,16 @@
 //
-//  WorkFileOperation.swift
+//  FileOperation.swift
 //  osaurus
 //
-//  Models for tracking file operations for undo capability.
+//  Models for tracking folder-tool file operations for undo capability.
 //
 
 import Foundation
 
 // MARK: - Operation Type
 
-/// Type of file operation performed by work tools
-public enum WorkFileOperationType: String, Codable, Sendable {
+/// Type of file operation performed by folder tools.
+public enum FileOperationType: String, Codable, Sendable {
     case create  // New file created
     case write  // Existing file modified
     case move  // File/directory moved
@@ -21,25 +21,26 @@ public enum WorkFileOperationType: String, Codable, Sendable {
 
 // MARK: - File Operation
 
-/// A recorded file operation that can be undone
-public struct WorkFileOperation: Codable, Sendable, Identifiable {
+/// A recorded file operation that can be undone.
+public struct FileOperation: Codable, Sendable, Identifiable {
     public let id: UUID
-    public let type: WorkFileOperationType
+    public let type: FileOperationType
     public let path: String  // Relative path from root
     public let destinationPath: String?  // For move/copy operations
     public let previousContent: String?  // For write/delete (to restore)
     public let timestamp: Date
-    public let issueId: String
+    /// Owning chat session id (used to scope undo per conversation).
+    public let sessionId: String
     public let batchId: UUID?  // For batch operations (nil for non-batch)
 
     public init(
         id: UUID = UUID(),
-        type: WorkFileOperationType,
+        type: FileOperationType,
         path: String,
         destinationPath: String? = nil,
         previousContent: String? = nil,
         timestamp: Date = Date(),
-        issueId: String,
+        sessionId: String,
         batchId: UUID? = nil
     ) {
         self.id = id
@@ -48,14 +49,14 @@ public struct WorkFileOperation: Codable, Sendable, Identifiable {
         self.destinationPath = destinationPath
         self.previousContent = previousContent
         self.timestamp = timestamp
-        self.issueId = issueId
+        self.sessionId = sessionId
         self.batchId = batchId
     }
 }
 
 // MARK: - Display Helpers
 
-extension WorkFileOperationType {
+extension FileOperationType {
     /// SF Symbol for this operation type
     public var iconName: String {
         switch self {
@@ -81,7 +82,7 @@ extension WorkFileOperationType {
     }
 }
 
-extension WorkFileOperation {
+extension FileOperation {
     /// Display filename (last path component)
     public var filename: String {
         (path as NSString).lastPathComponent

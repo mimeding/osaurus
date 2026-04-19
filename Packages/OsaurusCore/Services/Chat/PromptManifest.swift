@@ -12,7 +12,7 @@ import Foundation
 
 // MARK: - PromptSection
 
-/// One logical block of the system prompt (e.g. base identity, work mode, sandbox, memory).
+/// One logical block of the system prompt (e.g. base identity, sandbox, memory).
 public struct PromptSection: Sendable {
 
     public let id: String
@@ -146,6 +146,12 @@ struct ComposedContext: Sendable {
     /// prefix is what makes the prompt byte-stable across turns once preflight
     /// is cached.
     let memorySection: String?
+    /// Snapshot of the always-loaded tool names this compose used. Callers
+    /// stash it on `SessionToolState.initialAlwaysLoadedNames` after the
+    /// first compose so subsequent composes can freeze the schema against
+    /// it via `frozenAlwaysLoadedNames` — preventing tools that register
+    /// mid-session from silently appearing in turn 2.
+    let alwaysLoadedNames: Set<String>
     /// Hash of the static prefix + tool names for KV cache lookup.
     let cacheHint: String
     /// Rendered static-only system content for prefix cache building.

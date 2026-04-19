@@ -29,9 +29,9 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
     /// HTTP layer can emit a proper 4xx/5xx instead of a generic 500.
     /// Before this type was specialized, `EngineError` was an empty
     /// struct `{}` and every failure (unknown model, routing collapse,
-    /// etc.) surfaced as HTTP 500 → the classifier in `WorkView` would
-    /// then label it "Server Error / service temporarily unavailable"
-    /// when the real cause was user input (issue #858).
+    /// etc.) surfaced as HTTP 500 → consumers labelled it "Server Error
+    /// / service temporarily unavailable" when the real cause was user
+    /// input (issue #858).
     struct EngineError: Error, LocalizedError {
         enum Kind {
             /// No service or remote provider could handle the requested model ID.

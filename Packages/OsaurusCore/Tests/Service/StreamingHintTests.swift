@@ -3,12 +3,11 @@
 //  osaurusTests
 //
 //  Regression tests for the streaming sentinel encoders/decoders
-//  (StreamingToolHint + StreamingStatsHint). The stats sentinel was
-//  leaking into visible tool-call output in work mode (issue #856)
-//  because the `WorkExecutionEngine` consumer handled the tool
-//  sentinel but not the stats sentinel — these tests lock in the
-//  round-trip + decoder contract so a future refactor doesn't
-//  re-break it.
+//  (StreamingToolHint + StreamingStatsHint). The stats sentinel
+//  historically leaked into visible tool-call output (issue #856)
+//  because consumers handled the tool sentinel but not the stats
+//  sentinel — these tests lock in the round-trip + decoder contract
+//  so a future refactor doesn't re-break it.
 //
 
 import Foundation

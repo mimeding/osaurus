@@ -34,22 +34,6 @@ struct FloatingInputCard: View {
     var agentId: UUID? = nil
     /// Window ID for targeted VAD notifications
     var windowId: UUID? = nil
-    /// Work input state (nil = chat mode, non-nil = work mode)
-    var workInputState: WorkInputState? = nil
-    /// Queued message waiting to be sent after execution (work mode)
-    var pendingQueuedMessage: String? = nil
-    /// Callback to clear/dismiss the queued message (work mode)
-    var onClearQueued: (() -> Void)? = nil
-    /// Callback to send a message immediately during execution (interrupt + inject)
-    var onSendNow: (() -> Void)? = nil
-    /// Callback to end the current task (work mode)
-    var onEndTask: (() -> Void)? = nil
-    /// Callback to resume an in-progress issue (work mode)
-    var onResume: (() -> Void)? = nil
-    /// Whether there's an issue that can be resumed (work mode)
-    var canResume: Bool = false
-    /// Cumulative token usage for work mode
-    var cumulativeTokens: Int? = nil
     /// Compact mode (sidebar open) - hides secondary chip content
     var isCompact: Bool = false
     /// Callback to clear the current chat session (triggered by /clear command).
@@ -78,14 +62,6 @@ struct FloatingInputCard: View {
         focusTrigger: Int = 0,
         agentId: UUID? = nil,
         windowId: UUID? = nil,
-        workInputState: WorkInputState? = nil,
-        pendingQueuedMessage: String? = nil,
-        onClearQueued: (() -> Void)? = nil,
-        onSendNow: (() -> Void)? = nil,
-        onEndTask: (() -> Void)? = nil,
-        onResume: (() -> Void)? = nil,
-        canResume: Bool = false,
-        cumulativeTokens: Int? = nil,
         isCompact: Bool = false,
         onClearChat: (() -> Void)? = nil,
         onSkillSelected: ((UUID) -> Void)? = nil,
@@ -108,14 +84,6 @@ struct FloatingInputCard: View {
         self.focusTrigger = focusTrigger
         self.agentId = agentId
         self.windowId = windowId
-        self.workInputState = workInputState
-        self.pendingQueuedMessage = pendingQueuedMessage
-        self.onClearQueued = onClearQueued
-        self.onSendNow = onSendNow
-        self.onEndTask = onEndTask
-        self.onResume = onResume
-        self.canResume = canResume
-        self.cumulativeTokens = cumulativeTokens
         self.isCompact = isCompact
         self.onClearChat = onClearChat
         self.onSkillSelected = onSkillSelected
@@ -124,7 +92,7 @@ struct FloatingInputCard: View {
 
     // Observe managers for reactive updates
     @ObservedObject private var agentManager = AgentManager.shared
-    @ObservedObject private var folderContextService = WorkFolderContextService.shared
+    @ObservedObject private var folderContextService = FolderContextService.shared
     @ObservedObject private var sandboxState = SandboxManager.State.shared
     @ObservedObject private var clipboardService = ClipboardService.shared
     @ObservedObject private var appConfig = AppConfiguration.shared
@@ -220,13 +188,6 @@ struct FloatingInputCard: View {
 
         let hasText = !localText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasContent = hasText || !pendingAttachments.isEmpty
-
-        // In work mode, allow sending during streaming (will queue for after completion)
-        // but only if there isn't already a queued message
-        if workInputState != nil && isStreaming {
-            return hasContent && pendingQueuedMessage == nil
-        }
-
         return hasContent && !isStreaming
     }
 
@@ -296,12 +257,7 @@ struct FloatingInputCard: View {
 
     private var mainContent: some View {
         VStack(spacing: 12) {
-            // Work mode always renders the row so the folder chip is reachable
-            // even when sandbox is unavailable, no token estimate exists, and
-            // the agent has a single picker item — otherwise the user has no
-            // way to pick a working folder.
-            if (workInputState != nil
-                || pickerItems.count > 1
+            if (pickerItems.count > 1
                 || displayContextTokens > 0
                 || isSandboxAvailable
                 || (appConfig.chatConfig.enableClipboardMonitoring && clipboardService.hasNewContent))
@@ -974,14 +930,6 @@ extension FloatingInputCard {
         onSend(message)
     }
 
-    private func syncAndSendNow() {
-        let trimmed = localText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, isStreaming, onSendNow != nil else { return }
-        text = localText
-        onSendNow?()
-        localText = ""
-    }
-
     // MARK: - Slash Commands
 
     /// Returns the text with the active slash token replaced by `replacement`.
@@ -1147,19 +1095,16 @@ extension FloatingInputCard {
                 clipboardToggleChip
             }
 
-            // Folder context selector: visible whenever the user is on the
-            // Work tab. Mutual exclusion with sandbox is enforced inside
-            // the folder selection handlers (they disable autonomous exec
-            // before opening the picker), not by hiding the chip — both
-            // backends stay reachable so the user can switch freely.
-            if workInputState != nil {
-                folderContextChip
-            }
+            // Folder context selector: always available so the user can
+            // point any chat at a working directory. Mutual exclusion with
+            // sandbox is enforced inside the selection handlers (they
+            // disable autonomous exec before opening the picker).
+            folderContextChip
 
             Spacer()
 
             // Context size indicator (right-aligned)
-            if displayContextTokens > 0 || (cumulativeTokens ?? 0) > 0 {
+            if displayContextTokens > 0 {
                 contextIndicatorChip
             }
         }
@@ -1170,33 +1115,21 @@ extension FloatingInputCard {
     @ViewBuilder
     private var contextIndicatorChip: some View {
         HStack(spacing: 4) {
-            if let cumulative = cumulativeTokens, cumulative > 0, workInputState != nil {
-                Text("\(formatTokenCount(cumulative))", bundle: .module)
-                    .font(.system(size: CGFloat(theme.captionSize) - 1, weight: .medium, design: .monospaced))
-                    .foregroundColor(theme.accentColor)
-
-                if !isCompact {
-                    Text("used", bundle: .module)
-                        .font(theme.font(size: CGFloat(theme.captionSize) - 1, weight: .regular))
-                        .foregroundColor(theme.tertiaryText.opacity(0.7))
+            let prefix = isStreaming ? "" : "~"
+            let tokenText =
+                if let maxCtx = maxContextTokens {
+                    "\(prefix)\(formatTokenCount(displayContextTokens)) / \(formatTokenCount(maxCtx))"
+                } else {
+                    "\(prefix)\(formatTokenCount(displayContextTokens))"
                 }
-            } else {
-                let prefix = isStreaming ? "" : "~"
-                let tokenText =
-                    if let maxCtx = maxContextTokens {
-                        "\(prefix)\(formatTokenCount(displayContextTokens)) / \(formatTokenCount(maxCtx))"
-                    } else {
-                        "\(prefix)\(formatTokenCount(displayContextTokens))"
-                    }
-                Text(tokenText)
-                    .font(.system(size: CGFloat(theme.captionSize) - 1, weight: .medium, design: .monospaced))
-                    .foregroundColor(isStreaming ? theme.secondaryText : theme.tertiaryText)
+            Text(tokenText)
+                .font(.system(size: CGFloat(theme.captionSize) - 1, weight: .medium, design: .monospaced))
+                .foregroundColor(isStreaming ? theme.secondaryText : theme.tertiaryText)
 
-                if !isCompact {
-                    Text("tokens", bundle: .module)
-                        .font(theme.font(size: CGFloat(theme.captionSize) - 1, weight: .regular))
-                        .foregroundColor(theme.tertiaryText.opacity(0.7))
-                }
+            if !isCompact {
+                Text("tokens", bundle: .module)
+                    .font(theme.font(size: CGFloat(theme.captionSize) - 1, weight: .regular))
+                    .foregroundColor(theme.tertiaryText.opacity(0.7))
             }
         }
         .onHover { hovering in
@@ -1216,7 +1149,6 @@ extension FloatingInputCard {
                 breakdown: displayContextBreakdown,
                 maxTokens: maxContextTokens,
                 isStreaming: isStreaming,
-                cumulativeTokens: workInputState != nil ? cumulativeTokens : nil,
                 formatTokenCount: formatTokenCount
             )
         }
@@ -1871,60 +1803,51 @@ extension FloatingInputCard {
         }
     }
 
-    // MARK: - Folder Context Chip (Work Mode)
-
-    /// Empty mode = no active task, folder can be changed
-    private var isAgentEmptyMode: Bool { workInputState == .noTask }
+    // MARK: - Folder Context Chip
 
     private var folderContextChip: some View {
         let hasFolder = folderContextService.hasActiveFolder
-        let canEdit = isAgentEmptyMode
 
         return HStack(spacing: 4) {
-            if canEdit {
-                Button(action: selectFolderWithSandboxOff) {
-                    folderChipContent(hasFolder: hasFolder, canEdit: true)
-                }
-                .buttonStyle(.plain)
-                .help(hasFolder ? "Change working folder" : "Select a working folder")
-                .contextMenu {
-                    if hasFolder {
-                        Button {
-                            selectFolderWithSandboxOff()
-                        } label: {
-                            Label {
-                                Text("Change Folder", bundle: .module)
-                            } icon: {
-                                Image(systemName: "folder.badge.gear")
-                            }
+            Button(action: selectFolderWithSandboxOff) {
+                folderChipContent(hasFolder: hasFolder, canEdit: true)
+            }
+            .buttonStyle(.plain)
+            .help(hasFolder ? "Change working folder" : "Select a working folder")
+            .contextMenu {
+                if hasFolder {
+                    Button {
+                        selectFolderWithSandboxOff()
+                    } label: {
+                        Label {
+                            Text("Change Folder", bundle: .module)
+                        } icon: {
+                            Image(systemName: "folder.badge.gear")
                         }
-                        Button {
-                            Task { await folderContextService.refreshContext() }
-                        } label: {
-                            Label {
-                                Text("Refresh Context", bundle: .module)
-                            } icon: {
-                                Image(systemName: "arrow.clockwise")
-                            }
+                    }
+                    Button {
+                        Task { await folderContextService.refreshContext() }
+                    } label: {
+                        Label {
+                            Text("Refresh Context", bundle: .module)
+                        } icon: {
+                            Image(systemName: "arrow.clockwise")
                         }
-                        Divider()
-                        Button(role: .destructive) {
-                            folderContextService.clearFolder()
-                        } label: {
-                            Label {
-                                Text("Clear Folder", bundle: .module)
-                            } icon: {
-                                Image(systemName: "folder.badge.minus")
-                            }
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        folderContextService.clearFolder()
+                    } label: {
+                        Label {
+                            Text("Clear Folder", bundle: .module)
+                        } icon: {
+                            Image(systemName: "folder.badge.minus")
                         }
                     }
                 }
-            } else {
-                folderChipContent(hasFolder: hasFolder, canEdit: false)
-                    .help(Text("Folder is locked while task is running", bundle: .module))
             }
 
-            if hasFolder && canEdit {
+            if hasFolder {
                 Button {
                     folderContextService.clearFolder()
                 } label: {
@@ -1941,7 +1864,6 @@ extension FloatingInputCard {
             }
         }
         .animation(.easeOut(duration: 0.15), value: hasFolder)
-        .animation(.easeOut(duration: 0.15), value: canEdit)
     }
 
     @ViewBuilder
@@ -2000,12 +1922,6 @@ extension FloatingInputCard {
 
     private var inputCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let queuedMessage = pendingQueuedMessage {
-                queuedMessageBanner(message: queuedMessage)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 8)
-            }
-
             if !pendingAttachments.isEmpty || pendingSkillId != nil {
                 HStack(alignment: .center, spacing: 6) {
                     pendingSkillChipView
@@ -2160,24 +2076,8 @@ extension FloatingInputCard {
         return handled
     }
 
-    /// Dynamic placeholder text based on input state
-    private var placeholderText: String {
-        // Work mode placeholders
-        if let state = workInputState {
-            switch state {
-            case .noTask:
-                return "What do you want done?"
-            case .executing:
-                return pendingQueuedMessage != nil
-                    ? "Message queued"
-                    : "Queue a follow-up message..."
-            case .idle:
-                return "What's next?"
-            }
-        }
-        // Chat mode placeholder
-        return "Message or attach files..."
-    }
+    /// Placeholder text for the input field.
+    private var placeholderText: String { "Message or attach files..." }
 
     private var textInputArea: some View {
         EditableTextView(
@@ -2198,10 +2098,7 @@ extension FloatingInputCard {
                     syncAndSend()
                 }
             },
-            onShiftCommit: isStreaming && onSendNow != nil
-                ? {
-                    syncAndSendNow()
-                } : nil,
+            onShiftCommit: nil,
             onArrowUp: showSlashPopup
                 ? {
                     slashSelectedIndex = max(0, slashSelectedIndex - 1)
@@ -2262,16 +2159,9 @@ extension FloatingInputCard {
             Spacer()
 
             HStack(spacing: 8) {
-                if workInputState == nil {
-                    keyboardHint
-                }
+                keyboardHint
                 if isStreaming {
                     stopButton
-                } else if canResume && localText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    resumeButton
-                    endTaskButton
-                } else if workInputState == .idle {
-                    endTaskButton
                 }
                 sendButton
             }
@@ -2279,51 +2169,6 @@ extension FloatingInputCard {
     }
 
     // MARK: - Action Buttons
-
-    private func queuedMessageBanner(message: String) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Text("Queued:", bundle: .module)
-                    .font(theme.font(size: CGFloat(theme.captionSize) - 1, weight: .medium))
-                    .foregroundColor(theme.tertiaryText)
-
-                Text(message)
-                    .font(theme.font(size: CGFloat(theme.captionSize), weight: .regular))
-                    .foregroundColor(theme.secondaryText)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                Spacer()
-
-                if onSendNow != nil {
-                    Button {
-                        text = message
-                        onSendNow?()
-                    } label: {
-                        Text("Send Now", bundle: .module)
-                            .font(theme.font(size: CGFloat(theme.captionSize) - 1, weight: .medium))
-                            .foregroundColor(theme.accentColor)
-                    }
-                    .buttonStyle(.plain)
-                    .help(Text("Interrupt and send immediately", bundle: .module))
-                }
-
-                Button {
-                    onClearQueued?()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(theme.font(size: CGFloat(theme.captionSize) - 2, weight: .medium))
-                        .foregroundColor(theme.tertiaryText)
-                }
-                .buttonStyle(.plain)
-                .help(Text("Clear queued message", bundle: .module))
-            }
-            .padding(.vertical, 6)
-
-            Divider()
-                .opacity(0.3)
-        }
-    }
 
     private var mediaButton: some View {
         InputActionButton(
@@ -2349,14 +2194,6 @@ extension FloatingInputCard {
 
     private var stopButton: some View {
         StopButton(action: onStop)
-    }
-
-    private var resumeButton: some View {
-        ResumeButton(action: { onResume?() })
-    }
-
-    private var endTaskButton: some View {
-        EndTaskButton(action: { onEndTask?() })
     }
 
     private var sendButton: some View {
@@ -2633,7 +2470,6 @@ private struct ContextBreakdownPopover: View {
     let breakdown: ContextBreakdown
     let maxTokens: Int?
     let isStreaming: Bool
-    let cumulativeTokens: Int?
     let formatTokenCount: (Int) -> String
 
     @Environment(\.theme) private var theme
@@ -2687,11 +2523,6 @@ private struct ContextBreakdownPopover: View {
 
             divider
             totalRow.padding(.horizontal, 12).padding(.vertical, 8)
-
-            if let cumulative = cumulativeTokens, cumulative > 0 {
-                divider
-                cumulativeRow(cumulative).padding(.horizontal, 12).padding(.vertical, 8)
-            }
         }
         .frame(width: 240)
         .background(popoverBackground)
@@ -2774,21 +2605,6 @@ private struct ContextBreakdownPopover: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(theme.tertiaryText)
             }
-        }
-    }
-
-    // MARK: - Cumulative (Work Mode)
-
-    private func cumulativeRow(_ tokens: Int) -> some View {
-        HStack(spacing: 4) {
-            Text("Session Total", bundle: .module)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(theme.secondaryText)
-            Spacer()
-            Text(formatTokenCount(tokens))
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundColor(theme.accentColor)
-                .contentTransition(.numericText())
         }
     }
 
@@ -3372,132 +3188,6 @@ private struct StopButton: View {
 // MARK: - Resume Button
 
 /// Polished resume button with accent color
-private struct ResumeButton: View {
-    let action: () -> Void
-
-    @State private var isHovered = false
-    @Environment(\.theme) private var theme
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: "play.fill")
-                    .font(theme.font(size: CGFloat(theme.captionSize) - 3, weight: .bold))
-                Text("Resume", bundle: .module)
-                    .font(theme.font(size: CGFloat(theme.captionSize) - 1, weight: .medium))
-            }
-            .foregroundColor(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                ZStack {
-                    Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [theme.accentColor, theme.accentColor.opacity(0.85)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-
-                    if isHovered {
-                        Capsule()
-                            .fill(Color.white.opacity(0.12))
-                    }
-                }
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(Color.white.opacity(isHovered ? 0.3 : 0.15), lineWidth: 1)
-            )
-            .shadow(
-                color: theme.accentColor.opacity(isHovered ? 0.45 : 0.3),
-                radius: isHovered ? 8 : 4,
-                x: 0,
-                y: 2
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.15)) {
-                isHovered = hovering
-            }
-        }
-        .transition(.opacity.combined(with: .scale(scale: 0.95)))
-    }
-}
-
-// MARK: - End Task Button
-
-/// Polished end task button with subtle styling
-private struct EndTaskButton: View {
-    let action: () -> Void
-
-    @State private var isHovered = false
-    @Environment(\.theme) private var theme
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: "checkmark")
-                    .font(theme.font(size: CGFloat(theme.captionSize) - 3, weight: .bold))
-                Text("Done", bundle: .module)
-                    .font(theme.font(size: CGFloat(theme.captionSize) - 1, weight: .medium))
-            }
-            .foregroundColor(isHovered ? theme.primaryText : theme.secondaryText)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                ZStack {
-                    Capsule()
-                        .fill(theme.tertiaryBackground.opacity(isHovered ? 0.95 : 0.8))
-
-                    if isHovered {
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        theme.accentColor.opacity(0.08),
-                                        Color.clear,
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                    }
-                }
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                theme.glassEdgeLight.opacity(isHovered ? 0.25 : 0.15),
-                                theme.primaryBorder.opacity(isHovered ? 0.2 : 0.15),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
-            )
-            .shadow(
-                color: isHovered ? theme.accentColor.opacity(0.1) : .clear,
-                radius: 4,
-                x: 0,
-                y: 1
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.15)) {
-                isHovered = hovering
-            }
-        }
-        .transition(.opacity.combined(with: .scale(scale: 0.95)))
-    }
-}
-
 // MARK: - Preview
 
 #if DEBUG

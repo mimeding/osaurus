@@ -2,9 +2,9 @@
 //  SessionPreflightCacheTests.swift
 //  osaurusTests
 //
-//  Validates the `SessionToolState` contract used by ChatWindowState and
-//  WorkSession to memoize per-session preflight selections + capabilities_load
-//  additions across composes.
+//  Validates the `SessionToolState` contract used by ChatWindowState to
+//  memoize per-session preflight selections + capabilities_load additions
+//  across composes.
 //
 
 import Foundation

@@ -131,44 +131,9 @@ struct ChatViewSandboxTests {
         _ = await manager.delete(id: sandboxAgent.id)
     }
 
-    @Test
-    func workSessionEstimate_includesSandboxPromptAndToolsWhenEnabled() {
-        let manager = AgentManager.shared
-        let originalActiveAgentId = manager.activeAgentId
-        let inactiveAgent = Agent(name: "Work Estimate Off")
-        let sandboxAgent = Agent(
-            name: "Work Estimate On",
-            autonomousExec: AutonomousExecConfig(enabled: true)
-        )
-        manager.add(inactiveAgent)
-        manager.add(sandboxAgent)
-        defer {
-            manager.setActiveAgent(originalActiveAgentId)
-            Task {
-                _ = await manager.delete(id: inactiveAgent.id)
-                _ = await manager.delete(id: sandboxAgent.id)
-            }
-        }
-
-        let issue = Issue(taskId: "task-1", title: "Verify sandbox budget")
-        let inactiveSession = WorkSession(agentId: inactiveAgent.id)
-        let sandboxSession = WorkSession(agentId: sandboxAgent.id)
-
-        withRegisteredSandboxBuiltins {
-            let inactiveBreakdown = inactiveSession.estimateContextBreakdown(for: issue)
-            let sandboxBreakdown = sandboxSession.estimateContextBreakdown(for: issue)
-            let sandboxTools = ToolRegistry.shared.alwaysLoadedSpecs(mode: .sandbox)
-
-            let inactiveContextTokens = inactiveBreakdown.context.reduce(0) { $0 + $1.tokens }
-            let sandboxContextTokens = sandboxBreakdown.context.reduce(0) { $0 + $1.tokens }
-            #expect(sandboxContextTokens > inactiveContextTokens)
-
-            let sandboxToolTokens = sandboxBreakdown.context.first { $0.id == "tools" }?.tokens ?? 0
-            let inactiveToolTokens = inactiveBreakdown.context.first { $0.id == "tools" }?.tokens ?? 0
-            #expect(sandboxToolTokens > inactiveToolTokens)
-            #expect(sandboxToolTokens == ToolRegistry.shared.totalEstimatedTokens(for: sandboxTools))
-        }
-    }
+    // The Work-mode budget-estimate test was removed when WorkSession +
+    // the issue tracker were retired. Chat session budget estimation is
+    // covered indirectly via SystemPromptComposer + ContextBudgetManager.
 }
 
 @MainActor

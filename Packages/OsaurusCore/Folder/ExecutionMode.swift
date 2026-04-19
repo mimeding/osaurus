@@ -1,5 +1,5 @@
 //
-//  WorkExecutionMode.swift
+//  ExecutionMode.swift
 //  osaurus
 //
 //  First-class execution mode for work sessions.
@@ -7,12 +7,12 @@
 
 import Foundation
 
-public enum WorkExecutionMode: Sendable {
-    case hostFolder(WorkFolderContext)
+public enum ExecutionMode: Sendable {
+    case hostFolder(FolderContext)
     case sandbox
     case none
 
-    public var folderContext: WorkFolderContext? {
+    public var folderContext: FolderContext? {
         guard case .hostFolder(let context) = self else { return nil }
         return context
     }
@@ -45,7 +45,7 @@ public enum MemorySourceMode: String, Codable, Sendable {
     public var hasTools: Bool { self != .chat }
 }
 
-public extension WorkExecutionMode {
+public extension ExecutionMode {
     /// Derive the memory source mode from the execution mode.
     /// Callers in pure-chat contexts without sandbox should pass `.chat` directly;
     /// `.none` here maps to `.chat` as a safe default.
