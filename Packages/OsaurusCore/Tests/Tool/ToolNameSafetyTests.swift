@@ -14,7 +14,9 @@ struct ToolNameSafetyTests {
     @Test func sanitizesIllegalCharacters() {
         #expect(ToolRegistry.sanitizeToolName("hello world!") == "hello_world_")
         #expect(ToolRegistry.sanitizeToolName("a-b-c_1") == "a-b-c_1")
-        #expect(ToolRegistry.sanitizeToolName("café") == "caf__")
+        // `é` is a single Swift `Character` (grapheme cluster), so the
+        // sanitizer maps it to a single underscore.
+        #expect(ToolRegistry.sanitizeToolName("café") == "caf_")
     }
 
     @Test func emptyAfterSanitizeFallsBackToToolUnnamed() {

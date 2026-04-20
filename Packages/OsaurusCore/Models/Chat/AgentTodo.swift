@@ -66,8 +66,12 @@ public struct AgentTodo: Sendable, Equatable {
         // Two leading delimiters supported: `-` and `*`. Followed by space,
         // a `[ ]` / `[x]` / `[X]` checkbox, another space, then the text.
         // Captures: 1 = checkbox char, 2 = item text (trailing whitespace
-        // trimmed below).
-        let pattern = #"^[ ]{0,6}[-*]\s+\[(?<box>[ xX])\]\s+(?<text>.+?)\s*$"#
+        // trimmed below). We use `[ \t]+` (not `\s+`) for the inter-token
+        // separators so a single line cannot bridge across a `\n` and pull
+        // the next line's text into a previous item — e.g. an empty
+        // `- [ ]` line followed by `- []wrong` would otherwise end up with
+        // `"- []wrong"` as the text capture.
+        let pattern = #"^[ ]{0,6}[-*][ \t]+\[(?<box>[ xX])\][ \t]+(?<text>.+?)[ \t]*$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
         else { return [] }
 

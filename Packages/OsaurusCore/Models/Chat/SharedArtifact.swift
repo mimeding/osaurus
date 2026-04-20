@@ -42,7 +42,7 @@ public struct SharedArtifact: Identifiable, Codable, Sendable, Equatable {
     public let content: String?
     /// Human-readable description provided by the agent
     public let description: String?
-    /// Whether this is the final result artifact from complete_task
+    /// Whether this is the final result artifact from the agent's `complete` call
     public let isFinalResult: Bool
     /// When the artifact was created
     public let createdAt: Date

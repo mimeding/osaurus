@@ -43,7 +43,7 @@ The core library (`Packages/OsaurusCore/`) follows a layered architecture. Each 
 
 **Services** — Business logic. Not observable. Not UI-aware.
 
-- Swift `actor` for concurrent work (ChatEngine, MemoryService, WorkEngine)
+- Swift `actor` for concurrent work (ChatEngine, MemoryService)
 - Stateless `struct` for pure functions (Router, PromptBuilder)
 - Organized into domain subfolders: `Chat/`, `Context/`, `Inference/`, `Method/`, `ModelRuntime/`, `MCP/`, `Memory/`, `Sandbox/`, `Skill/`, `Tool/`, `Voice/`, `Provider/`, `Plugin/`, `Keychain/`
 - Rule: services do NOT conform to `ObservableObject` or `@Observable`

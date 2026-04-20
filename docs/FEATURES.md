@@ -22,7 +22,7 @@ Canonical reference for all Osaurus features, their status, and documentation.
 | Agents                         | Stable    | "Agents"         | (in README)                   | Managers/AgentManager.swift, Models/Agent/Agent.swift, Views/Agent/AgentsView.swift         |
 | Schedules                        | Stable    | "Schedules"        | (in README)                   | Managers/ScheduleManager.swift, Models/Schedule/Schedule.swift, Views/Schedule/SchedulesView.swift      |
 | Watchers                         | Stable    | "Watchers"         | WATCHERS.md                   | Managers/WatcherManager.swift, Models/Watcher/Watcher.swift, Views/Watcher/WatchersView.swift         |
-| Agents                           | Stable    | "Agents"           | WORK.md                     | Work/, Services/WorkEngine.swift, Views/Work/WorkView.swift                             |
+| Agent Loop & Folder Context      | Stable    | "Agent Loop"       | AGENT_LOOP.md                 | Folder/, Tools/AgentLoopTools.swift, Tools/FolderToolManager.swift, Models/Chat/AgentTodo.swift, Models/Chat/AgentTodoStore.swift, Models/Chat/SharedArtifact.swift |
 | Developer Tools: Insights        | Stable    | "Developer Tools"  | DEVELOPER_TOOLS.md            | Views/Insights/InsightsView.swift, Managers/InsightsService.swift                              |
 | Developer Tools: Server Explorer | Stable    | "Developer Tools"  | DEVELOPER_TOOLS.md            | Views/Settings/ServerView.swift                                                                |
 | Apple Foundation Models          | macOS 26+ | "What is Osaurus?" | (in README)                   | Services/Inference/FoundationModelService.swift                                                 |
@@ -52,7 +52,6 @@ Canonical reference for all Osaurus features, their status, and documentation.
 │  Views Layer                                                             │
 │  ├── ContentView (Menu Bar)                                              │
 │  ├── ChatOverlayView (Global Hotkey Chat)                                │
-│  ├── WorkView (Work Mode)                                              │
 │  ├── ManagementView                                                      │
 │  │   ├── ModelDownloadView (Models)                                      │
 │  │   ├── RemoteProvidersView (Providers)                                 │
@@ -103,10 +102,11 @@ Canonical reference for all Osaurus features, their status, and documentation.
 │  │   ├── WatcherManager (FSEvents monitoring and convergence loop)       │
 │  │   ├── WatcherStore (Watcher persistence)                              │
 │  │   └── DirectoryFingerprint (Change detection via Merkle hashing)      │
-│  ├── Agents                                                              │
-│  │   ├── WorkEngine (Task execution coordinator)                        │
-│  │   ├── WorkExecutionEngine (Plan generation and execution)            │
-│  │   └── IssueManager (Issue lifecycle management)                       │
+│  ├── Folder Tools                                                        │
+│  │   ├── FolderContextService (Working folder + security-scoped bookmarks) │
+│  │   ├── FolderToolManager (Registers folder tools when folder selected) │
+│  │   ├── FolderToolFactory (Builds file/coding/git tools per project)    │
+│  │   └── FileOperationLog (Logs writes/exec for undo support)            │
 │  ├── Sandbox                                                             │
 │  │   ├── SandboxManager (Container lifecycle and exec)                   │
 │  │   ├── SandboxPluginManager (Per-agent plugin install/uninstall)       │
@@ -498,79 +498,79 @@ Canonical reference for all Osaurus features, their status, and documentation.
 
 ---
 
-### Agents
+### Agent Loop & Folder Context
 
-**Purpose:** Execute complex, multi-step tasks autonomously with built-in issue tracking, planning, and file operations.
+**Purpose:** Drive every chat as an agent loop. The model writes a markdown todo, calls tools (file, sandbox, MCP, plugin), and ends the loop with a verified `complete` summary or pauses with `clarify`. Selecting a working folder turns on file/git tools; toggling the sandbox swaps in Linux exec.
 
 **Components:**
 
-- `Work/WorkFolderContext.swift` — Folder context models and project detection
-- `Work/WorkFolderContextService.swift` — Folder selection and security-scoped bookmarks
-- `Work/WorkFolderTools.swift` — File and shell operation tools
-- `Work/WorkFileOperation.swift` — File operation models
-- `Work/WorkFileOperationLog.swift` — Operation logging with undo support
-- `Models/Work/WorkModels.swift` — Core data models (Issue, WorkTask, LoopState, etc.)
-- `Services/WorkEngine.swift` — Main task execution coordinator
-- `Services/WorkExecutionEngine.swift` — Reasoning loop execution engine
-- `Managers/IssueManager.swift` — Issue lifecycle and dependency management
-- `Storage/WorkDatabase.swift` — SQLite storage for issues, tasks, and conversation turns
-- `Tools/WorkTools.swift` — Agent-specific tools (complete_task, create_issue, generate_artifact, etc.)
-- `Views/Work/WorkView.swift` — Main Work Mode UI
-- `Views/Work/WorkSession.swift` — Observable session state manager
+- `Tools/AgentLoopTools.swift` — The three engine-intercepted loop tools (`todo`, `complete`, `clarify`)
+- `Tools/FolderToolManager.swift` — Registers folder tools when a working folder is selected; unregisters on clear
+- `Folder/FolderContext.swift` — Project type, file tree, manifest, git status, optional `AGENTS.md`/`CLAUDE.md`/`.cursorrules`
+- `Folder/FolderContextService.swift` — `NSOpenPanel`, security-scoped bookmark persistence, MainActor service
+- `Folder/FolderTools.swift` — File/coding/git tool implementations + `FolderToolFactory`
+- `Folder/BatchTool.swift` — Generic `batch` tool that fans out up to 30 registered ops in one call
+- `Folder/ChatExecutionContext.swift` — TaskLocal session/agent/batch IDs read by tools at execution time
+- `Folder/ExecutionMode.swift` — First-class `.hostFolder | .sandbox | .none` enum + `MemorySourceMode` partitioning
+- `Folder/FileOperation.swift`, `Folder/FileOperationLog.swift` — Per-op log used for undo
+- `Models/Chat/AgentTodo.swift`, `Models/Chat/AgentTodoStore.swift` — Markdown checklist parser + per-session store
+- `Models/Chat/SharedArtifact.swift` — Artifact model surfaced via `share_artifact`
 
 **Features:**
 
-- **Issue Tracking** — Tasks broken into issues with status, priority, type, and dependencies
-- **Parallel Tasks** — Run multiple agent tasks simultaneously for increased productivity
-- **Reasoning Loop** — AI autonomously iterates through observe-think-act-check cycles (max 30 iterations)
-- **Working Directory** — Select a folder for file operations with project type detection
-- **File Operations** — Read, write, edit, search, move, copy, delete files with undo support
-- **Follow-up Issues** — Agent creates child issues via `create_issue` tool when it discovers additional work
-- **Clarification** — Agent pauses to ask when tasks are ambiguous
-- **Background Execution** — Tasks continue running after closing the window
-- **Token Usage Tracking** — Monitor cumulative input/output tokens per task
+- **Unified loop** — One chat is one task; no separate Agent/Work tab
+- **`todo` / `complete` / `clarify`** — Three minimal-schema tools the chat engine intercepts
+- **Working folder picker** — Per-chat folder via `FolderContextService`, with security-scoped bookmark persistence
+- **Project-aware tools** — File/coding/git tools registered automatically when a folder is selected; tool kit varies by project type and git status
+- **Sandbox toggle** — Mutually exclusive with the working-folder backend; selecting a folder disables sandbox autonomous exec and vice versa
+- **`batch` tool** — Up to 30 ops per call, continues on error, denies `shell_run` / `git_commit` / nested `batch`
+- **`share_artifact`** — Only path for the user to see files the agent produced
+- **Memory partitioning** — `MemorySourceMode` (chat / chatSandbox / workHost / workSandbox) keeps tool-using turns from leaking into pure chat context
 
-**Issue Properties:**
+**Loop Tools (engine-intercepted):**
 
-| Property      | Description                                     |
-| ------------- | ----------------------------------------------- |
-| `status`      | `open`, `in_progress`, `blocked`, `closed`      |
-| `priority`    | P0 (critical), P1 (high), P2 (medium), P3 (low) |
-| `type`        | `task`, `bug`, `discovery`                      |
-| `title`       | Brief description of the work                   |
-| `description` | Detailed explanation and context                |
-| `result`      | Outcome after completion                        |
+| Tool       | Required field | Behavior                                                                                |
+| ---------- | -------------- | --------------------------------------------------------------------------------------- |
+| `todo`     | `markdown`     | Replace the per-session checklist (markdown `- [ ]` / `- [x]`). No merging.             |
+| `complete` | `summary`      | End the loop with a verified one-paragraph summary. Placeholders / short text rejected. |
+| `clarify`  | `question`     | Pause and surface a single critical question; user's next message becomes the answer.   |
 
-**Available Tools:**
+**Folder Tool Inventory:**
 
-| Tool            | Description                                    |
-| --------------- | ---------------------------------------------- |
-| `file_tree`     | List directory structure with filtering        |
-| `file_read`     | Read file contents (supports line ranges)      |
-| `file_write`    | Create or overwrite files                      |
-| `file_edit`     | Surgical text replacement within files         |
-| `file_search`   | Search for text patterns across files          |
-| `file_move`     | Move or rename files                           |
-| `file_copy`     | Duplicate files                                |
-| `file_delete`   | Remove files                                   |
-| `file_metadata` | Get file information (size, dates, etc.)       |
-| `dir_create`    | Create directories                             |
-| `shell_run`     | Execute shell commands (requires permission)   |
-| `git_status`    | Show repository status                         |
-| `git_diff`      | Display file differences                       |
-| `git_commit`    | Stage and commit changes (requires permission) |
+| Tool              | Category | Description                                                       |
+| ----------------- | -------- | ----------------------------------------------------------------- |
+| `file_tree`       | Core     | Directory structure with project-aware ignore patterns            |
+| `file_read`       | Core     | Read with line ranges or tail mode                                |
+| `file_write`      | Core     | Create or overwrite                                               |
+| `file_edit`       | Coding   | Surgical exact-string replacement                                 |
+| `file_search`     | Coding   | ripgrep-style search                                              |
+| `file_move`       | Core     | Move or rename                                                    |
+| `file_copy`       | Core     | Duplicate                                                         |
+| `file_delete`     | Core     | Remove                                                            |
+| `dir_create`      | Core     | Create directories                                                |
+| `file_metadata`   | Core     | Size, dates, attributes                                           |
+| `batch`           | Core     | Run up to 30 ops in sequence; reports per-op results              |
+| `share_artifact`  | Core     | Surface a file or inline content to the user                      |
+| `shell_run`       | Coding   | Run a shell command (requires approval). Registered when project type detected. |
+| `git_status`      | Git      | Repository status. Registered when `.git` present.                |
+| `git_diff`        | Git      | Show diffs                                                        |
+| `git_commit`      | Git      | Stage + commit (requires approval)                                |
 
-**Workflow (Reasoning Loop):**
+**Workflow:**
 
-1. User input creates a task with an initial issue
-2. Agent enters a reasoning loop (max 30 iterations per issue)
-3. Each iteration: the model observes context, decides on an action, calls a tool, and evaluates progress
-4. The model narrates its reasoning and explains actions as it works
-5. When additional work is found, the agent creates follow-up issues via `create_issue`
-6. When the task is complete, the agent calls `complete_task` with a summary and artifact
-7. Clarification pauses execution when the task is ambiguous
+1. User opens or focuses a chat; selects a working folder or sandbox via the input bar (optional).
+2. System prompt composer assembles base prompt + memory + folder context + tool guidance using the active `ExecutionMode`.
+3. Agent calls `todo` to publish the plan, then calls tools to execute.
+4. Each tool result feeds back into the next iteration (max iterations governed by `chatConfig.maxToolAttempts`).
+5. Agent calls `complete(summary)` to end the loop, or `clarify(question)` to pause for input.
 
-**Storage:** `~/.osaurus/work/work.db` (SQLite)
+**Storage:**
+
+- Folder bookmark — UserDefaults (`FolderContextBookmark`)
+- Artifacts — `~/.osaurus/artifacts/<sessionId>/`
+- Per-session todo and file-op log — in-memory keyed by chat session ID
+
+See [AGENT_LOOP.md](AGENT_LOOP.md) for the full guide.
 
 ---
 
@@ -600,7 +600,7 @@ Canonical reference for all Osaurus features, their status, and documentation.
 - `Tools/SandboxSecretTools.swift` — Secret check and set tools with direct-value and secure-prompt paths
 - `Tools/SandboxPluginRegisterTool.swift` — Hot-registers agent-created plugins with file auto-packaging
 - `Tools/ToolRegistry.swift` — Sandbox tool registration and namespace management
-- `Views/Chat/SecretPromptOverlay.swift` — Secure overlay for collecting secrets in Chat and Work modes
+- `Views/Chat/SecretPromptOverlay.swift` — Secure overlay for collecting secrets in chat
 - `Networking/HostAPIBridgeServer.swift` — HTTP server over vsock for host service access
 - `Models/SandboxPlugin.swift` — Plugin model with tool specs, MCP, daemon, events, and permissions
 - `Models/Plugin/SandboxConfiguration.swift` — Container config (CPUs, memory, network, auto-start)
@@ -1136,7 +1136,7 @@ Results are cached for 10 seconds per agent.
 | [README.md](../README.md)                                      | Project overview, quick start, feature highlights |
 | [FEATURES.md](FEATURES.md)                                     | Feature inventory and architecture (this file)    |
 | [WATCHERS.md](WATCHERS.md)                                     | Watchers and folder monitoring guide              |
-| [WORK.md](WORK.md)                                         | Agents and autonomous task execution guide        |
+| [AGENT_LOOP.md](AGENT_LOOP.md)                                 | Agent loop, folder context, and `todo`/`complete`/`clarify` |
 | [REMOTE_PROVIDERS.md](REMOTE_PROVIDERS.md)                     | Remote provider setup and configuration           |
 | [REMOTE_MCP_PROVIDERS.md](REMOTE_MCP_PROVIDERS.md)             | Remote MCP provider setup                         |
 | [DEVELOPER_TOOLS.md](DEVELOPER_TOOLS.md)                       | Insights and Server Explorer guide                |
