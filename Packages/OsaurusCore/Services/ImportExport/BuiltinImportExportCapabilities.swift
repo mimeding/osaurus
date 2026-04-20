@@ -16,6 +16,8 @@ enum BuiltinImportExportCapabilities {
         let plainTextImporter = PlainTextAttachmentImportCapability()
         let richTextImporter = RichDocumentAttachmentImportCapability()
         let pdfImporter = PDFDocumentAttachmentImportCapability()
+        let delimitedTextExporter = DelimitedTextAttachmentExportCapability()
+        let pdfExporter = PDFDocumentAttachmentExportCapability()
         let scaffoldExporter = ScaffoldOnlyArtifactExportCapability()
         let scaffoldValidator = ScaffoldOnlyArtifactValidationCapability()
 
@@ -93,20 +95,22 @@ enum BuiltinImportExportCapabilities {
                         "public.comma-separated-values-text",
                         "public.tab-separated-values-text",
                     ],
-                    roles: [.probe, .import],
+                    roles: [.probe, .import, .export],
                     canonicalTarget: "Attachment.document",
                     trust: ImportExportTrustMetadata(
                         runtime: .builtIn,
                         promptSafety: .plainText,
                         activeContentRisk: .low,
                         notes: [
-                            "Current behavior remains text-only ingestion.",
+                            "Import behavior remains text-only ingestion.",
+                            "Export writes prompt-safe delimited text from document, text, or text artifact sources.",
                             "Canonical table/workbook modeling is intentionally not part of this slice.",
                         ]
                     ),
                     runtimeRequirements: ["Foundation"],
                     fidelityNotes: [
-                        "Cell typing and workbook semantics are not preserved yet.",
+                        "Cell typing and workbook semantics are not preserved.",
+                        "Export preserves caller-provided delimiters and normalizes line endings.",
                     ],
                     defaultIconSymbolName: "tablecells",
                     iconSymbolNamesByExtension: [:],
@@ -114,7 +118,7 @@ enum BuiltinImportExportCapabilities {
                 ),
                 probe: ExtensionProbeCapability(supportedExtensions: ["csv", "tsv"]),
                 importer: plainTextImporter,
-                exporter: nil,
+                exporter: delimitedTextExporter,
                 validator: nil
             ),
             ImportExportCapabilityRegistration(
@@ -161,7 +165,7 @@ enum BuiltinImportExportCapabilities {
                     displayName: "PDF Attachments",
                     supportedExtensions: ["pdf"],
                     utTypeIdentifiers: ["com.adobe.pdf"],
-                    roles: [.probe, .import],
+                    roles: [.probe, .import, .export],
                     canonicalTarget: "Attachment.document",
                     trust: ImportExportTrustMetadata(
                         runtime: .builtIn,
@@ -170,11 +174,13 @@ enum BuiltinImportExportCapabilities {
                         notes: [
                             "PDF text is extracted with PDFKit.",
                             "If text extraction fails, pages are rendered as images.",
+                            "Export writes text sources to a simple paginated PDF or copies existing PDF artifacts.",
                         ]
                     ),
-                    runtimeRequirements: ["PDFKit", "AppKit"],
+                    runtimeRequirements: ["PDFKit", "AppKit", "CoreText"],
                     fidelityNotes: [
                         "Layout fidelity is reduced to extracted text or page images.",
+                        "Generated PDFs preserve readable text, not source document layout.",
                     ],
                     defaultIconSymbolName: "doc.richtext",
                     iconSymbolNamesByExtension: [:],
@@ -182,7 +188,7 @@ enum BuiltinImportExportCapabilities {
                 ),
                 probe: ExtensionProbeCapability(supportedExtensions: ["pdf"]),
                 importer: pdfImporter,
-                exporter: nil,
+                exporter: pdfExporter,
                 validator: nil
             ),
             ImportExportCapabilityRegistration(
@@ -347,6 +353,24 @@ private struct PDFDocumentAttachmentImportCapability: ImportExportImportCapabili
             fileSize: request.fileSize
         )
         return ImportExportImportResult(attachments: attachments)
+    }
+}
+
+private struct DelimitedTextAttachmentExportCapability: ImportExportExportCapability {
+    func exportFile(
+        request: ImportExportExportRequest,
+        metadata _: ImportExportCapabilityMetadata
+    ) throws -> ImportExportExportResult {
+        try ImportExportDocumentExporter.exportDelimitedText(request: request)
+    }
+}
+
+private struct PDFDocumentAttachmentExportCapability: ImportExportExportCapability {
+    func exportFile(
+        request: ImportExportExportRequest,
+        metadata _: ImportExportCapabilityMetadata
+    ) throws -> ImportExportExportResult {
+        try ImportExportDocumentExporter.exportPDF(request: request)
     }
 }
 

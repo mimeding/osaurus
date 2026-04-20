@@ -29,6 +29,14 @@ struct ImportExportCapabilityRegistry: Sendable {
         resolveImport(url: url) != nil
     }
 
+    func canExport(formatExtension: String) -> Bool {
+        resolveExport(formatExtension: formatExtension) != nil
+    }
+
+    func canExport(url: URL) -> Bool {
+        resolveExport(url: url) != nil
+    }
+
     func resolveImport(url: URL) -> ImportExportCapabilityImportResolution? {
         let request = ImportExportProbeRequest(url: url)
 
@@ -50,6 +58,58 @@ struct ImportExportCapabilityRegistry: Sendable {
         }
 
         return nil
+    }
+
+    func resolveExport(url: URL) -> ImportExportCapabilityExportResolution? {
+        resolveExport(formatExtension: url.pathExtension)
+    }
+
+    func resolveExport(formatExtension: String) -> ImportExportCapabilityExportResolution? {
+        let normalized = formatExtension
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+        guard !normalized.isEmpty else { return nil }
+        let probeURL = URL(fileURLWithPath: "export.\(normalized)")
+        let request = ImportExportProbeRequest(url: probeURL)
+
+        for registration in registrations {
+            guard
+                registration.metadata.roles.contains(.export),
+                !registration.metadata.isScaffoldOnly,
+                let probe = registration.probe,
+                let exporter = registration.exporter,
+                let result = probe.probe(request: request, metadata: registration.metadata)
+            else {
+                continue
+            }
+
+            return ImportExportCapabilityExportResolution(
+                metadata: registration.metadata,
+                matchedExtension: result.matchedExtension,
+                exporter: exporter
+            )
+        }
+
+        return nil
+    }
+
+    @discardableResult
+    func export(
+        source: ImportExportExportSource,
+        to destinationURL: URL,
+        formatExtension explicitFormatExtension: String? = nil
+    ) throws -> ImportExportExportResult {
+        let formatExtension = explicitFormatExtension ?? destinationURL.pathExtension
+        guard let resolution = resolveExport(formatExtension: formatExtension) else {
+            throw ImportExportExportError.unsupportedFormat(formatExtension)
+        }
+
+        let request = ImportExportExportRequest(
+            source: source,
+            destinationURL: destinationURL,
+            formatExtension: resolution.matchedExtension
+        )
+        return try resolution.exporter.exportFile(request: request, metadata: resolution.metadata)
     }
 
     func supportedDocumentTypes() -> [UTType] {

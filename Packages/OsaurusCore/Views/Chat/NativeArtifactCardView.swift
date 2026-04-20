@@ -10,6 +10,7 @@ import AppKit
 import AVFoundation
 @preconcurrency import PDFKit
 import QuartzCore
+import UniformTypeIdentifiers
 
 // MARK: - NativeArtifactCardView
 
@@ -31,6 +32,7 @@ final class NativeArtifactCardView: NSView {
     private let headerRow = NSStackView()
     private let previewHost = NSView()
     private let footerStack = NSStackView()
+    private let exportButton = NSButton(title: "", target: nil, action: nil)
     private let openInFinderButton = NSButton(title: "", target: nil, action: nil)
     private let openInBrowserButton = NSButton(title: "", target: nil, action: nil)
 
@@ -57,6 +59,7 @@ final class NativeArtifactCardView: NSView {
     private var currentThemeFingerprint: String = ""
     private var hostPath: String = ""
     private var isArtifactDirectory = false
+    private var currentExportOption: ImportExportExportOption?
     private var previewLoadTask: Task<Void, Never>?
     private var glowAnimationTask: Task<Void, Never>?
 
@@ -141,7 +144,12 @@ final class NativeArtifactCardView: NSView {
         let showBrowser = canOpen && (artifact.isHTML || (artifact.isDirectory && Self.hasIndexHTML(artifact)))
         openInBrowserButton.isHidden = !showBrowser
         openInBrowserButton.isEnabled = showBrowser
+        let exportSource = ImportExportExportSource.artifact(artifact)
+        currentExportOption = ImportExportExportOptions.defaultOption(for: exportSource)
+        exportButton.isHidden = currentExportOption == nil
+        exportButton.isEnabled = currentExportOption != nil
 
+        styleFooterButton(exportButton, title: "Export", symbol: "square.and.arrow.down", theme: theme)
         styleFooterButton(openInFinderButton, title: "Open in Finder", symbol: "folder", theme: theme)
         styleFooterButton(openInBrowserButton, title: "Open in Browser", symbol: "safari", theme: theme)
 
@@ -157,7 +165,7 @@ final class NativeArtifactCardView: NSView {
         // do not call layoutSubtreeIfNeeded() here — configure runs from table/cell paths during layout
         let fit = fittingSize.height
         // until layout runs, fittingSize can under-report footerStack (inline buttons); keep row height honest
-        let footerActions = !openInFinderButton.isHidden || !openInBrowserButton.isHidden
+        let footerActions = !exportButton.isHidden || !openInFinderButton.isHidden || !openInBrowserButton.isHidden
         let minWithFooter: CGFloat = footerActions ? Self.minimumHeightWithFooterChrome(for: artifact) : 0
         cachedLayoutHeight = max(fit, minWithFooter, 120)
         invalidateIntrinsicContentSize()
@@ -204,7 +212,7 @@ final class NativeArtifactCardView: NSView {
             guard let self else { return }
             self.layoutSubtreeIfNeeded()
             var newH = max(self.fittingSize.height, 1)
-            if !self.openInFinderButton.isHidden || !self.openInBrowserButton.isHidden,
+            if !self.exportButton.isHidden || !self.openInFinderButton.isHidden || !self.openInBrowserButton.isHidden,
                 let bound = self.boundArtifact
             {
                 newH = max(newH, Self.minimumHeightWithFooterChrome(for: bound))
@@ -779,7 +787,7 @@ final class NativeArtifactCardView: NSView {
             guard let self else { return }
             self.layoutSubtreeIfNeeded()
             var newH = max(self.fittingSize.height, 1)
-            if !self.openInFinderButton.isHidden || !self.openInBrowserButton.isHidden,
+            if !self.exportButton.isHidden || !self.openInFinderButton.isHidden || !self.openInBrowserButton.isHidden,
                 let bound = self.boundArtifact
             {
                 newH = max(newH, Self.minimumHeightWithFooterChrome(for: bound))
@@ -808,6 +816,38 @@ final class NativeArtifactCardView: NSView {
         NSWorkspace.shared.open(url)
     }
 
+    @objc private func exportArtifactTapped() {
+        guard let artifact = boundArtifact, let option = currentExportOption else { return }
+        let source = ImportExportExportSource.artifact(artifact)
+
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = ImportExportExportOptions.suggestedFilename(for: source, option: option)
+        if let type = UTType(filenameExtension: option.formatExtension) {
+            panel.allowedContentTypes = [type]
+        }
+
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .OK, let destination = panel.url else { return }
+            do {
+                try ImportExportCapabilityRegistry.shared.export(
+                    source: source,
+                    to: destination,
+                    formatExtension: option.formatExtension
+                )
+            } catch {
+                self?.presentExportError(error)
+            }
+        }
+
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            panel.begin(completionHandler: completion)
+        }
+    }
+
     @objc private func openArtifactWithDefaultApp() {
         guard !hostPath.isEmpty else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: hostPath))
@@ -816,6 +856,18 @@ final class NativeArtifactCardView: NSView {
     @objc private func artifactImagePreviewTapped() {
         guard !currentArtifactId.isEmpty else { return }
         onImagePreviewTap?(currentArtifactId)
+    }
+
+    private func presentExportError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Export Failed"
+        alert.informativeText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        alert.alertStyle = .warning
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     // MARK: - Build
@@ -870,9 +922,12 @@ final class NativeArtifactCardView: NSView {
         footerStack.orientation = .horizontal
         footerStack.spacing = 8
         footerStack.alignment = .centerY
+        footerStack.addArrangedSubview(exportButton)
         footerStack.addArrangedSubview(openInBrowserButton)
         footerStack.addArrangedSubview(openInFinderButton)
 
+        exportButton.target = self
+        exportButton.action = #selector(exportArtifactTapped)
         openInFinderButton.target = self
         openInFinderButton.action = #selector(openInFinderTapped)
         openInBrowserButton.target = self

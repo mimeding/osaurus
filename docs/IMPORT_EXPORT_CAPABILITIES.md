@@ -15,6 +15,10 @@ This document describes the capability registry introduced after PR #893. The st
 
 `DocumentParser` now resolves import behavior through the registry. `Attachment.fileIcon` also resolves through the registry so UI metadata follows the same source of truth as parser support.
 
+Export behavior also resolves through the registry. Callers pass an explicit `ImportExportExportSource` and destination URL to the registry; the registry selects only a real, non-scaffold exporter for the requested destination extension.
+
+Chat artifact cards use the same registry contract for their Export action. The UI presents export only when a real exporter is available, so scaffold-only metadata cannot appear as a finished file conversion path.
+
 ## Supported Import Paths
 
 | Capability | Extensions | Prompt behavior | Risk |
@@ -27,6 +31,17 @@ This document describes the capability registry introduced after PR #893. The st
 
 These paths preserve the current lightweight chat-ingest behavior. They do not yet preserve workbook semantics, Office document structure, PDF layout, or editable rich-document formatting.
 
+## Supported Export Paths
+
+| Capability | Extensions | Source behavior | Fidelity |
+| --- | --- | --- | --- |
+| Delimited text attachments | `csv`, `tsv` | Writes text, document attachments, or text artifacts | Preserves caller-provided delimited content; normalizes line endings |
+| PDF attachments | `pdf` | Writes text/document sources to a paginated PDF; copies existing PDF artifacts | Readable text PDF, not source-layout preservation |
+
+CSV and TSV export are intentionally lightweight. The exporter does not infer a workbook model, type cells, or rewrite delimiters. It preserves the caller-provided text content and normalizes line endings so the saved file is predictable.
+
+PDF export is intentionally conservative. Text and document sources become a simple paginated PDF using AppKit/CoreText. Existing PDF artifacts are copied as PDFs. This makes PDF export useful immediately without claiming rich layout conversion.
+
 ## Scaffold-Only Export Path
 
 The registry includes `builtin.generic-artifact-passthrough` for artifact export and validation metadata. That entry is intentionally scaffold-only in this slice. It documents the existing lightweight artifact path and gives future work a stable place to attach real export and validation implementations.
@@ -35,8 +50,10 @@ Scaffold-only means:
 
 - the capability appears in registry metadata;
 - risk, supported formats, and runtime intent are visible to developers;
-- export and validation hooks are not treated as production implementations yet;
+- export and validation hooks are not treated as production implementations for generic passthrough formats yet;
 - callers must not assume semantic conversion, workbook generation, PDF validation, or Office export is complete.
+
+Real exporters, such as CSV/TSV and PDF, are registered separately and are not scaffold-only.
 
 ## Development Direction
 
@@ -45,7 +62,17 @@ Future import/export work should add or replace registry capabilities instead of
 - extension and UTType resolution;
 - prompt-safety behavior;
 - maximum input size or output-boundary enforcement;
+- export destination validation;
+- import/export round trips where the format supports it;
 - scaffold-only behavior if the implementation is intentionally incomplete;
 - UI icon metadata if the format appears in chat.
 
 This keeps file handling extensible without recreating Work Mode or burying file behavior inside chat view logic.
+
+## Next Targets
+
+1. Add attachment-chip export affordances for imported documents.
+2. Add format-choice UI when a source supports more than one real exporter.
+3. Add Markdown export as the next real text exporter.
+4. Add richer CSV/table export only after Osaurus has a table model.
+5. Improve generated PDF layout after the basic registry-backed PDF path is stable.

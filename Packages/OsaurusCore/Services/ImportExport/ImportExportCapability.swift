@@ -88,9 +88,22 @@ protocol ImportExportImportCapability: Sendable {
     ) throws -> ImportExportImportResult
 }
 
+enum ImportExportExportSource: Sendable, Equatable {
+    case text(content: String, suggestedFilename: String?)
+    case attachment(Attachment)
+    case artifact(SharedArtifact)
+}
+
 struct ImportExportExportRequest: Sendable {
+    let source: ImportExportExportSource
     let destinationURL: URL
     let formatExtension: String
+
+    var normalizedFormatExtension: String {
+        formatExtension
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+    }
 }
 
 struct ImportExportExportResult: Sendable, Equatable {
@@ -151,4 +164,10 @@ struct ImportExportCapabilityImportResolution: Sendable {
     let metadata: ImportExportCapabilityMetadata
     let matchedExtension: String
     let importer: any ImportExportImportCapability
+}
+
+struct ImportExportCapabilityExportResolution: Sendable {
+    let metadata: ImportExportCapabilityMetadata
+    let matchedExtension: String
+    let exporter: any ImportExportExportCapability
 }
