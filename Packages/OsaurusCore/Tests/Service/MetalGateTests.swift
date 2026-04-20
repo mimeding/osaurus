@@ -65,8 +65,10 @@ struct MetalGateTests {
     }
 
     @Test func generationExcludesSecondGeneration() async {
-        // Default behaviour (mlxAllowConcurrentStreams = false): MLX-vs-MLX
-        // serialization stays intact.
+        // MLX-vs-MLX serialization is enforced unconditionally now that
+        // production gen is fully delegated to `BatchEngine`. The gate's
+        // generation surface is preserved for callers that explicitly
+        // need exclusive Metal access against the embedding service.
         await MetalGate.shared.enterGeneration()
 
         let secondStarted = AtomicFlag()

@@ -961,7 +961,6 @@ extension ModelManager {
         cachedLocalModels = nil
         localModelsCacheLock.unlock()
         LocalReasoningCapability.invalidate()
-        JANGReasoningResolver.invalidateAll()
     }
 
     /// Discover locally downloaded models. Cached until invalidated by model download/delete.

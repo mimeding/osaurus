@@ -130,6 +130,34 @@ final class SSEResponseWriter: ResponseWriter {
         writeSSEChunk(chunk, context: context)
     }
 
+    /// Emit a reasoning (thinking) delta on the OpenAI `reasoning_content`
+    /// field. Routed by the HTTP handler when it decodes a
+    /// `StreamingReasoningHint` sentinel in the upstream stream.
+    @inline(__always)
+    func writeReasoning(
+        _ content: String,
+        model: String,
+        responseId: String,
+        created: Int,
+        context: ChannelHandlerContext
+    ) {
+        guard !content.isEmpty else { return }
+        let chunk = ChatCompletionChunk(
+            id: responseId,
+            created: created,
+            model: model,
+            choices: [
+                StreamChoice(
+                    index: 0,
+                    delta: DeltaContent(reasoning_content: content),
+                    finish_reason: nil
+                )
+            ],
+            system_fingerprint: nil
+        )
+        writeSSEChunk(chunk, context: context)
+    }
+
     // MARK: - Tool calling (OpenAI-style streaming deltas)
 
     @inline(__always)

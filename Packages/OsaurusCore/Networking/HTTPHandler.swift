@@ -2738,6 +2738,18 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
                     let stream = try await chatEngine.streamChat(request: enrichedReq)
                     for try await delta in stream {
+                        if let reasoning = StreamingReasoningHint.decode(delta) {
+                            hop {
+                                writerBound.value.writeReasoning(
+                                    reasoning,
+                                    model: model,
+                                    responseId: responseId,
+                                    created: created,
+                                    context: ctx.value
+                                )
+                            }
+                            continue
+                        }
                         if StreamingToolHint.isSentinel(delta) { continue }
                         hop {
                             writerBound.value.writeContent(
@@ -3037,6 +3049,9 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 let chatEngine = self.chatEngine
                 let stream = try await chatEngine.streamChat(request: req)
                 for try await delta in stream {
+                    // NDJSON has no separate reasoning channel — drop the
+                    // sentinel content so it doesn't leak. Once Ollama-style
+                    // clients add a reasoning field we can route it.
                     if StreamingToolHint.isSentinel(delta) { continue }
                     hop {
                         writerBound.value.writeContent(

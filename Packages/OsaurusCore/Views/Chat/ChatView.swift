@@ -1190,28 +1190,17 @@ final class ChatSession: ObservableObject {
                         // (which is after cancellation / teardown).
                         var lastDeltaTime: Date?
 
-                        // Resolve vmlx's streaming reasoning parser if this
-                        // model is JANG-stamped AND thinking is enabled. Non-
-                        // stamped models keep osaurus's in-house `<think>`
-                        // scanner. Thinking-disabled sessions also fall back
-                        // to the in-house path so a rogue model that ignores
-                        // `enable_thinking: false` still gets routed via the
-                        // retroactive-thinking path instead of being shunted
-                        // straight into the (hidden) think pane.
-                        let vmlxParser: ReasoningParser? = {
-                            let disabled = activeModelOptions["disableThinking"]?.boolValue == true
-                            guard !disabled, let model = selectedModel else { return nil }
-                            guard let resolution = JANGReasoningResolver.resolve(modelKey: model) else {
-                                return nil
-                            }
-                            return resolution.isStamped ? resolution.reasoningParser : nil
-                        }()
-
+                        // Reasoning routing is owned by the engine: vmlx-swift-lm
+                        // strips `<think>` segments from the chunk text inside
+                        // `BatchEngine.generate` (and will eventually emit a
+                        // dedicated `.reasoning` event). Reasoning text reaches
+                        // ChatView via the `StreamingReasoningHint` sentinel,
+                        // which `processor.receiveReasoning` routes into the
+                        // Think panel. Remote providers feed the same sentinel.
                         var processor = StreamingDeltaProcessor(
                             turn: assistantTurn,
                             modelId: selectedModel ?? "default",
-                            modelOptions: activeModelOptions,
-                            vmlxReasoningParser: vmlxParser
+                            modelOptions: activeModelOptions
                         ) { [weak self] in
                             // rebuildVisibleBlocks mutates @Published properties which already
                             // emit objectWillChange — the extra send() below is redundant.
@@ -1273,6 +1262,10 @@ final class ChatSession: ObservableObject {
                             if let stats = StreamingStatsHint.decode(delta) {
                                 assistantTurn.generationTokenCount = stats.tokenCount
                                 assistantTurn.generationTokensPerSecond = stats.tokensPerSecond
+                                continue
+                            }
+                            if let reasoning = StreamingReasoningHint.decode(delta) {
+                                processor.receiveReasoning(reasoning)
                                 continue
                             }
                             if !delta.isEmpty {

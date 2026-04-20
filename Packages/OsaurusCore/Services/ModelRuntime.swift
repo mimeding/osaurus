@@ -2,9 +2,10 @@
 //  ModelRuntime.swift
 //  osaurus
 //
-//  Holds MLX runtime state (containers, gates) behind an actor.
-//  Cache management is delegated to vmlx-swift-lm's CacheCoordinator
-//  (enabled per-container at load time).
+//  Owns the lifecycle of MLX `ModelContainer` instances and submits each
+//  request through `MLXBatchAdapter` (a thin wrapper over vmlx-swift-lm's
+//  `BatchEngine`). KV caching, tool-call parsing, and reasoning extraction
+//  are entirely owned by vmlx-swift-lm — see OSAURUS-INTEGRATION.md.
 //
 
 import CoreImage
@@ -41,25 +42,30 @@ actor ModelRuntime {
         let container: ModelContainer
         let weightsSizeBytes: Int64
         let isVLM: Bool
-        /// Tool-call wire format resolved by `JANGReasoningResolver` at load
-        /// time. When non-nil, this overrides `ModelContext.configuration
-        /// .toolCallFormat` (vmlx's heuristic) — JANG-stamped models declare
-        /// the format authoritatively, so the parser must use that value or
-        /// the model's tool calls will silently fail to parse.
-        let resolvedToolCallFormat: ToolCallFormat?
         init(
             name: String,
             container: ModelContainer,
             weightsSizeBytes: Int64,
-            isVLM: Bool = false,
-            resolvedToolCallFormat: ToolCallFormat? = nil
+            isVLM: Bool = false
         ) {
             self.name = name
             self.container = container
             self.weightsSizeBytes = weightsSizeBytes
             self.isVLM = isVLM
-            self.resolvedToolCallFormat = resolvedToolCallFormat
         }
+    }
+
+    /// Sendable wrapper around an immutable snapshot of chat messages.
+    ///
+    /// `MLXLMCommon.Chat.Message` is not `Sendable`, but our use only ever
+    /// reads the array from inside one downstream `@Sendable` closure (the
+    /// adapter's `buildChat` callback). A class-typed heap box lets us
+    /// capture the snapshot in the closure without tripping the Sendable
+    /// diagnostic, which would otherwise produce a perpetual warning at the
+    /// `buildChat` definition site.
+    private final class ChatMessageBox: @unchecked Sendable {
+        let messages: [MLXLMCommon.Chat.Message]
+        init(_ messages: [MLXLMCommon.Chat.Message]) { self.messages = messages }
     }
 
     // MARK: - Singleton
@@ -118,11 +124,11 @@ actor ModelRuntime {
         // Shut the BatchEngine first so its scheduling loop stops issuing
         // new model forward passes; then wait for any in-flight per-request
         // leases to drain before we touch the container.
-        await BatchEngineAdapter.Registry.shared.shutdownEngine(for: name)
+        await MLXBatchAdapter.Registry.shared.shutdownEngine(for: name)
         await ModelLease.shared.waitForZero(name)
-        // Defensive: cancel any single-slot tracked task (legacy pre-lease path).
-        // With leases, in-flight tasks already drained above; this only catches
-        // the rare case where a task was cancelled mid-setup before acquiring.
+        // Defensive: cancel the latest tracked wrapper task. The lease drain
+        // above already covers in-flight requests; this only catches the
+        // rare case where a task was cancelled mid-setup before acquiring.
         await cancelActiveGeneration()
 
         if let holder = modelCache[name] {
@@ -158,9 +164,9 @@ actor ModelRuntime {
 
     func clearAll() async {
         // Shut down every BatchEngine so they stop scheduling new forward
-        // passes, then cancel the legacy single-slot tracked task and wait
-        // for every leased model to drain before we touch any container.
-        await BatchEngineAdapter.Registry.shared.shutdownAll()
+        // passes, then cancel the latest tracked wrapper task and wait for
+        // every leased model to drain before we touch any container.
+        await MLXBatchAdapter.Registry.shared.shutdownAll()
         await cancelActiveGeneration()
         for name in modelCache.keys {
             await ModelLease.shared.waitForZero(name)
@@ -273,16 +279,12 @@ actor ModelRuntime {
         // gets a clear error and the server stays up.
         try Self.validateJANGTQSidecarIfRequired(at: localURL, name: name)
 
-        // Resolve the JANG capability stamp (if any) and log the detection
-        // source exactly once per cold load. The result is cached inside the
-        // resolver; `StreamingDeltaProcessor` picks it up per-session without
-        // this `actor` having to forward it down four call layers.
-        let resolution = JANGReasoningResolver.resolve(modelKey: name, directory: localURL)
-        genLog.info(
-            "loadContainer: parser detection_source_reasoning=\(resolution.reasoningSource.rawValue, privacy: .public) detection_source_tool=\(resolution.toolCallSource.rawValue, privacy: .public) hasReasoningParser=\(resolution.reasoningParser != nil, privacy: .public) toolFormat=\(resolution.toolCallFormat?.rawValue ?? "none", privacy: .public) model=\(name, privacy: .public)"
-        )
+        // Tool-call format + reasoning parser are stamped automatically by
+        // vmlx-swift-lm's LLM/VLM factories from `jang_config.json` capabilities
+        // and `config.json.model_type`. Osaurus no longer resolves them at
+        // the app layer — `BatchEngine.generate` reads them directly from
+        // the resolved `ModelConfiguration` to emit `.toolCall` events.
 
-        let resolvedToolCallFormat = resolution.toolCallFormat
         let task = Task<SessionHolder, Error> {
             let tokenizerLoader = SwiftTransformersTokenizerLoader()
             let container = try await loadModelContainer(
@@ -295,8 +297,7 @@ actor ModelRuntime {
                 name: name,
                 container: container,
                 weightsSizeBytes: weightsBytes,
-                isVLM: isVLM,
-                resolvedToolCallFormat: resolvedToolCallFormat
+                isVLM: isVLM
             )
         }
 
@@ -324,19 +325,25 @@ actor ModelRuntime {
     }
 
     // MARK: - Cache coordinator plumbing
+    //
+    // KV caching is package-owned by vmlx-swift-lm — `CacheCoordinator`
+    // selects model-aware cache types per layer (rotating for sliding-window
+    // attention, paged for global attention, SSM state for Mamba layers),
+    // sizes them based on the loaded model, and auto-flips into hybrid mode
+    // when the first SSM slot is admitted. Per OSAURUS-INTEGRATION.md,
+    // osaurus must not duplicate that work at the app layer — the only
+    // knobs we legitimately set here are:
+    //   - `modelKey`     — required for per-model isolation across loads
+    //   - `diskCacheDir` — osaurus-managed disk path (under our sandbox)
+    //   - `enableDiskCache=false` when the dir is not writable, so the
+    //     coordinator falls back to memory-only instead of crashing
+    // Everything else (`maxCacheBlocks`, `diskCacheMaxGB`, `pagedBlockSize`,
+    // `ssmMaxEntries`) is left at the library default so vmlx can ship a
+    // single tuned answer per release.
 
-    /// Builds a `CacheCoordinatorConfig` with osaurus-internal defaults.
-    ///
-    /// **KV caching is package-owned** — osaurus does not expose any cache
-    /// knobs to users. This helper exists only to:
-    /// - Point the disk cache at osaurus's paths (`OsaurusPaths.diskKVCache()`)
-    /// - Provide a sensible `modelKey` for per-model isolation
-    /// - Pick a max-blocks default based on RAM
-    /// - Fall back to memory-only when the disk cache dir is not writable
-    ///
-    /// Defaults chosen to be invisible and sensible. If the package's defaults
-    /// ever drift in a way that matters to osaurus, this is the single place
-    /// to override.
+    /// Builds a `CacheCoordinatorConfig` with the minimum overrides
+    /// required for osaurus's environment. See the file-level comment for
+    /// the rationale on why every other field is intentionally untouched.
     private nonisolated static func buildCacheCoordinatorConfig(
         modelName: String
     ) -> CacheCoordinatorConfig {
@@ -349,20 +356,10 @@ actor ModelRuntime {
             )
         }
 
-        let ramGB = ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)
-        let maxBlocks: Int
-        switch ramGB {
-        case 0 ..< 16: maxBlocks = 500  // 32k tokens at 64 per block
-        case 16 ..< 48: maxBlocks = 1000  // 64k tokens
-        default: maxBlocks = 2000  // 128k tokens
-        }
-
         var cacheConfig = CacheCoordinatorConfig()
-        cacheConfig.enableDiskCache = diskDirUsable
-        cacheConfig.diskCacheDir = diskCacheDir
-        cacheConfig.diskCacheMaxGB = 4.0
         cacheConfig.modelKey = modelName
-        cacheConfig.maxCacheBlocks = maxBlocks
+        cacheConfig.diskCacheDir = diskCacheDir
+        cacheConfig.enableDiskCache = diskDirUsable
         return cacheConfig
     }
 
@@ -382,36 +379,33 @@ actor ModelRuntime {
 
     /// Installs the cache coordinator on a freshly-loaded holder.
     ///
-    /// Ordering: `enableCaching` → `setHybrid`. Safe because this method is
-    /// actor-isolated — no other `generateEventStream` call can run until we
-    /// return.
+    /// Single call to `enableCaching(config:)` is all that's needed — vmlx
+    /// auto-detects hybrid SSM models on first slot admission inside
+    /// `BatchEngine`, so osaurus must not call `setHybrid(_:)` manually
+    /// (per OSAURUS-INTEGRATION.md). Actor-isolated, so the install is
+    /// observed atomically by the next request.
     private func installCacheCoordinator(on holder: SessionHolder) async {
         let cacheConfig = Self.buildCacheCoordinatorConfig(modelName: holder.name)
         holder.container.enableCaching(config: cacheConfig)
 
-        // Auto-detect hybrid models (SSM layers) and set the flag on the
-        // freshly-created coordinator.
-        let isHybrid = await holder.container.perform { ctx -> Bool in
-            let testCache = ctx.model.newCache(parameters: nil)
-            return testCache.contains { $0 is MambaCache || $0 is ArraysCache }
-        }
-        holder.container.cacheCoordinator?.setHybrid(isHybrid)
-
         genLog.info(
-            "installCacheCoordinator: enabled for \(holder.name, privacy: .public) isHybrid=\(isHybrid, privacy: .public) disk=\(cacheConfig.enableDiskCache, privacy: .public) maxBlocks=\(cacheConfig.maxCacheBlocks, privacy: .public)"
+            "installCacheCoordinator: enabled for \(holder.name, privacy: .public) disk=\(cacheConfig.enableDiskCache, privacy: .public) (sizing left to vmlx defaults)"
         )
     }
 
     // MARK: - Generation driver
 
     /// Top-level dispatcher: loads the container, takes the model lease, and
-    /// hands off to the appropriate per-path runner. The per-path runners
-    /// own all subsequent locking and release the lease in their producer
-    /// task — every throw path here MUST release the lease before returning.
+    /// submits the request through `MLXBatchAdapter`. `BatchEngine` is the
+    /// single MLX entry point — its actor loop is the serialization point
+    /// for model access, so osaurus only needs `ModelLease` (held for the
+    /// stream's lifetime to defer eviction) plus per-plugin in-flight caps
+    /// in `PluginHostAPI`.
     ///
-    /// Cache management is handled by the package's `CacheCoordinator` — the
-    /// `TokenIterator` (or `BatchEngine`) performs prefix fetch, KV restore,
-    /// partial prefill, and post-generation cache store automatically.
+    /// `BatchEngine.generate` performs prefix fetch, KV restore, partial
+    /// prefill, and post-generation cache store via the container-attached
+    /// `CacheCoordinator` — osaurus does not need to plumb anything cache-
+    /// related through this path.
     private func generateEventStream(
         chatBuilder: @Sendable () -> [MLXLMCommon.Chat.Message],
         parameters: GenerationParameters,
@@ -430,12 +424,11 @@ actor ModelRuntime {
 
         genLog.info("generateEventStream: start model=\(modelName, privacy: .public)")
 
-        // Scoped start/finish around ONLY the container load — we want the
-        // "loading model" UI flag to flip off as soon as the container is
-        // ready, not after gate/scheduler waits below. The do/catch pairs
-        // ensure symmetric bookkeeping on every exit; the refcount in
-        // `InferenceProgressManager` keeps concurrent loads (e.g. two chat
-        // windows starting different models) from corrupting each other.
+        // Scoped start/finish around ONLY the container load — the "loading
+        // model" UI flag flips off as soon as the container is ready. The
+        // refcount in `InferenceProgressManager` keeps concurrent loads
+        // (two chat windows starting different models) from corrupting
+        // each other.
         let cfg = await getConfig()
         trace?.mark("load_container_start")
         InferenceProgressManager.shared.modelLoadWillStartAsync()
@@ -449,226 +442,31 @@ actor ModelRuntime {
         InferenceProgressManager.shared.modelLoadDidFinishAsync()
         trace?.mark("load_container_done")
 
-        // Pin the model against eviction for the lifetime of this stream.
-        // The runner that we hand off to releases the lease in its producer
-        // task; if the runner itself throws before launching that task it is
-        // responsible for releasing too.
+        // Pin the model against eviction for the stream's lifetime.
         await ModelLease.shared.acquire(modelName)
 
-        let chatMessages = chatBuilder()
-        let buildChat: @Sendable () -> [MLXLMCommon.Chat.Message] = { chatMessages }
+        // `MLXLMCommon.Chat.Message` is non-Sendable but the message array
+        // never escapes the producer task. Heap-box the snapshot so the
+        // `@Sendable` closure passed to `MLXBatchAdapter` can capture it
+        // without tripping the Sendable-capture diagnostic.
+        let chatBox = ChatMessageBox(chatBuilder())
+        let buildChat: @Sendable () -> [MLXLMCommon.Chat.Message] = { chatBox.messages }
         let buildTools: @Sendable () -> [[String: any Sendable]]? = {
             ModelRuntime.makeTokenizerTools(tools: tools, toolChoice: toolChoice)
         }
-        let priority = parameters.priority ?? .plugin
 
-        // Branch: `BatchEngine` runs its own actor scheduling loop, so when
-        // it's enabled we deliberately bypass MetalGate / InferenceScheduler /
-        // ModelWorker — those layers serialize MLX access globally, which
-        // would defeat the point of continuous batching. `ModelLease` (above)
-        // and per-plugin in-flight caps (PluginHostAPI) still apply.
-        if InferenceFeatureFlags.mlxBatchEngineEnabled {
-            return try await runBatchEngineStream(
-                holder: holder,
+        InferenceProgressManager.shared.prefillWillStartAsync(tokenCount: 0)
+
+        let prepared: MLXBatchAdapter.PreparedStream
+        do {
+            prepared = try await MLXBatchAdapter.generate(
                 modelName: modelName,
+                container: holder.container,
                 buildChat: buildChat,
-                buildTools: buildTools,
-                tools: tools,
-                stopSequences: stopSequences,
-                parameters: parameters,
+                buildToolsSpec: buildTools,
+                generation: parameters,
                 runtime: cfg,
-                priority: priority,
-                trace: trace
-            )
-        }
-
-        return try await runDirectStream(
-            holder: holder,
-            modelName: modelName,
-            buildChat: buildChat,
-            buildTools: buildTools,
-            tools: tools,
-            stopSequences: stopSequences,
-            parameters: parameters,
-            runtime: cfg,
-            priority: priority,
-            trace: trace
-        )
-    }
-
-    // MARK: - Direct (TokenIterator) path
-
-    /// Resource locks held for the lifetime of one direct-path stream, in
-    /// release order. Released exactly once via `releaseAll()`. The order
-    /// matters: gate first frees the Metal layer for the next caller; the
-    /// scheduler then admits the next priority winner; the worker admits the
-    /// next same-model waiter; the lease is last so any queued unload can
-    /// finally proceed.
-    private struct DirectStreamLocks: Sendable {
-        let modelName: String
-        let worker: ModelWorker
-        let useGlobalScheduler: Bool
-
-        func releaseAll() async {
-            await MetalGate.shared.exitGeneration()
-            if useGlobalScheduler {
-                await InferenceScheduler.shared.release()
-            }
-            await worker.release()
-            await ModelLease.shared.release(modelName)
-        }
-    }
-
-    /// Non-batched path: take per-model worker → optional priority slot →
-    /// MetalGate → run a single-request `TokenIterator`. Holds wired memory
-    /// for the duration so the model's weights aren't paged out mid-decode.
-    private func runDirectStream(
-        holder: SessionHolder,
-        modelName: String,
-        buildChat: @Sendable () -> [MLXLMCommon.Chat.Message],
-        buildTools: @Sendable () -> [[String: any Sendable]]?,
-        tools: [Tool]?,
-        stopSequences: [String],
-        parameters: GenerationParameters,
-        runtime: RuntimeConfig,
-        priority: InferencePriority,
-        trace: TTFTTrace?
-    ) async throws -> AsyncThrowingStream<ModelRuntimeEvent, Error> {
-        let wiredTicket = MLXLMCommon.WiredSumPolicy().ticket(
-            size: Int(holder.weightsSizeBytes),
-            kind: .active
-        )
-
-        // Per-model worker first. With multi-model concurrency OFF (default)
-        // this is largely redundant with the global scheduler — only one
-        // stream runs at a time. With it ON, the worker is the only thing
-        // preventing same-model races.
-        let worker = await ModelWorkerRegistry.shared.worker(for: modelName)
-        trace?.mark("worker_enter")
-        await worker.acquire(priority: priority)
-        trace?.mark("worker_acquired")
-
-        // Priority slot in front of MetalGate. The scheduler decides queue
-        // ORDER (priority-aware) across all models while MetalGate still
-        // serializes MLX-vs-CoreML access at the Metal layer. With
-        // `mlxAllowConcurrentStreams` ON, the global scheduler step is
-        // skipped so streams of different models can interleave; the
-        // per-model worker above is what prevents same-model races.
-        let useGlobalScheduler = !InferenceFeatureFlags.mlxAllowConcurrentStreams
-        if useGlobalScheduler {
-            trace?.mark("scheduler_enter")
-            await InferenceScheduler.shared.acquire(priority: priority)
-            trace?.mark("scheduler_acquired")
-        }
-
-        // Exclusive Metal access. Acquired after all throwing setup so the
-        // gate is never left locked by a loadContainer failure. With
-        // `mlxAllowConcurrentStreams` ON, this only waits for embeddings.
-        trace?.mark("metal_gate_enter")
-        await MetalGate.shared.enterGeneration()
-        trace?.mark("metal_gate_acquired")
-
-        let locks = DirectStreamLocks(
-            modelName: modelName,
-            worker: worker,
-            useGlobalScheduler: useGlobalScheduler
-        )
-
-        if Task.isCancelled {
-            await locks.releaseAll()
-            throw CancellationError()
-        }
-
-        // Prefill count is unknown until `prepareAndGenerate` returns; signal
-        // start with 0, then update once we have the real count.
-        InferenceProgressManager.shared.prefillWillStartAsync(tokenCount: 0)
-
-        trace?.mark("prepare_and_generate_start")
-        let genResult: MLXGenerationEngineResult
-        do {
-            genResult = try await MLXGenerationEngine.prepareAndGenerate(
-                container: holder.container,
-                buildChat: buildChat,
-                buildToolsSpec: buildTools,
-                generation: parameters,
-                runtime: runtime,
-                wiredMemoryTicket: wiredTicket,
-                toolCallFormatOverride: holder.resolvedToolCallFormat
-            )
-            trace?.mark("prepare_and_generate_done")
-            trace?.set("promptTokens", genResult.promptTokens.count)
-        } catch {
-            InferenceProgressManager.shared.prefillDidFinishAsync()
-            await locks.releaseAll()
-            throw error
-        }
-
-        genLog.info(
-            "generateEventStream: stream created tokenCount=\(genResult.promptTokens.count, privacy: .public)"
-        )
-        InferenceProgressManager.shared.prefillWillStartAsync(tokenCount: genResult.promptTokens.count)
-
-        // Wrap genTask so every lock is released when generation finishes
-        // (success or cancellation), in the order documented on
-        // `DirectStreamLocks.releaseAll`.
-        let innerTask = genResult.genTask
-        activeGenerationTask = Task<Void, Never> {
-            await withTaskCancellationHandler {
-                await innerTask.value
-            } onCancel: {
-                innerTask.cancel()
-            }
-            await locks.releaseAll()
-        }
-
-        return StreamAccumulator.accumulate(
-            events: genResult.stream,
-            tokenizer: genResult.tokenizer,
-            stopSequences: stopSequences,
-            tools: tools,
-            toolCallFormat: genResult.toolCallFormat,
-            toolsSpec: buildTools(),
-            generationTask: innerTask,
-            onGeneratedTokenIds: { _ in },
-            priority: priority
-        ).asAsyncThrowingStream()
-    }
-
-    // MARK: - BatchEngine path
-
-    /// Submit one request through the per-model `BatchEngine` and adapt its
-    /// stream into the same `ModelRuntimeEvent` shape callers already consume.
-    ///
-    /// Concurrency: this path holds **only** the model lease (already acquired
-    /// by the caller). The engine's own actor loop serializes model access,
-    /// so MetalGate / InferenceScheduler / ModelWorker would only add latency
-    /// without any safety benefit. Per-plugin in-flight caps in
-    /// `PluginHostAPI` continue to back-pressure misbehaving plugins.
-    private func runBatchEngineStream(
-        holder: SessionHolder,
-        modelName: String,
-        buildChat: @Sendable () -> [MLXLMCommon.Chat.Message],
-        buildTools: @Sendable () -> [[String: any Sendable]]?,
-        tools: [Tool]?,
-        stopSequences: [String],
-        parameters: GenerationParameters,
-        runtime: RuntimeConfig,
-        priority: InferencePriority,
-        trace: TTFTTrace?
-    ) async throws -> AsyncThrowingStream<ModelRuntimeEvent, Error> {
-        InferenceProgressManager.shared.prefillWillStartAsync(tokenCount: 0)
-
-        let prepared: BatchEngineAdapter.PreparedStream
-        do {
-            prepared = try await BatchEngineAdapter.prepareAndSubmit(
-                modelName: modelName,
-                container: holder.container,
-                buildChat: buildChat,
-                buildToolsSpec: buildTools,
-                generation: parameters,
-                runtime: runtime,
-                maxBatchSize: InferenceFeatureFlags.mlxBatchEngineMaxBatchSize,
-                toolCallFormatOverride: holder.resolvedToolCallFormat
+                maxBatchSize: InferenceFeatureFlags.mlxBatchEngineMaxBatchSize
             )
         } catch {
             InferenceProgressManager.shared.prefillDidFinishAsync()
@@ -677,14 +475,16 @@ actor ModelRuntime {
         }
 
         trace?.set("promptTokens", prepared.promptTokens.count)
-        InferenceProgressManager.shared.prefillWillStartAsync(tokenCount: prepared.promptTokens.count)
+        InferenceProgressManager.shared.prefillWillStartAsync(
+            tokenCount: prepared.promptTokens.count
+        )
         genLog.info(
-            "generateEventStream(batch): stream created tokenCount=\(prepared.promptTokens.count, privacy: .public)"
+            "generateEventStream: stream created tokenCount=\(prepared.promptTokens.count, privacy: .public)"
         )
 
         // Wrap the producer task so the lease is released when the stream
         // finishes (success or cancellation). The adapter's producer task
-        // already routes Swift cancellation into `BatchEngine.cancel(id)`.
+        // forwards Swift cancellation into the upstream stream.
         let innerProducer = prepared.genTask
         activeGenerationTask = Task<Void, Never> {
             await withTaskCancellationHandler {
@@ -695,17 +495,11 @@ actor ModelRuntime {
             await ModelLease.shared.release(modelName)
         }
 
-        return StreamAccumulator.accumulate(
+        return GenerationEventMapper.map(
             events: prepared.stream,
-            tokenizer: prepared.tokenizer,
             stopSequences: stopSequences,
-            tools: tools,
-            toolCallFormat: prepared.toolCallFormat,
-            toolsSpec: buildTools(),
-            generationTask: prepared.genTask,
-            onGeneratedTokenIds: { _ in },
-            priority: priority
-        ).asAsyncThrowingStream()
+            generationTask: innerProducer
+        )
     }
 
     // MARK: - New message-based (OpenAI ChatMessage) APIs
@@ -730,14 +524,19 @@ actor ModelRuntime {
             modelId: modelId,
             modelName: modelName
         )
-        // Drain the entire stream so multiple tool invocations parsed from
-        // one completion are surfaced together. StreamAccumulator already
-        // pushes additional tool calls into pendingEvents after the first;
-        // we just keep iterating until the stream finishes.
+        // Drain the entire stream so multiple tool invocations parsed by
+        // vmlx-swift-lm in a single completion are surfaced together
+        // (`BatchEngine.generate` emits one `.toolCall` event per detected
+        // call, so iterating to natural EOS captures all of them).
         for try await ev in events {
             switch ev {
             case .tokens(let s):
                 accumulated += s
+            case .reasoning:
+                // Non-streaming caller — reasoning is dropped, mirroring
+                // the historical `respondWithTools` shape (callers that
+                // want reasoning use `streamWithTools`).
+                break
             case .toolInvocation(let name, let argsJSON):
                 pendingTools.append(
                     ServiceToolInvocation(toolName: name, jsonArguments: argsJSON)
@@ -780,9 +579,10 @@ actor ModelRuntime {
         let (stream, continuation) = AsyncThrowingStream<String, Error>.makeStream()
         let producerTask = Task {
             // Collect every tool invocation parsed from this completion. Local
-            // models can emit multiple <tool_call> blocks per response;
-            // StreamAccumulator drains them all into pendingEvents after the
-            // first, so we keep iterating until the stream finishes naturally.
+            // models can emit multiple `<tool_call>` blocks per response;
+            // vmlx-swift-lm's `BatchEngine.generate` surfaces each as its own
+            // `.toolCall` event, so we keep iterating until the stream
+            // finishes naturally instead of bailing on the first invocation.
             var pendingTools: [ServiceToolInvocation] = []
             do {
                 for try await ev in events {
@@ -793,6 +593,10 @@ actor ModelRuntime {
                     switch ev {
                     case .tokens(let s):
                         if !s.isEmpty { continuation.yield(s) }
+                    case .reasoning(let s):
+                        if !s.isEmpty {
+                            continuation.yield(StreamingReasoningHint.encode(s))
+                        }
                     case .toolInvocation(let name, let argsJSON):
                         continuation.yield(StreamingToolHint.encode(name))
                         continuation.yield(StreamingToolHint.encodeArgs(argsJSON))
@@ -859,16 +663,24 @@ actor ModelRuntime {
         return digest.prefix(16).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Build the `GenerateParameters` value handed to `BatchEngine.generate`.
+    ///
+    /// We deliberately do NOT pass `maxKVSize`. Cache sizing is owned by
+    /// vmlx-swift-lm's `CacheCoordinator` and by each model's own
+    /// architecture (sliding-window attention layers carry a fixed per-layer
+    /// cache window — Gemma-4's is 1024). Forcing a global rotating window
+    /// from the app layer here historically caused
+    /// `[broadcast_shapes] (1,1,1,N) and (1,16,1,1024)` crashes on the
+    /// first decode step. Per OSAURUS-INTEGRATION.md, the only inputs the
+    /// engine wants from us are temperature / topP / maxTokens / penalties.
     nonisolated static func makeGenerateParameters(
         temperature: Float,
         maxTokens: Int,
         topP: Float,
-        repetitionPenalty: Float?,
-        maxKV: Int?
+        repetitionPenalty: Float?
     ) -> MLXLMCommon.GenerateParameters {
         MLXLMCommon.GenerateParameters(
             maxTokens: maxTokens,
-            maxKVSize: maxKV,
             temperature: temperature,
             topP: topP,
             repetitionPenalty: repetitionPenalty,

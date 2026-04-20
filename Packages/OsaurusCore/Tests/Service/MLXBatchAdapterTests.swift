@@ -1,11 +1,11 @@
 //
-//  BatchEngineAdapterTests.swift
+//  MLXBatchAdapterTests.swift
 //  osaurus
 //
-//  Coverage for the parts of `BatchEngineAdapter` that don't require a
-//  loaded MLX model. Engine submission/streaming itself is covered by the
+//  Coverage for the parts of `MLXBatchAdapter` that don't require a loaded
+//  MLX model. End-to-end engine submission/streaming is covered by the
 //  upstream `BatchEngineTests` in vmlx-swift-lm — duplicating those would
-//  drag in a 1+ GB model download per run, which we keep out of CI.
+//  drag in a multi-GB model download per CI run.
 //
 
 import Foundation
@@ -14,23 +14,7 @@ import Testing
 @testable import OsaurusCore
 
 @Suite(.serialized)
-struct BatchEngineAdapterTests {
-
-    @Test func batchEngineEnabledFlag_defaultIsOff() {
-        // Off by default — preserves prior behaviour for users who haven't
-        // explicitly opted in via `defaults write`.
-        UserDefaults.standard.removeObject(forKey: "ai.osaurus.scheduler.mlxBatchEngine")
-        #expect(!InferenceFeatureFlags.mlxBatchEngineEnabled)
-        #expect(!BatchEnginePlan.isActive)
-    }
-
-    @Test func batchEngineEnabledFlag_respectsUserDefaults() {
-        let key = "ai.osaurus.scheduler.mlxBatchEngine"
-        UserDefaults.standard.set(true, forKey: key)
-        defer { UserDefaults.standard.removeObject(forKey: key) }
-        #expect(InferenceFeatureFlags.mlxBatchEngineEnabled)
-        #expect(BatchEnginePlan.isActive)
-    }
+struct MLXBatchAdapterTests {
 
     @Test func maxBatchSize_defaultsToFour() {
         UserDefaults.standard.removeObject(forKey: "ai.osaurus.scheduler.mlxBatchEngineMaxBatchSize")
@@ -63,17 +47,8 @@ struct BatchEngineAdapterTests {
         // Calling shutdown on a name that was never registered should not
         // throw or crash — important because `ModelRuntime.unload` always
         // calls it, even for models that never used the batch path.
-        await BatchEngineAdapter.Registry.shared.shutdownEngine(
+        await MLXBatchAdapter.Registry.shared.shutdownEngine(
             for: "never-registered-\(UUID().uuidString)"
         )
-    }
-
-    @Test func planExposesOpenBlockers() {
-        // Sanity-check the documentation-level surface: if these change
-        // (upstream lands KV-quant batching, etc.) we want the test to
-        // remind us to update the doc + flag default.
-        let blockers = BatchEnginePlan.openBlockers
-        #expect(blockers.contains(.kvQuantization))
-        #expect(blockers.contains(.compileSupport))
     }
 }

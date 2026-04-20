@@ -3,20 +3,16 @@
 //  osaurus
 //
 //  Mutual-exclusion gate preventing concurrent Metal command submissions
-//  from MLX (generation) and CoreML (embedding).  Overlapping submissions
+//  from MLX (generation) and CoreML (embedding). Overlapping submissions
 //  cause EXC_BAD_ACCESS / SIGSEGV on Apple Silicon.
 //
-//  Multiple embeddings may be active concurrently (CoreML handles its own
-//  serialization via the SwiftEmbedder actor).  MLX generation requires
-//  exclusive access against embeddings — it waits for all active embeddings
-//  to drain, and embeddings wait for any active generation to finish.
-//
-//  MLX-vs-MLX serialization is *configurable* via
-//  `InferenceFeatureFlags.mlxAllowConcurrentStreams`. When OFF (default),
-//  this gate also serializes MLX-vs-MLX so behaviour matches pre-Phase-3
-//  exactly. When ON, the per-model `ModelWorker` is the only thing
-//  preventing two streams of the same model from racing; different models
-//  can interleave.
+//  Today only the embedding side (`MetalSafeEmbedder`) calls into this gate.
+//  MLX generation is fully delegated to vmlx-swift-lm's `BatchEngine`, whose
+//  actor loop serializes Metal access from inside the library — we no longer
+//  call `enterGeneration` from the request path. The generation API surface
+//  is preserved here so embedding callers continue to interlock against any
+//  future caller that does want exclusive MLX access (and so the existing
+//  test suite keeps exercising the tri-state coordination logic).
 //
 
 import Foundation
@@ -25,9 +21,10 @@ public actor MetalGate {
     public static let shared = MetalGate()
 
     private var activeEmbeddings = 0
-    /// Count of active MLX generations. With `mlxAllowConcurrentStreams` OFF
-    /// this is effectively 0 or 1; with the flag ON it can climb to the
-    /// number of distinct loaded models in flight.
+    /// Count of active MLX generations. `BatchEngine` does not feed this
+    /// counter; it stays 0 in production but the API is kept so embedding
+    /// callers can still rely on `enterEmbedding` waiting for any caller
+    /// that explicitly opts back into the generation gate.
     private var activeGenerations = 0
     private var embeddingIdleWaiters: [CheckedContinuation<Void, Never>] = []
     private var generationIdleWaiters: [CheckedContinuation<Void, Never>] = []
@@ -58,21 +55,19 @@ public actor MetalGate {
         }
     }
 
-    // MARK: - Generation (MLX)
+    // MARK: - Generation (MLX) — kept for backward compatibility
 
+    /// Strict MLX-vs-MLX serialization. Production gen does not call this
+    /// (BatchEngine handles its own serialization) but it remains available
+    /// for any future caller that needs exclusive Metal access against the
+    /// embedding service.
     public func enterGeneration() async {
-        let allowConcurrent = InferenceFeatureFlags.mlxAllowConcurrentStreams
-
-        if !allowConcurrent {
-            // Strict MLX-vs-MLX serialization: behave exactly as before by
-            // waiting until no other generation is active.
-            while activeGenerations > 0 {
-                await withCheckedContinuation { cont in
-                    if activeGenerations > 0 {
-                        generationIdleWaiters.append(cont)
-                    } else {
-                        cont.resume()
-                    }
+        while activeGenerations > 0 {
+            await withCheckedContinuation { cont in
+                if activeGenerations > 0 {
+                    generationIdleWaiters.append(cont)
+                } else {
+                    cont.resume()
                 }
             }
         }

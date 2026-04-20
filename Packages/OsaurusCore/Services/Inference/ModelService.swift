@@ -146,6 +146,26 @@ enum StreamingToolHint: Sendable {
     }
 }
 
+/// In-band signaling for streamed reasoning text. Mirrors `StreamingToolHint`
+/// so the existing `\u{FFFE}` sentinel filter in HTTP handlers and ChatView
+/// catches it the same way. Used by:
+///   - `ModelRuntime.streamWithTools` once `BatchEngine.generate` starts
+///     emitting `Generation.reasoning(String)` (forward-compat — see
+///     `GenerationEventMapper`).
+///   - `RemoteProviderService` for OpenAI-compatible providers that stream
+///     reasoning on a dedicated `reasoning_content` field (DeepSeek, Qwen,
+///     vLLM, etc.) — replaces the previous synthetic `<think>` wrapping.
+enum StreamingReasoningHint: Sendable {
+    private static let reasoningPrefix = "\u{FFFE}reasoning:"
+
+    static func encode(_ text: String) -> String { reasoningPrefix + text }
+
+    static func decode(_ delta: String) -> String? {
+        guard delta.hasPrefix(reasoningPrefix) else { return nil }
+        return String(delta.dropFirst(reasoningPrefix.count))
+    }
+}
+
 /// In-band signaling for generation benchmarks (tok/s, token count).
 /// Uses the same `\u{FFFE}` sentinel pattern as `StreamingToolHint`.
 enum StreamingStatsHint: Sendable {
