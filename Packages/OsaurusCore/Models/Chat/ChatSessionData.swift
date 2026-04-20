@@ -17,6 +17,8 @@ public struct ChatSessionData: Codable, Identifiable, Sendable {
     public var turns: [ChatTurnData]
     /// The agent this session belongs to. nil = Default agent
     public var agentId: UUID?
+    /// Minimal durable metadata for chat-native loop controls.
+    public var agentLoopState: AgentLoopSessionState?
 
     public init(
         id: UUID = UUID(),
@@ -25,7 +27,8 @@ public struct ChatSessionData: Codable, Identifiable, Sendable {
         updatedAt: Date = Date(),
         selectedModel: String? = nil,
         turns: [ChatTurnData] = [],
-        agentId: UUID? = nil
+        agentId: UUID? = nil,
+        agentLoopState: AgentLoopSessionState? = nil
     ) {
         self.id = id
         self.title = title
@@ -34,6 +37,7 @@ public struct ChatSessionData: Codable, Identifiable, Sendable {
         self.selectedModel = selectedModel
         self.turns = turns
         self.agentId = agentId
+        self.agentLoopState = agentLoopState?.nilIfEmpty
     }
 
     // Custom decoder for backward compatibility with old sessions
@@ -48,6 +52,8 @@ public struct ChatSessionData: Codable, Identifiable, Sendable {
         agentId =
             try container.decodeIfPresent(UUID.self, forKey: .agentId)
             ?? container.decodeIfPresent(UUID.self, forKey: .personaId)
+        agentLoopState = try container.decodeIfPresent(AgentLoopSessionState.self, forKey: .agentLoopState)?
+            .nilIfEmpty
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -59,10 +65,11 @@ public struct ChatSessionData: Codable, Identifiable, Sendable {
         try container.encodeIfPresent(selectedModel, forKey: .selectedModel)
         try container.encode(turns, forKey: .turns)
         try container.encodeIfPresent(agentId, forKey: .agentId)
+        try container.encodeIfPresent(agentLoopState?.nilIfEmpty, forKey: .agentLoopState)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, updatedAt, selectedModel, turns, agentId
+        case id, title, createdAt, updatedAt, selectedModel, turns, agentId, agentLoopState
         case personaId  // legacy key for migration
     }
 
