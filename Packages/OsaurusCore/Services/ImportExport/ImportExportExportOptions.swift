@@ -26,6 +26,7 @@ enum ImportExportExportOptions {
 
         switch source {
         case .text:
+            append("md")
             append("pdf")
 
         case .attachment(let attachment):
@@ -79,6 +80,7 @@ enum ImportExportExportOptions {
         switch ext {
         case "csv": return "CSV"
         case "tsv": return "TSV"
+        case "md", "markdown": return "Markdown"
         case "pdf": return "PDF"
         default: return ext.uppercased()
         }

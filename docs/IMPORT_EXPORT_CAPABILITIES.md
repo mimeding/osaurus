@@ -2,6 +2,16 @@
 
 This document describes the capability registry introduced after PR #893. The strategic goal is to make file handling declarative: chat remains the product surface, tools remain the capability surface, and import/export behavior is described by registry metadata instead of scattered hard-coded extension checks.
 
+## Maintainer Alignment
+
+This design follows the maintainer-facing direction established by PR #893:
+
+- file behavior is a capability, not a separate mode;
+- chat is where users import, inspect, and receive files;
+- support is explicit in registry metadata before UI code exposes it;
+- scaffold-only entries are documented, but never presented as completed features;
+- format support is intentionally narrow until Osaurus has the right source model for richer fidelity.
+
 ## Current Contract
 
 `ImportExportCapabilityRegistry` is the source of truth for document and artifact capability metadata. It records:
@@ -23,7 +33,8 @@ Chat artifact cards use the same registry contract for their Export action. The 
 
 | Capability | Extensions | Prompt behavior | Risk |
 | --- | --- | --- | --- |
-| Plain text and code attachments | `txt`, `md`, `log`, source-code extensions, shell/config files | Reads as plain text | Low |
+| Markdown attachments | `md`, `markdown` | Reads as plain text with Markdown source preserved | Low |
+| Plain text and code attachments | `txt`, `log`, source-code extensions, shell/config files | Reads as plain text | Low |
 | Delimited text attachments | `csv`, `tsv` | Reads as plain text | Low |
 | Structured text attachments | `json`, `xml`, `yaml`, `yml`, `toml` | Reads as plain text | Low |
 | PDF attachments | `pdf` | Extracts PDF text; renders pages as images when no text is available | Medium |
@@ -35,8 +46,11 @@ These paths preserve the current lightweight chat-ingest behavior. They do not y
 
 | Capability | Extensions | Source behavior | Fidelity |
 | --- | --- | --- | --- |
+| Markdown attachments | `md`, `markdown` | Writes text, document attachments, or text artifacts | Preserves Markdown source text; normalizes line endings |
 | Delimited text attachments | `csv`, `tsv` | Writes text, document attachments, or text artifacts | Preserves caller-provided delimited content; normalizes line endings |
 | PDF attachments | `pdf` | Writes text/document sources to a paginated PDF; copies existing PDF artifacts | Readable text PDF, not source-layout preservation |
+
+Markdown export is deliberately source-preserving. It does not render Markdown into HTML or PDF, and it does not attempt rich document conversion. This keeps `.md` support aligned with chat-first file handling: the source document remains inspectable and prompt-safe.
 
 CSV and TSV export are intentionally lightweight. The exporter does not infer a workbook model, type cells, or rewrite delimiters. It preserves the caller-provided text content and normalizes line endings so the saved file is predictable.
 
@@ -53,7 +67,7 @@ Scaffold-only means:
 - export and validation hooks are not treated as production implementations for generic passthrough formats yet;
 - callers must not assume semantic conversion, workbook generation, PDF validation, or Office export is complete.
 
-Real exporters, such as CSV/TSV and PDF, are registered separately and are not scaffold-only.
+Real exporters, such as Markdown, CSV/TSV, and PDF, are registered separately and are not scaffold-only.
 
 ## Development Direction
 
@@ -73,6 +87,6 @@ This keeps file handling extensible without recreating Work Mode or burying file
 
 1. Add attachment-chip export affordances for imported documents.
 2. Add format-choice UI when a source supports more than one real exporter.
-3. Add Markdown export as the next real text exporter.
-4. Add richer CSV/table export only after Osaurus has a table model.
-5. Improve generated PDF layout after the basic registry-backed PDF path is stable.
+3. Add richer CSV/table export only after Osaurus has a table model.
+4. Improve generated PDF layout after the basic registry-backed PDF path is stable.
+5. Add JSON export once the source model can distinguish raw text from structured records.

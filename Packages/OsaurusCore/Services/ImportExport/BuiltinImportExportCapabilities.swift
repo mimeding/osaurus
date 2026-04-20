@@ -16,6 +16,7 @@ enum BuiltinImportExportCapabilities {
         let plainTextImporter = PlainTextAttachmentImportCapability()
         let richTextImporter = RichDocumentAttachmentImportCapability()
         let pdfImporter = PDFDocumentAttachmentImportCapability()
+        let markdownExporter = MarkdownAttachmentExportCapability()
         let delimitedTextExporter = DelimitedTextAttachmentExportCapability()
         let pdfExporter = PDFDocumentAttachmentExportCapability()
         let scaffoldExporter = ScaffoldOnlyArtifactExportCapability()
@@ -24,10 +25,45 @@ enum BuiltinImportExportCapabilities {
         return [
             ImportExportCapabilityRegistration(
                 metadata: ImportExportCapabilityMetadata(
+                    id: "builtin.markdown-attachments",
+                    displayName: "Markdown Attachments",
+                    supportedExtensions: ["md", "markdown"],
+                    utTypeIdentifiers: [
+                        "net.daringfireball.markdown",
+                        "public.plain-text",
+                    ],
+                    roles: [.probe, .import, .export],
+                    canonicalTarget: "Attachment.document",
+                    trust: ImportExportTrustMetadata(
+                        runtime: .builtIn,
+                        promptSafety: .plainText,
+                        activeContentRisk: .low,
+                        notes: [
+                            "Markdown is prompt-safe text and remains a first-class chat document format.",
+                            "Export writes Markdown text from document, text, or text artifact sources.",
+                            "Markdown rendering semantics are intentionally left to preview/UI layers.",
+                        ]
+                    ),
+                    runtimeRequirements: ["Foundation"],
+                    fidelityNotes: [
+                        "Markdown source text is preserved; no HTML or rich-document conversion is attempted.",
+                        "Export normalizes line endings and final newline.",
+                    ],
+                    defaultIconSymbolName: "text.document",
+                    iconSymbolNamesByExtension: [:],
+                    isScaffoldOnly: false
+                ),
+                probe: ExtensionProbeCapability(supportedExtensions: ["md", "markdown"]),
+                importer: plainTextImporter,
+                exporter: markdownExporter,
+                validator: nil
+            ),
+            ImportExportCapabilityRegistration(
+                metadata: ImportExportCapabilityMetadata(
                     id: "builtin.plain-text-attachments",
                     displayName: "Plain Text and Code Attachments",
                     supportedExtensions: [
-                        "txt", "md", "markdown",
+                        "txt",
                         "log", "ini", "cfg", "conf", "env",
                         "swift", "py", "js", "ts", "tsx", "jsx",
                         "rs", "go", "java", "kt", "c", "cpp", "h", "hpp",
@@ -62,15 +98,12 @@ enum BuiltinImportExportCapabilities {
                         "Formatting and structure beyond raw text are discarded.",
                     ],
                     defaultIconSymbolName: "doc.plaintext",
-                    iconSymbolNamesByExtension: [
-                        "md": "text.document",
-                        "markdown": "text.document",
-                    ],
+                    iconSymbolNamesByExtension: [:],
                     isScaffoldOnly: false
                 ),
                 probe: ExtensionProbeCapability(
                     supportedExtensions: [
-                        "txt", "md", "markdown",
+                        "txt",
                         "log", "ini", "cfg", "conf", "env",
                         "swift", "py", "js", "ts", "tsx", "jsx",
                         "rs", "go", "java", "kt", "c", "cpp", "h", "hpp",
@@ -353,6 +386,15 @@ private struct PDFDocumentAttachmentImportCapability: ImportExportImportCapabili
             fileSize: request.fileSize
         )
         return ImportExportImportResult(attachments: attachments)
+    }
+}
+
+private struct MarkdownAttachmentExportCapability: ImportExportExportCapability {
+    func exportFile(
+        request: ImportExportExportRequest,
+        metadata _: ImportExportCapabilityMetadata
+    ) throws -> ImportExportExportResult {
+        try ImportExportDocumentExporter.exportMarkdown(request: request)
     }
 }
 

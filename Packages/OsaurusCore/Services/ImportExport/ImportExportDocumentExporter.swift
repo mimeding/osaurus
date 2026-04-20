@@ -39,6 +39,23 @@ enum ImportExportExportError: LocalizedError, Equatable {
 }
 
 enum ImportExportDocumentExporter {
+    static func exportMarkdown(request: ImportExportExportRequest) throws -> ImportExportExportResult {
+        let ext = request.normalizedFormatExtension
+        guard ["md", "markdown"].contains(ext) else {
+            throw ImportExportExportError.unsupportedFormat(ext)
+        }
+        let destination = try validatedDestination(request.destinationURL, expectedExtension: ext)
+        let content = try textContent(from: request.source)
+        let normalized = normalizeTextDocument(content)
+
+        do {
+            try normalized.write(to: destination, atomically: true, encoding: .utf8)
+            return ImportExportExportResult(outputURL: destination)
+        } catch {
+            throw ImportExportExportError.writeFailed(error.localizedDescription)
+        }
+    }
+
     static func exportDelimitedText(request: ImportExportExportRequest) throws -> ImportExportExportResult {
         let ext = request.normalizedFormatExtension
         guard ["csv", "tsv"].contains(ext) else {
@@ -46,7 +63,7 @@ enum ImportExportDocumentExporter {
         }
         let destination = try validatedDestination(request.destinationURL, expectedExtension: ext)
         let content = try textContent(from: request.source)
-        let normalized = normalizeDelimitedText(content)
+        let normalized = normalizeTextDocument(content)
 
         do {
             try normalized.write(to: destination, atomically: true, encoding: .utf8)
@@ -151,15 +168,14 @@ enum ImportExportDocumentExporter {
         return url
     }
 
-    private static func normalizeDelimitedText(_ text: String) -> String {
+    private static func normalizeTextDocument(_ text: String) -> String {
         let normalized = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
         let trimmed = normalized.trimmingCharacters(in: .newlines)
         guard !trimmed.isEmpty else { return "" }
 
-        // This exporter preserves caller-provided delimited content. It does not
-        // infer a table model, but it does normalize line endings and final EOF.
+        // Preserve caller-provided text semantics while making saved files stable.
         return trimmed + "\n"
     }
 

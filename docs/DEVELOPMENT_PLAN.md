@@ -13,7 +13,7 @@ The development path is incremental. Each increment should be small enough to re
 
 Branch: `codex/pr893-import-export-next-steps`
 
-Immediate objective: make the first practical import/export capabilities work through the registry, starting with CSV/TSV and PDF. CSV import and PDF import already existed through `DocumentParser`; this branch adds registry-driven CSV/TSV export and PDF export so the capability registry is no longer export metadata only.
+Immediate objective: make the first practical import/export capabilities work through the registry, starting with Markdown, CSV/TSV, and PDF. Markdown, CSV, and PDF import already existed through `DocumentParser`; this branch adds registry-driven Markdown, CSV/TSV, and PDF export so the capability registry is no longer export metadata only.
 
 ## Increment Policy
 
@@ -24,6 +24,16 @@ Every development increment should include:
 - tests for the exact behavior being introduced;
 - documentation explaining the user impact and maintainer rationale;
 - no Work Mode revival and no parallel durable workflow store.
+
+## Maintainer Philosophy Guardrails
+
+The maintainer direction after PR #893 is simple: Osaurus should become easier to reason about, not broader through duplicate surfaces. Development should therefore favor:
+
+- explicit capability registration over hidden extension switches;
+- chat-first user workflows over a revived Work Mode;
+- narrow, reviewable feature slices over large multi-format rewrites;
+- source-preserving file behavior before richer semantic conversion;
+- scaffold-only metadata when intent is clear but production behavior is not ready.
 
 ## 1. Agent Loop Contract Baseline
 
@@ -81,6 +91,12 @@ The registry is the long-term product surface for file capability truth. It lets
 
 ### Implemented First Increment
 
+Markdown:
+
+- `md` and `markdown` import remain lightweight prompt-safe text ingestion.
+- `md` and `markdown` export now write document, text, or text-artifact sources through the registry.
+- export preserves Markdown source text and normalizes line endings without rendering to HTML or rich document formats.
+
 CSV/TSV:
 
 - `csv` and `tsv` import remain lightweight prompt-safe text ingestion.
@@ -103,10 +119,9 @@ Chat UI:
 1. Add attachment-chip export affordances for imported user documents.
 2. Add a small user-facing export picker when a source supports more than one registry-backed real exporter.
 3. Add validation results to the UI so scaffold-only capabilities are visible but not presented as finished exports.
-4. Add Markdown export as a real plain-text export capability.
-5. Add JSON export once the source model can distinguish raw text from structured records.
-6. Add richer CSV support only after there is a table model; until then, avoid claiming workbook or typed-cell fidelity.
-7. Add PDF layout improvements only after the simple text PDF export is stable.
+4. Add JSON export once the source model can distinguish raw text from structured records.
+5. Add richer CSV support only after there is a table model; until then, avoid claiming workbook or typed-cell fidelity.
+6. Add PDF layout improvements only after the simple text PDF export is stable.
 
 ### Operational Requirements
 
@@ -206,7 +221,7 @@ The product needs enough state for restart, API callers, audit, and user trust. 
 
 Recommended review order for upcoming increments:
 
-1. Registry export contract plus CSV/TSV and PDF exporters.
+1. Registry export contract plus Markdown, CSV/TSV, and PDF exporters.
 2. Chat UI export wiring for imported document attachment chips.
 3. Artifact export validation and preview smoke tests.
 4. Typed artifact-created event migration.

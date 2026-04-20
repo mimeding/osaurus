@@ -16,6 +16,17 @@ struct ImportExportCapabilityRegistryTests {
         #expect(resolution?.metadata.roles.contains(.import) == true)
     }
 
+    @Test func resolvesMarkdownImporterForMD() {
+        let url = URL(fileURLWithPath: "/tmp/README.md")
+
+        let resolution = ImportExportCapabilityRegistry.shared.resolveImport(url: url)
+
+        #expect(resolution?.metadata.id == "builtin.markdown-attachments")
+        #expect(resolution?.matchedExtension == "md")
+        #expect(resolution?.metadata.roles.contains(.export) == true)
+        #expect(resolution?.metadata.isScaffoldOnly == false)
+    }
+
     @Test func registersScaffoldOnlyArtifactExportAndValidateMetadata() {
         let capabilities = ImportExportCapabilityRegistry.shared.capabilities(for: .export)
         let passthrough = capabilities.first { $0.id == "builtin.generic-artifact-passthrough" }
@@ -25,15 +36,44 @@ struct ImportExportCapabilityRegistryTests {
         #expect(passthrough?.isScaffoldOnly == true)
 
         let csv = capabilities.first { $0.id == "builtin.delimited-text-attachments" }
+        let markdown = capabilities.first { $0.id == "builtin.markdown-attachments" }
         let pdf = capabilities.first { $0.id == "builtin.pdf-attachments" }
         #expect(csv?.isScaffoldOnly == false)
+        #expect(markdown?.isScaffoldOnly == false)
         #expect(pdf?.isScaffoldOnly == false)
     }
 
     @Test func attachmentIconsResolveThroughRegistryMetadata() {
         let attachment = Attachment.document(filename: "table.csv", content: "a,b", fileSize: 3)
+        let markdown = Attachment.document(filename: "README.md", content: "# Title", fileSize: 7)
 
         #expect(attachment.fileIcon == "tablecells")
+        #expect(markdown.fileIcon == "text.document")
+    }
+
+    @Test func exportOptionsPreferNativeMarkdownFormatAndExposePDF() throws {
+        let attachment = Attachment.document(filename: "README.md", content: "# Title\nBody", fileSize: 12)
+
+        let options = ImportExportExportOptions.options(for: .attachment(attachment))
+
+        #expect(options.map(\.formatExtension) == ["md", "pdf"])
+        #expect(ImportExportExportOptions.defaultOption(for: .attachment(attachment))?.formatExtension == "md")
+        let pdf = try #require(options.first { $0.formatExtension == "pdf" })
+        #expect(ImportExportExportOptions.suggestedFilename(for: .attachment(attachment), option: pdf) == "README.pdf")
+    }
+
+    @Test func exportOptionsExposeMarkdownForRawTextSources() {
+        let options = ImportExportExportOptions.options(
+            for: .text(content: "# Notes", suggestedFilename: "../unsafe/notes.md")
+        )
+
+        #expect(options.map(\.formatExtension) == ["md", "pdf"])
+        #expect(
+            ImportExportExportOptions.suggestedFilename(
+                for: .text(content: "# Notes", suggestedFilename: "../unsafe/notes.md"),
+                option: ImportExportExportOption(formatExtension: "md", displayName: "Markdown")
+            ) == "notes.md"
+        )
     }
 
     @Test func exportOptionsPreferNativeDelimitedFormatAndExposePDF() throws {
@@ -124,6 +164,44 @@ struct ImportExportCapabilityRegistryTests {
         let imported = try DocumentParser.parse(url: destination)
         #expect(imported.filename == "roundtrip.csv")
         #expect(imported.documentContent == exported)
+    }
+
+    @Test func exportsAttachmentAsMarkdownAndImportsItBackThroughRegistry() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let content = "# Development Notes\r\n\r\n- Chat is the product surface.\r\n- Tools are capabilities.\r\n"
+        let attachment = Attachment.document(filename: "notes.md", content: content, fileSize: content.utf8.count)
+        let destination = directory.appendingPathComponent("roundtrip.md")
+
+        let result = try ImportExportCapabilityRegistry.shared.export(
+            source: .attachment(attachment),
+            to: destination
+        )
+
+        #expect(result.outputURL.path == destination.standardizedFileURL.path)
+        let exported = try String(contentsOf: destination, encoding: .utf8)
+        #expect(exported == "# Development Notes\n\n- Chat is the product surface.\n- Tools are capabilities.\n")
+
+        let imported = try DocumentParser.parse(url: destination)
+        #expect(imported.filename == "roundtrip.md")
+        #expect(imported.documentContent == exported)
+    }
+
+    @Test func exportsTextAsMarkdownWithLongExtension() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let destination = directory.appendingPathComponent("summary.markdown")
+
+        let result = try ImportExportCapabilityRegistry.shared.export(
+            source: .text(content: "## Summary\r\n\nMaintainer-aligned registry support.", suggestedFilename: "summary.md"),
+            to: destination
+        )
+
+        #expect(result.outputURL.path == destination.standardizedFileURL.path)
+        let exported = try String(contentsOf: destination, encoding: .utf8)
+        #expect(exported == "## Summary\n\nMaintainer-aligned registry support.\n")
     }
 
     @Test func exportsTextAsPDFAndImportsExtractedTextBackThroughRegistry() throws {
