@@ -25,12 +25,6 @@ struct RuntimeConfig: Sendable {
     /// Auto-detect a reasonable maxKV default based on available system RAM.
     /// Machines with more RAM can afford larger context windows.
     private static func defaultMaxKV() -> Int {
-        let ramGB = ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)
-        switch ramGB {
-        case 0 ..< 24: return 8192
-        case 24 ..< 48: return 16384
-        case 48 ..< 96: return 32768
-        default: return 65536
-        }
+        MLXRuntimeTuning.cacheProfile().maxKV
     }
 }

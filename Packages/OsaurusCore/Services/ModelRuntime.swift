@@ -291,6 +291,16 @@ actor ModelRuntime {
             )
             let isVLM = await container.isVLM
             let weightsBytes = Self.computeWeightsSizeBytes(at: localURL)
+            if let advisory = MLXRuntimeTuning.wiredMemoryAdvisory(
+                modelBytes: weightsBytes,
+                currentLimitMB: MLXRuntimeTuning.currentWiredLimitMB()
+            ) {
+                genLog.warning(
+                    """
+                    loadContainer: model \(name, privacy: .public) weighs ~\(advisory.recommendedMinimumMB, privacy: .public) MiB but iogpu.wired_limit_mb is \(advisory.currentLimitMB, privacy: .public) MiB; large-model generation may page until the wired-memory limit is raised
+                    """
+                )
+            }
             return SessionHolder(
                 name: name,
                 container: container,
@@ -349,20 +359,13 @@ actor ModelRuntime {
             )
         }
 
-        let ramGB = ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)
-        let maxBlocks: Int
-        switch ramGB {
-        case 0 ..< 16: maxBlocks = 500  // 32k tokens at 64 per block
-        case 16 ..< 48: maxBlocks = 1000  // 64k tokens
-        default: maxBlocks = 2000  // 128k tokens
-        }
-
+        let profile = MLXRuntimeTuning.cacheProfile()
         var cacheConfig = CacheCoordinatorConfig()
         cacheConfig.enableDiskCache = diskDirUsable
         cacheConfig.diskCacheDir = diskCacheDir
-        cacheConfig.diskCacheMaxGB = 4.0
+        cacheConfig.diskCacheMaxGB = profile.diskCacheMaxGB
         cacheConfig.modelKey = modelName
-        cacheConfig.maxCacheBlocks = maxBlocks
+        cacheConfig.maxCacheBlocks = profile.maxCacheBlocks
         return cacheConfig
     }
 

@@ -25,7 +25,7 @@ Everything else listed below is opt-in via `defaults write`. Defaults are conser
 ```
 ┌─────────────┐  ┌────────┐  ┌────────┐  ┌─────────────┐  ┌─────────────┐
 │ Chat UI     │  │ HTTP   │  │ Plugin │  │ Background  │  │ Preflight / │
-│ (.interactive)  │ (.httpAPI) │ (.plugin) │ Work        │  │ Memory      │
+│ (.interactive)  │ (.httpAPI) │ (.plugin) │ Tasks       │  │ Memory      │
 └──────┬──────┘  └───┬────┘  └───┬────┘  │ (.background)│  │ (.maintenance)
        │             │           │       └──────┬──────┘  └──────┬──────┘
        └─────────────┴───────────┴──────────────┴────────────────┘
