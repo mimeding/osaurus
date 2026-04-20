@@ -86,11 +86,15 @@ struct ChatViewSandboxTests {
     @Test
     func alwaysLoadedSpecs_includesCapabilityTools() {
         let specs = ToolRegistry.shared.alwaysLoadedSpecs(mode: .none)
+        let names = Set(specs.map { $0.function.name })
 
-        #expect(specs.contains(where: { $0.function.name == "capabilities_search" }))
-        #expect(specs.contains(where: { $0.function.name == "capabilities_load" }))
-        #expect(specs.contains(where: { $0.function.name == "methods_save" }))
-        #expect(specs.contains(where: { $0.function.name == "methods_report" }))
+        #expect(names.contains("capabilities_search"))
+        #expect(names.contains("capabilities_load"))
+        #expect(names.contains("methods_save"))
+        #expect(names.contains("methods_report"))
+        for loopTool in ToolRegistry.agentLoopControlToolNames {
+            #expect(names.contains(loopTool), "missing loop control tool: \(loopTool)")
+        }
     }
 
     @Test

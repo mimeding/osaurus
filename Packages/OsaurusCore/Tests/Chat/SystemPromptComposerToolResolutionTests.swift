@@ -56,6 +56,17 @@ struct SystemPromptComposerToolResolutionTests {
         body()
     }
 
+    private var loopControlNames: Set<String> {
+        ToolRegistry.agentLoopControlToolNames
+    }
+
+    private func expectLoopControlsPresent(_ tools: [Tool]) {
+        let names = Set(tools.map { $0.function.name })
+        for name in loopControlNames {
+            #expect(names.contains(name), "missing loop control tool: \(name)")
+        }
+    }
+
     // MARK: - Auto mode
 
     @Test
@@ -69,6 +80,7 @@ struct SystemPromptComposerToolResolutionTests {
             )
             // Built-ins like capabilities_search must be present in auto mode.
             #expect(tools.contains { $0.function.name == "capabilities_search" })
+            expectLoopControlsPresent(tools)
         }
     }
 
@@ -81,9 +93,11 @@ struct SystemPromptComposerToolResolutionTests {
                 agentId: agentId,
                 executionMode: .none
             )
-            // Manual mode is strict: nothing besides the user's selection.
-            #expect(tools.count == 1)
-            #expect(tools.first?.function.name == "render_chart")
+            // Manual mode is strict except for agent-loop controls, which
+            // are the chat runtime contract rather than optional capability
+            // tools.
+            let names = Set(tools.map { $0.function.name })
+            #expect(names == loopControlNames.union(["render_chart"]))
             // Capability discovery tools must be absent.
             #expect(tools.contains { $0.function.name == "capabilities_search" } == false)
             // Memory/graph/charts built-ins must NOT leak in.
@@ -100,6 +114,7 @@ struct SystemPromptComposerToolResolutionTests {
                     executionMode: .sandbox
                 )
                 #expect(tools.contains { $0.function.name == "render_chart" })
+                expectLoopControlsPresent(tools)
                 // Sandbox built-ins are additive when sandbox is active.
                 #expect(tools.contains { $0.function.name == "sandbox_exec" })
                 // Non-sandbox built-ins are still excluded.
@@ -122,7 +137,9 @@ struct SystemPromptComposerToolResolutionTests {
                 // registry's snapshot rather than a name prefix.
                 let names = Set(tools.map { $0.function.name })
                 let allowed = ToolRegistry.shared.builtInSandboxToolNamesSnapshot
+                    .union(loopControlNames)
                 #expect(names.isSubset(of: allowed) || names.isEmpty)
+                expectLoopControlsPresent(tools)
                 // Built-ins like capabilities_search MUST NOT be there.
                 #expect(names.contains("capabilities_search") == false)
             }

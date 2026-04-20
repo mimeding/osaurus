@@ -168,7 +168,8 @@ struct AutoThinkingProfile: ModelProfile {
     static let displayName = "Thinking"
 
     static func matches(modelId: String) -> Bool {
-        LocalReasoningCapability.capability(forModelId: modelId).hasEnableThinkingKwarg
+        let capability = LocalReasoningCapability.capability(forModelId: modelId)
+        return capability.hasEnableThinkingKwarg && capability.supportsThinking
     }
 
     static let options: [ModelOptionDefinition] = [

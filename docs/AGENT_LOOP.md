@@ -22,7 +22,7 @@ There is no separate "Agent" or "Work" tab — the same chat window handles a on
                                      loop ends
 ```
 
-The chat engine intercepts three special tools so the loop has structure without a separate planner: `todo`, `complete`, and `clarify`. Every other tool (file, sandbox, plugin, MCP, …) just runs and returns its output to the model on the next turn.
+The chat engine exposes and intercepts three control tools so the loop has structure without a separate planner: `todo`, `complete`, and `clarify`. They are model-visible whenever tools are enabled, including manual tool-selection mode, because they are the chat runtime contract rather than optional capabilities. Every other tool (file, sandbox, plugin, MCP, …) just runs and returns its output to the model on the next turn.
 
 ---
 
