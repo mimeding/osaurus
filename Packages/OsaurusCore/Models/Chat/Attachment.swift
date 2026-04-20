@@ -113,16 +113,7 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
 
     public var fileIcon: String {
         guard let ext = fileExtension else { return "photo" }
-        switch ext {
-        case "pdf": return "doc.richtext"
-        case "docx", "doc": return "doc.text"
-        case "md", "markdown": return "text.document"
-        case "csv": return "tablecells"
-        case "json": return "curlybraces"
-        case "xml", "html", "htm": return "chevron.left.forwardslash.chevron.right"
-        case "rtf": return "doc.richtext"
-        default: return "doc.plaintext"
-        }
+        return ImportExportCapabilityRegistry.shared.iconSymbol(forExtension: ext) ?? "doc.plaintext"
     }
 
     /// Estimated token count for context budget calculations
