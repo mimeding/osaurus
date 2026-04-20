@@ -19,10 +19,13 @@ Canonical reference for all Osaurus features, their status, and documentation.
 | Methods                          | Stable    | "Skills & Methods" | SKILLS.md                     | Models/Method/Method.swift, Services/Method/MethodService.swift, Services/Method/MethodSearchService.swift, Storage/MethodDatabase.swift, Tools/MethodTools.swift |
 | Context Management               | Stable    | -                  | SKILLS.md                     | Services/Context/PreflightCapabilitySearch.swift, Tools/CapabilityTools.swift, Services/Tool/ToolSearchService.swift, Services/Tool/ToolIndexService.swift |
 | Memory                           | Stable    | "Key Features"     | MEMORY.md                     | Services/Memory/MemoryService.swift, Services/Memory/MemorySearchService.swift, Services/Memory/MemoryContextAssembler.swift |
-| Agents                         | Stable    | "Agents"         | (in README)                   | Managers/AgentManager.swift, Models/Agent/Agent.swift, Views/Agent/AgentsView.swift         |
+| Agents                           | Stable    | "Agents"           | (in README)                   | Managers/AgentManager.swift, Models/Agent/Agent.swift, Views/Agent/AgentsView.swift         |
 | Schedules                        | Stable    | "Schedules"        | (in README)                   | Managers/ScheduleManager.swift, Models/Schedule/Schedule.swift, Views/Schedule/SchedulesView.swift      |
 | Watchers                         | Stable    | "Watchers"         | WATCHERS.md                   | Managers/WatcherManager.swift, Models/Watcher/Watcher.swift, Views/Watcher/WatchersView.swift         |
 | Agent Loop & Folder Context      | Stable    | "Agent Loop"       | AGENT_LOOP.md                 | Folder/, Tools/AgentLoopTools.swift, Tools/FolderToolManager.swift, Models/Chat/AgentTodo.swift, Models/Chat/AgentTodoStore.swift, Models/Chat/SharedArtifact.swift |
+| Import/Export Capability Registry| Planned   | -                  | IMPORT_EXPORT_CAPABILITIES.md | Services/ImportExport/, Utils/DocumentParser.swift, Models/Chat/Attachment.swift       |
+| Typed Inference Events           | Planned   | -                  | DEVELOPMENT_PLAN.md           | Services/Inference/InferenceEvent.swift, Services/Chat/ChatEngine.swift, Networking/HTTPHandler.swift |
+| MLX Runtime Tuning               | Planned   | "Local"            | DEVELOPMENT_PLAN.md           | Services/ModelRuntime/MLXRuntimeTuning.swift, Services/ModelRuntime.swift              |
 | Developer Tools: Insights        | Stable    | "Developer Tools"  | DEVELOPER_TOOLS.md            | Views/Insights/InsightsView.swift, Managers/InsightsService.swift                              |
 | Developer Tools: Server Explorer | Stable    | "Developer Tools"  | DEVELOPER_TOOLS.md            | Views/Settings/ServerView.swift                                                                |
 | Apple Foundation Models          | macOS 26+ | "What is Osaurus?" | (in README)                   | Services/Inference/FoundationModelService.swift                                                 |
@@ -94,19 +97,25 @@ Canonical reference for all Osaurus features, their status, and documentation.
 │  │   └── MethodSearchService (RAG-based method search)                   │
 │  ├── Context                                                             │
 │  │   ├── PreflightCapabilitySearch (Automated pre-flight RAG search)     │
+│  │   ├── SessionToolStateStore (Per-chat tool schema stability)          │
 │  │   ├── ToolSearchService (RAG-based tool search)                       │
 │  │   └── ToolIndexService (Tool registry sync and indexing)              │
+│  ├── Folder Tools                                                        │
+│  │   ├── FolderContextService (Working folder + security-scoped bookmarks) │
+│  │   ├── FolderToolManager (Registers folder tools when folder selected) │
+│  │   ├── FolderToolFactory (File/coding/git tool construction)           │
+│  │   └── FileOperationLog (Per-session operation log for undo/review)    │
 │  ├── Scheduling                                                          │
 │  │   └── ScheduleManager (Schedule lifecycle and execution)              │
 │  ├── Watchers                                                            │
 │  │   ├── WatcherManager (FSEvents monitoring and convergence loop)       │
 │  │   ├── WatcherStore (Watcher persistence)                              │
 │  │   └── DirectoryFingerprint (Change detection via Merkle hashing)      │
-│  ├── Folder Tools                                                        │
-│  │   ├── FolderContextService (Working folder + security-scoped bookmarks) │
-│  │   ├── FolderToolManager (Registers folder tools when folder selected) │
-│  │   ├── FolderToolFactory (Builds file/coding/git tools per project)    │
-│  │   └── FileOperationLog (Logs writes/exec for undo support)            │
+│  ├── Agent Loop                                                          │
+│  │   ├── ChatEngine (Streaming and model/tool integration)               │
+│  │   ├── ChatSession (Visible and headless loop owner)                   │
+│  │   ├── BackgroundTaskManager (Dispatched chat tasks)                   │
+│  │   └── AgentLoopTools (todo, complete, clarify)                       │
 │  ├── Sandbox                                                             │
 │  │   ├── SandboxManager (Container lifecycle and exec)                   │
 │  │   ├── SandboxPluginManager (Per-agent plugin install/uninstall)       │
@@ -1137,6 +1146,9 @@ Results are cached for 10 seconds per agent.
 | [FEATURES.md](FEATURES.md)                                     | Feature inventory and architecture (this file)    |
 | [WATCHERS.md](WATCHERS.md)                                     | Watchers and folder monitoring guide              |
 | [AGENT_LOOP.md](AGENT_LOOP.md)                                 | Agent loop, folder context, and `todo`/`complete`/`clarify` |
+| [IMPORT_EXPORT_CAPABILITIES.md](IMPORT_EXPORT_CAPABILITIES.md) | Import/export registry, supported formats, risk, and scaffold-only behavior |
+| [DESIGN_PHILOSOPHY_CHANGE_REVIEW.md](DESIGN_PHILOSOPHY_CHANGE_REVIEW.md) | Review of the Work Mode to Agent Loop design shift |
+| [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)                     | Current development plan for agent loop and planned additions |
 | [REMOTE_PROVIDERS.md](REMOTE_PROVIDERS.md)                     | Remote provider setup and configuration           |
 | [REMOTE_MCP_PROVIDERS.md](REMOTE_MCP_PROVIDERS.md)             | Remote MCP provider setup                         |
 | [DEVELOPER_TOOLS.md](DEVELOPER_TOOLS.md)                       | Insights and Server Explorer guide                |
