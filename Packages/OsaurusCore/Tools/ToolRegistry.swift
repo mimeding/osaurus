@@ -17,13 +17,10 @@ final class ToolRegistry: ObservableObject {
     /// Names of tools registered via registerBuiltInTools (always loaded).
     private(set) var builtInToolNames: Set<String> = []
 
-    /// Tool names that are reserved for agent-loop intercepts and must NOT
-    /// appear in the schema sent to the model. They stay registered so the
-    /// chat engine can dispatch them internally if it ever needs to surface
-    /// them (e.g. mid-loop nudge), but the model never sees them by default.
-    /// Hiding them keeps the schema small and prevents the model from
-    /// pattern-matching the names into "I should plan" behaviour.
-    static let agentInterceptToolNames: Set<String> = ["todo", "complete", "clarify"]
+    /// Agent-loop control tools. These are real model-visible tools, but the
+    /// chat engine intercepts their results to update inline state, pause, or
+    /// end the loop.
+    static let agentLoopControlToolNames: Set<String> = ["todo", "complete", "clarify"]
 
     /// Tool names that require the sandbox container to be running
     private var sandboxToolNames: Set<String> = []
@@ -175,11 +172,8 @@ final class ToolRegistry: ObservableObject {
     }
 
     /// Get specs for specific tools by name (ignores enabled state).
-    /// Agent-intercept tools are filtered out — they never appear in the
-    /// schema sent to the model.
     func specs(forTools toolNames: [String]) -> [Tool] {
         return toolNames.compactMap { name in
-            guard !Self.agentInterceptToolNames.contains(name) else { return nil }
             return toolsByName[name]?.asOpenAITool()
         }
     }
@@ -726,7 +720,6 @@ final class ToolRegistry: ObservableObject {
                 builtInNames.contains(tool.name) || runtimeNames.contains(tool.name)
             }
             .filter { !excluded.contains($0.name) }
-            .filter { !Self.agentInterceptToolNames.contains($0.name) }
             .filter { !excludeCapabilityTools || !Self.capabilityToolNames.contains($0.name) }
             .sorted { $0.name < $1.name }
             .map { $0.asOpenAITool() }

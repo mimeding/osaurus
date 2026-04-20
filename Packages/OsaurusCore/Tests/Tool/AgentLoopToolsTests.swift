@@ -134,6 +134,18 @@ struct AgentLoopToolsTests {
         #expect(CompleteTool.validate(summary: "Wrote app.py and ran swift test, 12 passed.") == nil)
     }
 
+    @Test
+    @MainActor
+    func complete_interceptRejectsInvalidSummary() {
+        #expect(ChatSession.validatedCompleteSummary(from: #"{"summary": "done"}"#) == nil)
+        #expect(
+            ChatSession.validatedCompleteSummary(
+                from: #"{"summary": "Updated the loop tool schema and verified with targeted tests."}"#
+            )
+                == "Updated the loop tool schema and verified with targeted tests."
+        )
+    }
+
     // MARK: - clarify
 
     @Test
@@ -148,5 +160,15 @@ struct AgentLoopToolsTests {
     func clarify_rejectsEmptyQuestion() async throws {
         let result = try await ClarifyTool().execute(argumentsJSON: #"{"question": ""}"#)
         #expect(result.contains("non-empty"))
+    }
+
+    @Test
+    @MainActor
+    func clarify_interceptRejectsEmptyQuestion() {
+        #expect(ChatSession.validatedClarifyQuestion(from: #"{"question": ""}"#) == nil)
+        #expect(
+            ChatSession.validatedClarifyQuestion(from: #"{"question": "Use Postgres or SQLite?"}"#)
+                == "Use Postgres or SQLite?"
+        )
     }
 }

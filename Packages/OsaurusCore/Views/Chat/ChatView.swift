@@ -223,6 +223,13 @@ final class ChatSession: ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    static func validatedCompleteSummary(from json: String) -> String? {
+        guard let summary = parseCompleteSummary(from: json),
+            CompleteTool.validate(summary: summary) == nil
+        else { return nil }
+        return summary
+    }
+
     /// Pull `question` out of a `clarify(...)` tool call's JSON body.
     static func parseClarifyQuestion(from json: String) -> String? {
         guard let data = json.data(using: .utf8),
@@ -231,6 +238,10 @@ final class ChatSession: ObservableObject {
         else { return nil }
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func validatedClarifyQuestion(from json: String) -> String? {
+        parseClarifyQuestion(from: json)
     }
 
     /// Apply initial model selection after agentId is set (for cached picker items)
@@ -1387,22 +1398,25 @@ final class ChatSession: ObservableObject {
                             if !isRunActive(runId) { break outer }
 
                             // Agent-loop intercepts: `complete` and `clarify`
-                            // end the iteration loop. `todo` already wrote
-                            // into AgentTodoStore via TaskLocal; the session
-                            // observer mirrors it into the inline UI block.
-                            // Break out of the outer iteration loop so we
-                            // don't keep prompting the model for more.
+                            // end the iteration loop only after their control
+                            // payloads validate. Invalid calls fall through as
+                            // normal tool results so the model can recover on
+                            // the next iteration.
                             if inv.toolName == "complete" {
-                                self.lastCompletionSummary =
-                                    Self.parseCompleteSummary(from: inv.jsonArguments) ?? resultText
-                                self.lastClarifyQuestion = nil
-                                break outer
+                                if let summary = Self.validatedCompleteSummary(from: inv.jsonArguments) {
+                                    self.lastCompletionSummary = summary
+                                    self.lastClarifyQuestion = nil
+                                    break outer
+                                }
+                                self.lastCompletionSummary = nil
                             }
                             if inv.toolName == "clarify" {
-                                self.lastClarifyQuestion =
-                                    Self.parseClarifyQuestion(from: inv.jsonArguments)
-                                self.lastCompletionSummary = nil
-                                break outer
+                                if let question = Self.validatedClarifyQuestion(from: inv.jsonArguments) {
+                                    self.lastClarifyQuestion = question
+                                    self.lastCompletionSummary = nil
+                                    break outer
+                                }
+                                self.lastClarifyQuestion = nil
                             }
 
                             // Hot-load tools injected by capabilities_load or sandbox_plugin_register.

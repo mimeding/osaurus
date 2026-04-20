@@ -568,6 +568,7 @@ public struct SystemPromptComposer: Sendable {
         }
 
         if isManual {
+            add(ToolRegistry.shared.specs(forTools: Array(ToolRegistry.agentLoopControlToolNames)))
             if executionMode.usesSandboxTools {
                 add(filtered(ToolRegistry.shared.sandboxBuiltInSpecs(mode: executionMode)))
             }
