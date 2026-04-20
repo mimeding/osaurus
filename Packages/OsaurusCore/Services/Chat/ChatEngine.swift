@@ -68,6 +68,63 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
     /// Includes assistant `tool_calls` payloads and `tool` role bodies so
     /// tool-heavy sessions don't under-report prompt size in metrics and
     /// downstream budget-adjacent decisions.
+    /// Per-request dispatch context returned by `prepareDispatch`. Folds
+    /// together the resolved `ModelRoute`, the `GenerationParameters` to
+    /// pass to the route's service, and the snapshot of remote services
+    /// fetched off the main actor. Both `streamChat` and `completeChat`
+    /// share this prep step — the only divergence afterwards is whether
+    /// they wrap the output in a stream wrapper or a single response.
+    private struct Dispatch {
+        let route: ModelRoute
+        let params: GenerationParameters
+        let remoteServices: [ModelService]
+    }
+
+    /// Build the shared dispatch context for `streamChat` / `completeChat`.
+    /// Threads the optional `ttftTrace` so non-streaming callers carry the
+    /// same trace as streaming ones (parity fix — `completeChat` used to
+    /// drop the trace).
+    private func prepareDispatch(
+        request: ChatCompletionRequest,
+        trace: TTFTTrace?
+    ) async -> Dispatch {
+        let temperature = request.temperature
+        let maxTokens = request.max_tokens ?? 16384
+        let repPenalty: Float? = {
+            // Map OpenAI penalties (presence/frequency) to a simple
+            // repetition penalty when supplied.
+            if let fp = request.frequency_penalty, fp > 0 { return 1.0 + fp }
+            if let pp = request.presence_penalty, pp > 0 { return 1.0 + pp }
+            return nil
+        }()
+        let params = GenerationParameters(
+            temperature: temperature,
+            maxTokens: maxTokens,
+            topPOverride: request.top_p,
+            repetitionPenalty: repPenalty,
+            modelOptions: request.modelOptions ?? [:],
+            sessionId: request.session_id,
+            cacheHint: request.cache_hint,
+            staticPrefix: request.staticPrefix,
+            ttftTrace: trace
+        )
+
+        let services = self.services
+        // Fetch remote services on the MainActor so routing reflects the
+        // latest connected Bonjour/remote agents per request.
+        trace?.mark("fetch_remote_services")
+        let remoteServices = await MainActor.run {
+            RemoteProviderManager.shared.connectedServices()
+        }
+        trace?.mark("route_resolve")
+        let route = ModelServiceRouter.resolve(
+            requestedModel: request.model,
+            services: services,
+            remoteServices: remoteServices
+        )
+        return Dispatch(route: route, params: params, remoteServices: remoteServices)
+    }
+
     private func estimateInputTokens(_ messages: [ChatMessage]) -> Int {
         let totalChars = messages.reduce(0) { sum, msg in
             var chars = msg.content?.count ?? 0
@@ -162,41 +219,15 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
             "[Tools] streamChat model=\(request.model) source=\(inferenceSource) count=\(toolNames.count) choice=\(toolChoiceDesc) names=[\(toolNames.joined(separator: ", "))]"
         )
         trace?.set("toolListSent", String(toolNames.count))
+
+        // Pulled out for logging convenience; the actual dispatch values
+        // (incl. these two) live on `dispatch.params`.
         let temperature = request.temperature
         let maxTokens = request.max_tokens ?? 16384
-        let repPenalty: Float? = {
-            // Map OpenAI penalties (presence/frequency) to a simple repetition penalty if provided
-            if let fp = request.frequency_penalty, fp > 0 { return 1.0 + fp }
-            if let pp = request.presence_penalty, pp > 0 { return 1.0 + pp }
-            return nil
-        }()
-        let params = GenerationParameters(
-            temperature: temperature,
-            maxTokens: maxTokens,
-            topPOverride: request.top_p,
-            repetitionPenalty: repPenalty,
-            modelOptions: request.modelOptions ?? [:],
-            sessionId: request.session_id,
-            cacheHint: request.cache_hint,
-            staticPrefix: request.staticPrefix,
-            ttftTrace: trace
-        )
 
-        // Candidate services and installed models (injected for testability)
-        let services = self.services
-
-        // Fetch current remote services from MainActor at request time so routing always
-        // reflects the latest connected Bonjour/remote agents without requiring a new engine.
-        trace?.mark("fetch_remote_services")
-        let remoteServices = await MainActor.run { RemoteProviderManager.shared.connectedServices() }
-        trace?.mark("route_resolve")
-        debugLog("[ChatEngine] streamChat: remoteServices=\(remoteServices.count), routing model=\(request.model)")
-
-        let route = ModelServiceRouter.resolve(
-            requestedModel: request.model,
-            services: services,
-            remoteServices: remoteServices
-        )
+        let dispatch = await prepareDispatch(request: request, trace: trace)
+        let params = dispatch.params
+        let route = dispatch.route
         debugLog("[ChatEngine] streamChat: route=\(route)")
 
         switch route {
@@ -392,32 +423,12 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
         let inputTokens = estimateInputTokens(messages)
         let temperature = request.temperature
         let maxTokens = request.max_tokens ?? 16384
-        let repPenalty2: Float? = {
-            if let fp = request.frequency_penalty, fp > 0 { return 1.0 + fp }
-            if let pp = request.presence_penalty, pp > 0 { return 1.0 + pp }
-            return nil
-        }()
-        let params = GenerationParameters(
-            temperature: temperature,
-            maxTokens: maxTokens,
-            topPOverride: request.top_p,
-            repetitionPenalty: repPenalty2,
-            modelOptions: request.modelOptions ?? [:],
-            sessionId: request.session_id,
-            cacheHint: request.cache_hint,
-            staticPrefix: request.staticPrefix
-        )
-
-        let services = self.services
-
-        // Fetch current remote services from MainActor at request time.
-        let remoteServices = await MainActor.run { RemoteProviderManager.shared.connectedServices() }
-
-        let route = ModelServiceRouter.resolve(
-            requestedModel: request.model,
-            services: services,
-            remoteServices: remoteServices
-        )
+        // Carry the caller's `ttftTrace` through to non-streaming requests
+        // for parity with `streamChat` — useful when an HTTP route runs the
+        // same `request.ttftTrace` across both code paths.
+        let dispatch = await prepareDispatch(request: request, trace: request.ttftTrace)
+        let params = dispatch.params
+        let route = dispatch.route
 
         let created = Int(Date().timeIntervalSince1970)
         let responseId =

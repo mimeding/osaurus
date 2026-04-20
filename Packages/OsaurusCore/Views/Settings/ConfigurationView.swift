@@ -444,8 +444,6 @@ struct ConfigurationView: View {
                             "Inference",
                             "Sampling",
                             "Top P",
-                            "KV Cache",
-                            "Max KV",
                             "CPU",
                             "Memory"
                         ) {

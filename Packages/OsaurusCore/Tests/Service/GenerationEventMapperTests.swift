@@ -122,6 +122,54 @@ struct GenerationEventMapperTests {
         #expect(texts == ["text"])
     }
 
+    @Test func stop_buffer_handles_3_chunk_split() async throws {
+        // Stop sequence "o STOP" straddles three small chunks. The mapper
+        // must hold back the trailing tail across each `.chunk` until the
+        // full match assembles in the buffer.
+        let events: [Generation] = [
+            .chunk("he"),
+            .chunk("ll"),
+            .chunk("o STOP rest"),
+        ]
+        let out = try await collect(events: events, stopSequences: ["o STOP"])
+        var assembled = ""
+        for ev in out {
+            if case .tokens(let s) = ev { assembled += s }
+        }
+        #expect(assembled == "hell")
+    }
+
+    @Test func stop_buffer_picks_earliest_among_multiple_stops() async throws {
+        // Two stop sequences of different lengths both appear in one
+        // chunk. The mapper must cut at the EARLIEST match so a later
+        // (potentially shorter) stop doesn't preempt an earlier one.
+        let events: [Generation] = [
+            .chunk("hello END world FIN done")
+        ]
+        let out = try await collect(events: events, stopSequences: ["FIN", "END"])
+        var assembled = ""
+        for ev in out {
+            if case .tokens(let s) = ev { assembled += s }
+        }
+        #expect(assembled == "hello ")
+    }
+
+    @Test func stop_buffer_passthrough_when_empty_list() async throws {
+        // No stop sequences -> every chunk forwards verbatim, no tail
+        // hold-back, no truncation.
+        let events: [Generation] = [
+            .chunk("alpha "),
+            .chunk("beta "),
+            .chunk("gamma"),
+        ]
+        let out = try await collect(events: events, stopSequences: [])
+        var assembled = ""
+        for ev in out {
+            if case .tokens(let s) = ev { assembled += s }
+        }
+        #expect(assembled == "alpha beta gamma")
+    }
+
     @Test func toolCall_serialization_failure_emits_error_envelope() async throws {
         // `JSONSerialization` rejects non-finite Doubles unless
         // `.fragmentsAllowed` is passed. Feed a `Double.infinity`

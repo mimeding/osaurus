@@ -184,7 +184,11 @@ actor ModelRuntime {
         currentModelName = nil
         cachedConfig = nil
 
-        Memory.cacheLimit = 0
+        // `clearAll` empties `modelCache`, so `mlxCacheLimit()` returns 0
+        // anyway — but route through the shared helper so the policy stays
+        // in one place if the heuristic ever picks a non-zero floor for
+        // the idle case.
+        Memory.cacheLimit = mlxCacheLimit()
         Stream.gpu.synchronize()
         Memory.clearCache()
     }
@@ -504,6 +508,19 @@ actor ModelRuntime {
 
     // MARK: - New message-based (OpenAI ChatMessage) APIs
 
+    /// Convert a list of `ServiceToolInvocation`s into the throw shape
+    /// `respondWithTools` / `streamWithTools` clients expect: nothing for an
+    /// empty list, the single invocation directly for one (backwards
+    /// compatibility with consumers that catch `ServiceToolInvocation`),
+    /// and a `ServiceToolInvocations` batch for two or more.
+    private static func throwIfTools(_ invs: [ServiceToolInvocation]) throws {
+        if invs.count == 1 {
+            throw invs[0]
+        } else if !invs.isEmpty {
+            throw ServiceToolInvocations(invocations: invs)
+        }
+    }
+
     func respondWithTools(
         messages: [ChatMessage],
         parameters: GenerationParameters,
@@ -545,16 +562,7 @@ actor ModelRuntime {
                 break
             }
         }
-        if pendingTools.count == 1 {
-            // Backward compat: callers that only handle one-at-a-time tool
-            // calls (RemoteProvider streaming, OpenAI provider) still see
-            // the familiar single-throw shape. The batch type is reserved
-            // for genuinely parallel multi-tool completions.
-            throw pendingTools[0]
-        }
-        if !pendingTools.isEmpty {
-            throw ServiceToolInvocations(invocations: pendingTools)
-        }
+        try Self.throwIfTools(pendingTools)
         return accumulated
     }
 
@@ -612,30 +620,25 @@ actor ModelRuntime {
                         )
                     }
                 }
-                if pendingTools.isEmpty {
+                do {
+                    try Self.throwIfTools(pendingTools)
                     continuation.finish()
-                } else if pendingTools.count == 1 {
-                    // Backward compat: single-tool completions still throw
-                    // the familiar single-invocation shape so existing
-                    // consumers (ChatView, RemoteProvider) need no changes.
-                    continuation.finish(throwing: pendingTools[0])
-                } else {
-                    continuation.finish(
-                        throwing: ServiceToolInvocations(invocations: pendingTools)
-                    )
+                } catch {
+                    continuation.finish(throwing: error)
                 }
             } catch {
                 if Task.isCancelled {
                     continuation.finish()
-                } else if pendingTools.count == 1 {
-                    // Single tool already parsed before the failure.
-                    continuation.finish(throwing: pendingTools[0])
                 } else if !pendingTools.isEmpty {
-                    // Multi-tool completion that failed mid-stream — surface
-                    // the batch so the caller can still execute what we got.
-                    continuation.finish(
-                        throwing: ServiceToolInvocations(invocations: pendingTools)
-                    )
+                    // Mid-stream failure with parsed tools — surface them
+                    // so the caller can still execute what we got. The
+                    // upstream error is swallowed in this branch by
+                    // design (parity with the previous behaviour).
+                    do {
+                        try Self.throwIfTools(pendingTools)
+                    } catch let surfaced {
+                        continuation.finish(throwing: surfaced)
+                    }
                 } else {
                     continuation.finish(throwing: error)
                 }

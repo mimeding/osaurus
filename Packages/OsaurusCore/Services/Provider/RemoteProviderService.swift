@@ -344,13 +344,9 @@ public actor RemoteProviderService: ToolCapableService {
                                                     }
                                                 case .functionCall(let funcCall):
                                                     let idx = accumulatedToolCalls.count
-                                                    let argsData = try? JSONSerialization.data(
-                                                        withJSONObject: (funcCall.args ?? [:]).mapValues { $0.value }
-                                                    )
-                                                    let argsString =
-                                                        argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                                                    let argsString = Self.geminiArgsJSON(from: funcCall.args)
                                                     accumulatedToolCalls[idx] = (
-                                                        id: "gemini-\(UUID().uuidString.prefix(8))",
+                                                        id: Self.geminiToolCallId(),
                                                         name: funcCall.name,
                                                         args: argsString,
                                                         thoughtSignature: funcCall.thoughtSignature
@@ -926,13 +922,9 @@ public actor RemoteProviderService: ToolCapableService {
                                                     }
                                                 case .functionCall(let funcCall):
                                                     let idx = accumulatedToolCalls.count
-                                                    let argsData = try? JSONSerialization.data(
-                                                        withJSONObject: (funcCall.args ?? [:]).mapValues { $0.value }
-                                                    )
-                                                    let argsString =
-                                                        argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                                                    let argsString = Self.geminiArgsJSON(from: funcCall.args)
                                                     accumulatedToolCalls[idx] = (
-                                                        id: "gemini-\(UUID().uuidString.prefix(8))",
+                                                        id: Self.geminiToolCallId(),
                                                         name: funcCall.name,
                                                         args: argsString,
                                                         thoughtSignature: funcCall.thoughtSignature
@@ -1358,6 +1350,26 @@ public actor RemoteProviderService: ToolCapableService {
         }
     }
 
+    /// Serialise Gemini's `functionCall.args` (`[String: AnyCodableValue]`)
+    /// into a compact JSON string. Centralised because the same five-line
+    /// extraction repeats at every Gemini parse site (the two SSE
+    /// producers and the one-shot response parser).
+    private static func geminiArgsJSON(from args: [String: AnyCodableValue]?) -> String {
+        let dict = (args ?? [:]).mapValues { $0.value }
+        if let data = try? JSONSerialization.data(withJSONObject: dict),
+            let s = String(data: data, encoding: .utf8)
+        {
+            return s
+        }
+        return "{}"
+    }
+
+    /// Synthetic tool-call id Gemini doesn't provide one for. Same shape
+    /// (`gemini-XXXXXXXX`) as the inline call sites used to construct.
+    private static func geminiToolCallId() -> String {
+        "gemini-\(UUID().uuidString.prefix(8))"
+    }
+
     /// Creates a `ServiceToolInvocation` from the first accumulated tool call entry,
     /// validating the JSON arguments. Returns `nil` if there are no accumulated calls
     /// or the first entry has no name.
@@ -1591,15 +1603,10 @@ public actor RemoteProviderService: ToolCapableService {
                         case .inlineData(let imageData):
                             continuation.yield(Self.imageMarkdown(imageData, thoughtSignature: part.thoughtSignature))
                         case .functionCall(let funcCall):
-                            let argsData = try? JSONSerialization.data(
-                                withJSONObject: (funcCall.args ?? [:]).mapValues { $0.value }
-                            )
-                            let argsString =
-                                argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                             pendingToolCall = ServiceToolInvocation(
                                 toolName: funcCall.name,
-                                jsonArguments: argsString,
-                                toolCallId: "gemini-\(UUID().uuidString.prefix(8))",
+                                jsonArguments: Self.geminiArgsJSON(from: funcCall.args),
+                                toolCallId: Self.geminiToolCallId(),
                                 geminiThoughtSignature: funcCall.thoughtSignature
                             )
                         case .functionResponse:
@@ -1731,16 +1738,14 @@ public actor RemoteProviderService: ToolCapableService {
         case .anthropic:
             let anthropicRequest = request.toAnthropicRequest()
             bodyData = try encoder.encode(anthropicRequest)
-        case .openaiLegacy:
-            bodyData = try encoder.encode(request)
         case .openResponses:
             let openResponsesRequest = request.toOpenResponsesRequest()
             bodyData = try encoder.encode(openResponsesRequest)
         case .gemini:
             let geminiRequest = request.toGeminiRequest()
             bodyData = try encoder.encode(geminiRequest)
-        case .osaurus:
-            // Native Osaurus agent uses OpenAI-compatible request format
+        case .openaiLegacy, .osaurus:
+            // Both providers consume the unmodified OpenAI-compatible body.
             bodyData = try encoder.encode(request)
         }
         urlRequest.httpBody = bodyData
@@ -1825,15 +1830,14 @@ public actor RemoteProviderService: ToolCapableService {
                     case .text(let text):
                         textContent += Self.encodeTextWithSignature(text, signature: part.thoughtSignature)
                     case .functionCall(let funcCall):
-                        let argsData = try? JSONSerialization.data(
-                            withJSONObject: (funcCall.args ?? [:]).mapValues { $0.value }
-                        )
-                        let argsString = argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                         toolCalls.append(
                             ToolCall(
-                                id: "gemini-\(UUID().uuidString.prefix(8))",
+                                id: Self.geminiToolCallId(),
                                 type: "function",
-                                function: ToolCallFunction(name: funcCall.name, arguments: argsString),
+                                function: ToolCallFunction(
+                                    name: funcCall.name,
+                                    arguments: Self.geminiArgsJSON(from: funcCall.args)
+                                ),
                                 geminiThoughtSignature: funcCall.thoughtSignature
                             )
                         )

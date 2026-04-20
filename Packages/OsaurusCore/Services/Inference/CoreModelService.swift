@@ -53,11 +53,6 @@ public actor CoreModelService {
     ///   - maxTokens: Maximum response tokens (default 2048).
     ///   - timeout: Maximum wall-clock seconds for the call (default 60).
     /// - Returns: The model's text response.
-    ///
-    /// `priority` is no longer plumbed through to the runtime — vmlx-swift-lm's
-    /// `BatchEngine` is the single MLX entry point and serializes work
-    /// inside its own actor loop. Callers can still pass a priority for
-    /// future use but it is currently informational only.
     public func generate(
         prompt: String,
         systemPrompt: String? = nil,
