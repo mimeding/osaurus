@@ -2736,105 +2736,120 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         )
                     }
 
-                    let stream = try await chatEngine.streamChat(request: enrichedReq)
-                    for try await delta in stream {
-                        if StreamingToolHint.isSentinel(delta) { continue }
+                    var toolCallRequests: [InferenceToolCallRecord] = []
+                    let stream = try await chatEngine.streamInferenceEvents(request: enrichedReq)
+                    for try await event in stream {
+                        switch event {
+                        case .textDelta(let delta):
+                            hop {
+                                writerBound.value.writeContent(
+                                    delta,
+                                    model: model,
+                                    responseId: responseId,
+                                    created: created,
+                                    context: ctx.value
+                                )
+                            }
+                        case .toolCallRequested(let request):
+                            toolCallRequests.append(request)
+                        case .toolCallsRequested(let requests):
+                            toolCallRequests.append(contentsOf: requests)
+                        case .toolCallStarted, .toolCallArgumentsDelta, .stats:
+                            continue
+                        }
+                    }
+
+                    if !toolCallRequests.isEmpty {
+                        let chunkSize = 1024
+                        var toolLogs: [ToolCallLog] = []
+
+                        for (index, request) in toolCallRequests.enumerated() {
+                            let callId: String
+                            if let preservedId = request.toolCallId, !preservedId.isEmpty {
+                                callId = preservedId
+                            } else {
+                                let raw = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                                callId = "call_" + String(raw.prefix(24))
+                            }
+                            let args = request.argumentsJSON
+                            hop {
+                                writerBound.value.writeToolCallStart(
+                                    callId: callId,
+                                    functionName: request.name,
+                                    index: index,
+                                    model: model,
+                                    responseId: responseId,
+                                    created: created,
+                                    context: ctx.value
+                                )
+                            }
+                            var i = args.startIndex
+                            while i < args.endIndex {
+                                let next =
+                                    args.index(i, offsetBy: chunkSize, limitedBy: args.endIndex) ?? args.endIndex
+                                let chunk = String(args[i ..< next])
+                                hop {
+                                    writerBound.value.writeToolCallArgumentsDelta(
+                                        callId: callId,
+                                        index: index,
+                                        argumentsChunk: chunk,
+                                        model: model,
+                                        responseId: responseId,
+                                        created: created,
+                                        context: ctx.value
+                                    )
+                                }
+                                i = next
+                            }
+                            toolLogs.append(ToolCallLog(name: request.name, arguments: request.argumentsJSON))
+                        }
+
                         hop {
-                            writerBound.value.writeContent(
-                                delta,
+                            writerBound.value.writeFinishWithReason(
+                                "tool_calls",
                                 model: model,
                                 responseId: responseId,
                                 created: created,
                                 context: ctx.value
                             )
+                            writerBound.value.writeEnd(ctx.value)
                         }
-                    }
-                    hop {
-                        writerBound.value.writeFinish(
-                            model,
-                            responseId: responseId,
-                            created: created,
-                            context: ctx.value
+                        logSelf.logRequest(
+                            method: "POST",
+                            path: "/chat/completions",
+                            userAgent: logUserAgent,
+                            requestBody: logRequestBody,
+                            responseStatus: 200,
+                            startTime: logStartTime,
+                            model: logModel,
+                            toolCalls: toolLogs,
+                            temperature: logTemperature,
+                            maxTokens: logMaxTokens,
+                            finishReason: .toolCalls
                         )
-                        writerBound.value.writeEnd(ctx.value)
-                    }
-                    logSelf.logRequest(
-                        method: "POST",
-                        path: "/chat/completions",
-                        userAgent: logUserAgent,
-                        requestBody: logRequestBody,
-                        responseStatus: 200,
-                        startTime: logStartTime,
-                        model: logModel,
-                        temperature: logTemperature,
-                        maxTokens: logMaxTokens,
-                        finishReason: .stop
-                    )
-                } catch let inv as ServiceToolInvocation {
-                    // Translate tool invocation to OpenAI-style streaming tool_calls deltas
-                    // Use preserved tool call ID from stream if available
-                    let callId: String
-                    if let preservedId = inv.toolCallId, !preservedId.isEmpty {
-                        callId = preservedId
                     } else {
-                        let raw = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-                        callId = "call_" + String(raw.prefix(24))
-                    }
-                    let args = inv.jsonArguments
-                    let chunkSize = 1024
-                    hop {
-                        writerBound.value.writeToolCallStart(
-                            callId: callId,
-                            functionName: inv.toolName,
-                            index: 0,
-                            model: model,
-                            responseId: responseId,
-                            created: created,
-                            context: ctx.value
-                        )
-                    }
-                    var i = args.startIndex
-                    while i < args.endIndex {
-                        let next = args.index(i, offsetBy: chunkSize, limitedBy: args.endIndex) ?? args.endIndex
-                        let chunk = String(args[i ..< next])
                         hop {
-                            writerBound.value.writeToolCallArgumentsDelta(
-                                callId: callId,
-                                index: 0,
-                                argumentsChunk: chunk,
-                                model: model,
+                            writerBound.value.writeFinish(
+                                model,
                                 responseId: responseId,
                                 created: created,
                                 context: ctx.value
                             )
+                            writerBound.value.writeEnd(ctx.value)
                         }
-                        i = next
-                    }
-                    hop {
-                        writerBound.value.writeFinishWithReason(
-                            "tool_calls",
-                            model: model,
-                            responseId: responseId,
-                            created: created,
-                            context: ctx.value
+                        logSelf.logRequest(
+                            method: "POST",
+                            path: "/chat/completions",
+                            userAgent: logUserAgent,
+                            requestBody: logRequestBody,
+                            responseStatus: 200,
+                            startTime: logStartTime,
+                            model: logModel,
+                            temperature: logTemperature,
+                            maxTokens: logMaxTokens,
+                            finishReason: .stop
                         )
-                        writerBound.value.writeEnd(ctx.value)
                     }
-                    // Log tool call
-                    let toolLog = ToolCallLog(name: inv.toolName, arguments: inv.jsonArguments)
-                    logSelf.logRequest(
-                        method: "POST",
-                        path: "/chat/completions",
-                        userAgent: logUserAgent,
-                        requestBody: logRequestBody,
-                        responseStatus: 200,
-                        startTime: logStartTime,
-                        model: logModel,
-                        toolCalls: [toolLog],
-                        temperature: logTemperature,
-                        maxTokens: logMaxTokens,
-                        finishReason: .toolCalls
-                    )
                 } catch {
                     hop {
                         writerBound.value.writeError(error.localizedDescription, context: ctx.value)
