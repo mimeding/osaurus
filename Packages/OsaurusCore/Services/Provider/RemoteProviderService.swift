@@ -1801,6 +1801,12 @@ public actor RemoteProviderService: ToolCapableService {
                             function: ToolCallFunction(name: funcCall.name, arguments: funcCall.arguments)
                         )
                     )
+                case .reasoning:
+                    // Reasoning summary text is forwarded via
+                    // `StreamingReasoningHint` on the streaming path; in
+                    // the non-streaming aggregation we drop it (no
+                    // `reasoning_content` field on `ChatMessage`).
+                    continue
                 }
             }
 

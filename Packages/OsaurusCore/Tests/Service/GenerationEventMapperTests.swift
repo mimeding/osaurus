@@ -52,9 +52,14 @@ struct GenerationEventMapperTests {
     }
 
     @Test func toolCall_emits_serialized_arguments() async throws {
-        let args: [String: MLXLMCommon.JSONValue] = [
-            "q": .string("hi"),
-            "n": .int(3),
+        // ToolCall.Function only exposes
+        //   `init(name:, arguments: [String: any Sendable])`
+        // which internally maps each value through `JSONValue.from(_:)`.
+        // Pass primitive Sendable values so the conversion picks the
+        // matching JSONValue case (string/int/...).
+        let args: [String: any Sendable] = [
+            "q": "hi",
+            "n": 3,
         ]
         let call = MLXLMCommon.ToolCall(
             function: MLXLMCommon.ToolCall.Function(
@@ -115,5 +120,31 @@ struct GenerationEventMapperTests {
             if case .tokens(let s) = $0 { return s } else { return nil }
         }
         #expect(texts == ["text"])
+    }
+
+    @Test func toolCall_serialization_failure_emits_error_envelope() async throws {
+        // `JSONSerialization` rejects non-finite Doubles unless
+        // `.fragmentsAllowed` is passed. Feed a `Double.infinity`
+        // primitive so `JSONValue.from(_:)` produces `.double(.infinity)`
+        // and the mapper's `serializeArguments` hits its error-envelope
+        // branch — asserting the structured error reaches the emitted
+        // `argsJSON` instead of the silent `{}` fallback we used to ship.
+        let args: [String: any Sendable] = [
+            "value": Double.infinity
+        ]
+        let call = MLXLMCommon.ToolCall(
+            function: MLXLMCommon.ToolCall.Function(
+                name: "broken",
+                arguments: args
+            )
+        )
+        let out = try await collect(events: [.toolCall(call)])
+        guard case .toolInvocation(let name, let argsJSON) = out.first else {
+            Issue.record("expected toolInvocation, got \(String(describing: out.first))")
+            return
+        }
+        #expect(name == "broken")
+        #expect(argsJSON.contains("\"_error\":\"argument_serialization_failed\""))
+        #expect(argsJSON.contains("\"_tool\":\"broken\""))
     }
 }

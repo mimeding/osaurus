@@ -28,10 +28,6 @@ final class StreamingDeltaProcessor {
     private var turn: ChatTurn
     private let onSync: (() -> Void)?
 
-    private let modelId: String
-    private let modelOptions: [String: ModelOptionValue]
-    private var middleware: StreamingMiddleware?
-
     private var deltaBuffer = ""
 
     /// Fallback timer — safety net for push-based consumers where no more
@@ -57,15 +53,10 @@ final class StreamingDeltaProcessor {
 
     init(
         turn: ChatTurn,
-        modelId: String = "",
-        modelOptions: [String: ModelOptionValue] = [:],
         onSync: (() -> Void)? = nil
     ) {
         self.turn = turn
-        self.modelId = modelId
-        self.modelOptions = modelOptions
         self.onSync = onSync
-        self.middleware = StreamingMiddlewareResolver.resolve(for: modelId, modelOptions: modelOptions)
     }
 
     // MARK: - Public API
@@ -74,10 +65,7 @@ final class StreamingDeltaProcessor {
     /// inline (O(1) integer comparisons), and flushes if thresholds are met.
     func receiveDelta(_ delta: String) {
         guard !delta.isEmpty else { return }
-
-        let processed = middleware?.process(delta) ?? delta
-        guard !processed.isEmpty else { return }
-        deltaBuffer += processed
+        deltaBuffer += delta
 
         let now = Date()
         let timeSinceFlush = now.timeIntervalSince(lastFlushTime) * 1000
@@ -157,7 +145,6 @@ final class StreamingDeltaProcessor {
         lastSyncTime = Date()
         lastFlushTime = Date()
         syncCount = 0
-        middleware = StreamingMiddlewareResolver.resolve(for: modelId, modelOptions: modelOptions)
     }
 
     // MARK: - Private

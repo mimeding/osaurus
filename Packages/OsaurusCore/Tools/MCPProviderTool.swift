@@ -118,9 +118,10 @@ extension MCPProviderTool {
     ///
     /// Empty / `{}` inputs are accepted as a legitimate "no arguments" call.
     /// Anything else that fails to parse as a JSON object — malformed JSON,
-    /// non-object payloads, or the upstream serialization-error envelope from
-    /// `StreamAccumulator` — throws so the model receives a structured error
-    /// instead of silently running with no arguments.
+    /// non-object payloads, or the upstream serialization-error envelope
+    /// emitted by `GenerationEventMapper.serializeArguments` when a tool
+    /// call's arguments fail to JSON-encode — throws so the model receives
+    /// a structured error instead of silently running with no arguments.
     static func convertArgumentsToMCPValues(_ argumentsJSON: String) throws -> [String: MCP.Value] {
         let trimmed = argumentsJSON.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed == "{}" { return [:] }

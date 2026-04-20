@@ -326,7 +326,7 @@ Yet **64 of 70 test files use `@testable import OsaurusCore`**, so even tiny tes
 
 ## Related Documentation
 
-- [Inference Runtime](INFERENCE_RUNTIME.md) — Scheduler, model leases, BatchEngine, and feature flags for tuning the runtime without rebuilding
+- [Inference Runtime](INFERENCE_RUNTIME.md) — Single MLX path through vmlx-swift-lm's BatchEngine, model leases, and the one max-batch-size knob
 - [OpenAI API Guide](OpenAI_API_GUIDE.md) — API usage and examples
 - [FEATURES.md](FEATURES.md) — Feature inventory
 - [README](../README.md) — Quick start guide

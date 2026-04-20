@@ -1044,6 +1044,17 @@ final class PluginHostContext: @unchecked Sendable {
                     var iterContent = ""
 
                     for try await delta in stream {
+                        // Reasoning sentinel must be decoded BEFORE the
+                        // generic `isSentinel` filter, otherwise reasoning
+                        // text gets dropped together with tool/stats hints.
+                        // We forward reasoning to plugins on the OpenAI
+                        // extended `reasoning_content` field of the chunk
+                        // delta — plugins that ignore the field continue
+                        // to work unchanged.
+                        if let reasoning = StreamingReasoningHint.decode(delta) {
+                            emit(Self.chunkPayload(id: cid, delta: ["reasoning_content": reasoning]))
+                            continue
+                        }
                         if StreamingToolHint.isSentinel(delta) { continue }
                         iterContent += delta
                         lastContent += delta

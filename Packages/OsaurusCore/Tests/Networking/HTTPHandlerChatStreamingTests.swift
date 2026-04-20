@@ -152,6 +152,156 @@ struct HTTPHandlerChatStreamingTests {
         #expect(body.contains("\"function\":{\"name\":\"get_weather\""))
         #expect(body.contains("\"finish_reason\":\"tool_calls\""))
     }
+    @Test func sse_path_emits_reasoning_content_field() async throws {
+        // Engine that yields a reasoning sentinel followed by a content
+        // chunk. The HTTP SSE handler must decode the sentinel BEFORE
+        // the generic `StreamingToolHint.isSentinel` filter, otherwise
+        // the reasoning silently disappears.
+        struct ReasoningEngine: ChatEngineProtocol {
+            func streamChat(request: ChatCompletionRequest) async throws -> AsyncThrowingStream<
+                String, Error
+            > {
+                AsyncThrowingStream { continuation in
+                    continuation.yield(StreamingReasoningHint.encode("thinking..."))
+                    continuation.yield("hello")
+                    continuation.finish()
+                }
+            }
+            func completeChat(request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
+                fatalError("not used")
+            }
+        }
+
+        let server = try await startTestServer(with: ReasoningEngine())
+        defer { Task { await server.shutdown() } }
+
+        var request = URLRequest(
+            url: URL(string: "http://\(server.host):\(server.port)/chat/completions")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.authenticate()
+        let reqBody = ChatCompletionRequest(
+            model: "fake",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            temperature: 0.5,
+            max_tokens: 16,
+            stream: true,
+            top_p: nil,
+            frequency_penalty: nil,
+            presence_penalty: nil,
+            stop: nil,
+            n: nil,
+            tools: nil,
+            tool_choice: nil,
+            session_id: nil
+        )
+        request.httpBody = try JSONEncoder().encode(reqBody)
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        let body = String(decoding: data, as: UTF8.self)
+        #expect(status == 200)
+        // Reasoning text appears on the OpenAI extended `reasoning_content`
+        // field, not on the regular `content` field.
+        #expect(body.contains("\"reasoning_content\":\"thinking...\""))
+        // The follow-up content chunk still rides on `content`.
+        #expect(body.contains("\"content\":\"hello\""))
+        // The sentinel itself never makes it onto the wire.
+        #expect(!body.contains("\u{FFFE}"))
+    }
+
+    @Test func sse_path_emits_multi_tool_batch_deltas() async throws {
+        // Engine that throws ServiceToolInvocations carrying two
+        // invocations. The HTTP SSE handler must emit one `tool_calls`
+        // delta per invocation followed by a single shared
+        // `finish_reason: "tool_calls"`.
+        struct MultiToolEngine: ChatEngineProtocol {
+            func streamChat(request: ChatCompletionRequest) async throws -> AsyncThrowingStream<
+                String, Error
+            > {
+                AsyncThrowingStream { continuation in
+                    continuation.finish(
+                        throwing: ServiceToolInvocations(
+                            invocations: [
+                                ServiceToolInvocation(
+                                    toolName: "get_weather",
+                                    jsonArguments: "{\"city\":\"SF\"}"
+                                ),
+                                ServiceToolInvocation(
+                                    toolName: "get_time",
+                                    jsonArguments: "{\"tz\":\"PT\"}"
+                                ),
+                            ]
+                        )
+                    )
+                }
+            }
+            func completeChat(request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
+                fatalError("not used")
+            }
+        }
+
+        let server = try await startTestServer(with: MultiToolEngine())
+        defer { Task { await server.shutdown() } }
+
+        var request = URLRequest(
+            url: URL(string: "http://\(server.host):\(server.port)/chat/completions")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.authenticate()
+        let reqBody = ChatCompletionRequest(
+            model: "fake",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            temperature: 0.5,
+            max_tokens: 16,
+            stream: true,
+            top_p: nil,
+            frequency_penalty: nil,
+            presence_penalty: nil,
+            stop: nil,
+            n: nil,
+            tools: [
+                Tool(
+                    type: "function",
+                    function: ToolFunction(
+                        name: "get_weather",
+                        description: nil,
+                        parameters: .object(["city": .string("")])
+                    )
+                ),
+                Tool(
+                    type: "function",
+                    function: ToolFunction(
+                        name: "get_time",
+                        description: nil,
+                        parameters: .object(["tz": .string("")])
+                    )
+                ),
+            ],
+            tool_choice: .auto,
+            session_id: nil
+        )
+        request.httpBody = try JSONEncoder().encode(reqBody)
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        let body = String(decoding: data, as: UTF8.self)
+        #expect(status == 200)
+        // Both function names must surface, on different `tool_calls.index` slots.
+        #expect(body.contains("\"function\":{\"name\":\"get_weather\""))
+        #expect(body.contains("\"function\":{\"name\":\"get_time\""))
+        #expect(body.contains("\"index\":0"))
+        #expect(body.contains("\"index\":1"))
+        // A single shared finish_reason closes the response.
+        #expect(body.contains("\"finish_reason\":\"tool_calls\""))
+        let finishCount = body.components(separatedBy: "\"finish_reason\":\"tool_calls\"").count - 1
+        #expect(finishCount == 1)
+    }
+
     @Test func shutdown_during_active_stream_does_not_crash() async throws {
         struct SlowStreamEngine: ChatEngineProtocol {
             func streamChat(request: ChatCompletionRequest) async throws -> AsyncThrowingStream<

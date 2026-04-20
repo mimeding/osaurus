@@ -50,9 +50,10 @@ struct MCPArgumentsErrorTests {
         }
     }
 
-    /// When the upstream argument-serialization fails, the StreamAccumulator
-    /// emits an error envelope. MCP must surface that as a tool error rather
-    /// than calling the tool with the `_error` field as an argument.
+    /// When the upstream argument-serialization fails,
+    /// `GenerationEventMapper.serializeArguments` emits an error envelope.
+    /// MCP must surface that as a tool error rather than calling the tool
+    /// with the `_error` field as an argument.
     @Test func upstreamSerializationFailureIsSurfacedAsError() throws {
         let envelope = "{\"_error\":\"argument_serialization_failed\",\"_tool\":\"foo\"}"
         do {

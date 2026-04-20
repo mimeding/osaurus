@@ -151,33 +151,26 @@ Canonical reference for all Osaurus features, their status, and documentation.
 **Components:**
 
 - `Services/Inference/MLXService.swift` — MLX model loading, warm-up orchestration
-- `Services/ModelRuntime/` — Generation engine, streaming, KV cache management, tool detection
-- `Services/ModelRuntime/KVCacheStore.swift` — Tiered KV cache (hot RAM + cold SSD) with LRU eviction
+- `Services/ModelRuntime/` — Single MLX entry point (`MLXBatchAdapter`) wrapping vmlx-swift-lm's `BatchEngine`, plus the `GenerationEventMapper` bridge to typed runtime events
 - `Services/Inference/ModelService.swift` — Model lifecycle management
 
 **Runtime behavior:**
 
 - **Window-scoped warm-up** — Models are loaded and prefix-cached when a chat window opens, not at app launch. Each window warms its own model independently, using the window's agent context (system prompt, memory, tools) for the prefix cache.
 - **Smart unloading** — When a user switches to a remote model or closes a window, a GC pass checks all open windows and unloads any local model no longer referenced. The warm-up indicator (yellow dot) signals when a model is loading.
-- **GPU memory pinning** — Model weights are pinned in GPU memory via `WiredMemoryTicket` on load to prevent paging during generation, with a budget policy that includes a workspace margin for activations.
-- **Auto-tuned generation** — Prefill step size, max KV cache size, and KV cache quantization bits are automatically selected based on system RAM and model size when not explicitly configured in Settings. User overrides always take precedence.
-- **Tiered KV cache** — Active session caches live in RAM (hot tier). When the memory budget is exceeded, least-recently-used sessions are evicted to SSD as `.safetensors` files and restored on demand. Prefix caches are content-hashed so changes to the system prompt or tools automatically invalidate them.
-- **Error recovery** — If a stale KV cache causes a shape mismatch during generation, the cache is automatically invalidated and the request is retried with a fresh prefill, avoiding a crash.
+- **Continuous batching** — `BatchEngine` shares a single forward pass across overlapping requests for the same model. The default `mlxBatchEngineMaxBatchSize` is `4`; tune with `defaults write ai.osaurus ai.osaurus.scheduler.mlxBatchEngineMaxBatchSize -int 8`.
+- **Library-managed KV cache** — vmlx-swift-lm's `CacheCoordinator` owns KV cache geometry (paged for global attention, rotating for sliding-window, SSM state for Mamba) sized per-model. Multi-turn KV reuse, mediaSalt for VLMs, and sliding-window correctness are all handled inside the engine — osaurus configures only `modelKey`, `diskCacheDir`, and a writability fallback.
 - **Model eviction policy** — Configurable in Settings > Local Inference > Model Management. "Strict (One Model)" keeps only one model loaded (default). "Flexible (Multi Model)" allows concurrent models for high-RAM systems.
 
 **Configuration:**
 
 - Model storage: `~/MLXModels` (override with `OSU_MODELS_DIR`)
 - Default port: `1337` (override with `OSU_PORT`)
-- KV cache SSD storage: `~/.osaurus/cache/kv/`
-- Settings: Top P, Max Context Length, and advanced KV cache quantization options (collapsed by default)
-- Auto-tuned defaults (when not set in Settings):
+- KV cache disk storage: `~/.osaurus/cache/kv/`
+- Settings: Top P, eviction policy, allowed origins.
+- One advanced tunable, exposed via `defaults` only: `ai.osaurus.scheduler.mlxBatchEngineMaxBatchSize` (default `4`, clamped to `[1, 32]`).
 
-| Setting | <24 GB RAM | 24–48 GB | 48–96 GB | 96 GB+ |
-| --------------- | ---------- | -------- | -------- | ------ |
-| Prefill step | 512 | 1024 | 1024 | 2048 |
-| Max KV (tokens) | 8192 | 16384 | 32768 | 65536 |
-| KV quantization | 8-bit when headroom < 16 GB, otherwise off | | | |
+See [INFERENCE_RUNTIME.md](./INFERENCE_RUNTIME.md) for the full runtime architecture.
 
 ---
 

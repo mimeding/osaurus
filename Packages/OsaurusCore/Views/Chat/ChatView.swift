@@ -1198,9 +1198,7 @@ final class ChatSession: ObservableObject {
                         // which `processor.receiveReasoning` routes into the
                         // Think panel. Remote providers feed the same sentinel.
                         var processor = StreamingDeltaProcessor(
-                            turn: assistantTurn,
-                            modelId: selectedModel ?? "default",
-                            modelOptions: activeModelOptions
+                            turn: assistantTurn
                         ) { [weak self] in
                             // rebuildVisibleBlocks mutates @Published properties which already
                             // emit objectWillChange — the extra send() below is redundant.
@@ -1238,9 +1236,7 @@ final class ChatSession: ObservableObject {
                                 turns.append(contentsOf: [toolTurn, newAssistantTurn])
                                 assistantTurn = newAssistantTurn
                                 processor = StreamingDeltaProcessor(
-                                    turn: newAssistantTurn,
-                                    modelId: selectedModel ?? "default",
-                                    modelOptions: activeModelOptions
+                                    turn: newAssistantTurn
                                 ) { [weak self] in self?.rebuildVisibleBlocks() }
                                 rebuildVisibleBlocks()
                                 continue
@@ -1540,9 +1536,7 @@ final class ChatSession: ObservableObject {
                         finalReq.modelOptions = activeModelOptions.isEmpty ? nil : activeModelOptions
 
                         let processor = StreamingDeltaProcessor(
-                            turn: assistantTurn,
-                            modelId: selectedModel ?? "default",
-                            modelOptions: activeModelOptions
+                            turn: assistantTurn
                         ) { [weak self] in
                             self?.rebuildVisibleBlocks()
                         }
