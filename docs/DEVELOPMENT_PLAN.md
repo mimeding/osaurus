@@ -76,6 +76,6 @@ Business rationale: the harness compounds only if local inference remains fast a
 
 Persist state only when it is needed after restart, required by an API caller, needed for audit/undo/security, or impossible to reconstruct from the chat transcript.
 
-Likely candidates are persistent todo history, artifact index metadata, file-operation review history, and machine-readable background task events.
+First target: persist only the latest Agent Loop control state in chat-session metadata: `todo(markdown)`, accepted `complete(summary)`, and accepted `clarify(question)`. Legacy sessions should derive the same state from transcript tool calls where possible. Artifact index metadata, file-operation review history, and machine-readable background task events remain candidates for later PRs only when a concrete restart/API/audit gap requires them.
 
 Business rationale: this keeps the product simpler while preserving the specific durability users and integrations actually need.

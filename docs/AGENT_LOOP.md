@@ -38,7 +38,7 @@ The agent calls `todo` whenever it wants the user to see the plan. Each call **r
 | ---------- | ------ | -------- | ----------------------------------------------------------------------------------------------- |
 | `markdown` | string | Yes      | Markdown checklist. Items begin with `- [ ]` (pending) or `- [x]` / `- [X]` (done). Indentation up to 6 spaces is allowed; lines that don't match are ignored as prose. |
 
-The store is per chat session and surfaced in the chat as a live checklist. Use it for tasks with more than two obvious steps; skip it for trivial work.
+The store is per chat session and surfaced in the chat as a live checklist. The latest checklist is also saved in chat-session metadata so reopening a session after restart restores the visible plan. Use it for tasks with more than two obvious steps; skip it for trivial work.
 
 ### `complete` — end the task with a verified summary
 
@@ -48,7 +48,7 @@ The chat engine intercepts `complete` and ends the loop. The summary becomes a "
 | --------- | ------ | -------- | ------------------------------------------------------------------------------------------------- |
 | `summary` | string | Yes      | What you did + how you verified, in one paragraph (≥ ~30 chars of meaningful prose). Placeholders like `done`, `ok`, `looks good`, `complete`, `finished` are rejected. |
 
-Honesty is preferred: if the agent couldn't finish, it should say so in the summary instead of pretending. The same `validate(summary:)` helper runs both inside the tool and in the chat-engine intercept, so HTTP-API callers get the same gate.
+Honesty is preferred: if the agent couldn't finish, it should say so in the summary instead of pretending. The same `validate(summary:)` helper runs both inside the tool and in the chat-engine intercept, so HTTP-API callers get the same gate. Accepted summaries are saved in chat-session metadata and can be reconstructed from legacy transcripts that only contain the tool call.
 
 ### `clarify` — pause and ask one critical question
 
@@ -58,7 +58,17 @@ The chat engine intercepts `clarify`, surfaces the question as an inline assista
 | ---------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `question` | string | Yes      | A single, concrete question that would change the result if guessed wrong (e.g. "Use Postgres or SQLite?"). Avoid open-ended `what would you like?` phrasing. |
 
-For minor preferences and recoverable choices the agent picks a sensible default and continues; `clarify` is reserved for genuinely blocking ambiguity.
+For minor preferences and recoverable choices the agent picks a sensible default and continues; `clarify` is reserved for genuinely blocking ambiguity. The pending question is saved in chat-session metadata and clears when the user sends the next message.
+
+### Durable loop state
+
+The loop deliberately persists only the small pieces that must survive restart:
+
+- latest `todo(markdown)` checklist
+- latest accepted `complete(summary)` banner
+- latest accepted `clarify(question)` prompt
+
+This lives on the chat session as `agentLoopState`; it is not a separate Work Mode task model. Older sessions without the field derive the same state from transcript tool calls when possible, with user follow-up turns clearing terminal `complete` / `clarify` banners.
 
 ---
 

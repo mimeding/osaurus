@@ -523,12 +523,14 @@ Canonical reference for all Osaurus features, their status, and documentation.
 - `Folder/ExecutionMode.swift` — First-class `.hostFolder | .sandbox | .none` enum + `MemorySourceMode` partitioning
 - `Folder/FileOperation.swift`, `Folder/FileOperationLog.swift` — Per-op log used for undo
 - `Models/Chat/AgentTodo.swift`, `Models/Chat/AgentTodoStore.swift` — Markdown checklist parser + per-session store
+- `Models/Chat/AgentLoopSessionState.swift` — Minimal persisted loop metadata for todo / complete / clarify restoration
 - `Models/Chat/SharedArtifact.swift` — Artifact model surfaced via `share_artifact`
 
 **Features:**
 
 - **Unified loop** — One chat is one task; no separate Agent/Work tab
 - **`todo` / `complete` / `clarify`** — Three minimal-schema tools the chat engine intercepts
+- **Durable loop metadata** — Reopening a chat restores the latest todo, completion banner, or clarification question without a separate Work Mode database
 - **Working folder picker** — Per-chat folder via `FolderContextService`, with security-scoped bookmark persistence
 - **Project-aware tools** — File/coding/git tools registered automatically when a folder is selected; tool kit varies by project type and git status
 - **Sandbox toggle** — Mutually exclusive with the working-folder backend; selecting a folder disables sandbox autonomous exec and vice versa
@@ -577,7 +579,8 @@ Canonical reference for all Osaurus features, their status, and documentation.
 
 - Folder bookmark — UserDefaults (`FolderContextBookmark`)
 - Artifacts — `~/.osaurus/artifacts/<sessionId>/`
-- Per-session todo and file-op log — in-memory keyed by chat session ID
+- Agent loop metadata — `agentLoopState` inside the persisted chat-session JSON; legacy sessions can derive it from transcript tool calls
+- Live todo cache and file-op log — in-memory keyed by chat session ID
 
 See [AGENT_LOOP.md](AGENT_LOOP.md) for the full guide.
 

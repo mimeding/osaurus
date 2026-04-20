@@ -490,6 +490,7 @@ final class ChatSession: ObservableObject {
 
     func reset() {
         stop()
+        let oldTodoSessionId = expectedTodoSessionId
         turns.removeAll()
         input = ""
         pendingAttachments = []
@@ -511,8 +512,7 @@ final class ChatSession: ObservableObject {
         currentTodo = nil
         lastCompletionSummary = nil
         lastClarifyQuestion = nil
-        let oldSid = expectedTodoSessionId
-        Task { await AgentTodoStore.shared.clear(for: oldSid) }
+        Task { await AgentTodoStore.shared.clear(for: oldTodoSessionId) }
         // Keep current agentId - don't reset when creating new chat within same agent
 
         // Clear caches
@@ -562,8 +562,31 @@ final class ChatSession: ObservableObject {
             updatedAt: updatedAt,
             selectedModel: selectedModel,
             turns: turnData,
-            agentId: agentId
+            agentId: agentId,
+            agentLoopState: currentAgentLoopState()
         )
+    }
+
+    private func currentAgentLoopState() -> AgentLoopSessionState? {
+        AgentLoopSessionState(
+            todoMarkdown: currentTodo?.markdown,
+            completionSummary: lastCompletionSummary,
+            clarifyQuestion: lastClarifyQuestion
+        ).nilIfEmpty
+    }
+
+    private func restoreAgentLoopState(_ state: AgentLoopSessionState?) {
+        currentTodo = state?.todoMarkdown.map { AgentTodo.parse($0) }
+        lastCompletionSummary = state?.completionSummary
+        lastClarifyQuestion = state?.clarifyQuestion
+
+        guard let sessionId else { return }
+        let key = sessionStateKey(sessionId)
+        if let markdown = state?.todoMarkdown {
+            Task { await AgentTodoStore.shared.setTodo(markdown: markdown, for: key) }
+        } else {
+            Task { await AgentTodoStore.shared.clear(for: key) }
+        }
     }
 
     /// Save current session state
@@ -603,6 +626,7 @@ final class ChatSession: ObservableObject {
         createdAt = data.createdAt
         updatedAt = data.updatedAt
         agentId = data.agentId
+        restoreAgentLoopState(data.agentLoopState ?? AgentLoopSessionState.derived(from: data.turns))
 
         // Restore saved model if available, otherwise use configured default
         // Don't auto-persist when loading - this is restoring existing state
@@ -1429,13 +1453,19 @@ final class ChatSession: ObservableObject {
                             }
                             if !isRunActive(runId) { break outer }
 
+                            if inv.toolName == "todo",
+                                let markdown = AgentLoopSessionState.todoMarkdown(from: inv.jsonArguments)
+                            {
+                                self.currentTodo = AgentTodo.parse(markdown)
+                            }
+
                             // Agent-loop intercepts: `complete` and `clarify`
                             // end the iteration loop only after their control
                             // payloads validate. Invalid calls fall through as
                             // normal tool results so the model can recover on
                             // the next iteration.
                             if inv.toolName == "complete" {
-                                if let summary = Self.validatedCompleteSummary(from: inv.jsonArguments) {
+                                if let summary = AgentLoopSessionState.completeSummary(from: inv.jsonArguments) {
                                     self.lastCompletionSummary = summary
                                     self.lastClarifyQuestion = nil
                                     break outer
@@ -1443,7 +1473,7 @@ final class ChatSession: ObservableObject {
                                 self.lastCompletionSummary = nil
                             }
                             if inv.toolName == "clarify" {
-                                if let question = Self.validatedClarifyQuestion(from: inv.jsonArguments) {
+                                if let question = AgentLoopSessionState.clarifyQuestion(from: inv.jsonArguments) {
                                     self.lastClarifyQuestion = question
                                     self.lastCompletionSummary = nil
                                     break outer
