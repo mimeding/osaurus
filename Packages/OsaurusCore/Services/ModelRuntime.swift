@@ -297,6 +297,16 @@ actor ModelRuntime {
             )
             let isVLM = await container.isVLM
             let weightsBytes = Self.computeWeightsSizeBytes(at: localURL)
+            if let advisory = MLXRuntimeTuning.wiredMemoryAdvisory(
+                modelBytes: weightsBytes,
+                currentLimitMB: MLXRuntimeTuning.currentWiredLimitMB()
+            ) {
+                genLog.warning(
+                    """
+                    loadContainer: model \(name, privacy: .public) weighs ~\(advisory.recommendedMinimumMB, privacy: .public) MiB but iogpu.wired_limit_mb is \(advisory.currentLimitMB, privacy: .public) MiB; large-model generation may page until the wired-memory limit is raised
+                    """
+                )
+            }
             return SessionHolder(
                 name: name,
                 container: container,

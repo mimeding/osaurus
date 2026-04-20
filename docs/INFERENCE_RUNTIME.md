@@ -64,6 +64,11 @@ osaurus also does not call `CacheCoordinator.setHybrid(_:)`. Per
 OSAURUS-INTEGRATION.md, the engine auto-detects hybrid SSM models on
 first slot admission.
 
+The remaining RAM-aware behavior is advisory only: `MLXRuntimeTuning`
+logs when a local model's weights materially exceed the current
+`iogpu.wired_limit_mb` value. It does not change cache geometry,
+context length, or vmlx-owned runtime thresholds.
+
 ## Concurrency
 
 | Layer | What it protects |
@@ -112,6 +117,7 @@ reasoning gets dropped together with the other sentinels.
 | `GenerationEventMapper.swift` | `Generation` -> `ModelRuntimeEvent` bridge; stop-sequence lookahead; tool-call argument JSON serialization. |
 | `Events.swift` | `ModelRuntimeEvent` enum (`tokens` / `reasoning` / `toolInvocation` / `completionInfo`). |
 | `RuntimeConfig.swift` | Server-side default `topP`. |
+| `MLXRuntimeTuning.swift` | Wired-memory advisory for large local models; no cache geometry overrides. |
 | `InferenceFeatureFlags.swift` | Single user-tunable: `mlxBatchEngineMaxBatchSize`. |
 | `MetalGate.swift` | Embedding-only counter (kept as the canonical hook for any future MLX-vs-CoreML interlock). |
 | `ModelLease.swift` | Per-model refcount; `unload(name)` waits for `count == 0` before freeing buffers. |
@@ -122,5 +128,6 @@ reasoning gets dropped together with the other sentinels.
 |---|---|
 | `MLXBatchAdapterTests` | Max-batch-size flag clamping; registry-shutdown safety. |
 | `GenerationEventMapperTests` | `chunk` -> `tokens`; `toolCall` -> `toolInvocation` JSON serialization (happy path + failure envelope); `info` -> `completionInfo`; cross-chunk stop-sequence cut. |
+| `MLXRuntimeTuningTests` | Wired-memory advisory thresholds. |
 | `StreamingReasoningHintTests` | Sentinel encode/decode round-trip; co-existence with the tool sentinel filter. |
 | `MetalGateTests` | Embedding gate happy paths. |
