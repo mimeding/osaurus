@@ -152,6 +152,7 @@ struct HTTPHandlerChatStreamingTests {
         #expect(body.contains("\"function\":{\"name\":\"get_weather\""))
         #expect(body.contains("\"finish_reason\":\"tool_calls\""))
     }
+
     @Test func sse_path_emits_reasoning_content_field() async throws {
         // Engine that yields a reasoning sentinel followed by a content
         // chunk. The HTTP SSE handler must decode the sentinel BEFORE
@@ -300,6 +301,73 @@ struct HTTPHandlerChatStreamingTests {
         #expect(body.contains("\"finish_reason\":\"tool_calls\""))
         let finishCount = body.components(separatedBy: "\"finish_reason\":\"tool_calls\"").count - 1
         #expect(finishCount == 1)
+    }
+
+    @Test func sse_path_emits_batched_tool_calls_with_indexes() async throws {
+        struct MockBatchedToolCallEngine: ChatEngineProtocol {
+            func streamChat(request: ChatCompletionRequest) async throws -> AsyncThrowingStream<String, Error> {
+                AsyncThrowingStream { continuation in
+                    continuation.finish(
+                        throwing: ServiceToolInvocations(
+                            invocations: [
+                                ServiceToolInvocation(
+                                    toolName: "read_file",
+                                    jsonArguments: #"{"path":"README.md"}"#,
+                                    toolCallId: "call_read"
+                                ),
+                                ServiceToolInvocation(
+                                    toolName: "list_files",
+                                    jsonArguments: #"{"path":"docs"}"#,
+                                    toolCallId: "call_list"
+                                ),
+                            ]
+                        )
+                    )
+                }
+            }
+            func completeChat(request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
+                fatalError("not used")
+            }
+        }
+
+        let server = try await startTestServer(with: MockBatchedToolCallEngine())
+        defer { Task { await server.shutdown() } }
+
+        var request = URLRequest(
+            url: URL(string: "http://\(server.host):\(server.port)/chat/completions")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.authenticate()
+        let reqBody = ChatCompletionRequest(
+            model: "fake",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            temperature: 0.5,
+            max_tokens: 16,
+            stream: true,
+            top_p: nil,
+            frequency_penalty: nil,
+            presence_penalty: nil,
+            stop: nil,
+            n: nil,
+            tools: nil,
+            tool_choice: .auto,
+            session_id: nil
+        )
+        request.httpBody = try JSONEncoder().encode(reqBody)
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        let body = String(decoding: data, as: UTF8.self)
+        #expect(status == 200)
+        #expect(body.contains("\"function\":{\"name\":\"read_file\""))
+        #expect(body.contains("\"function\":{\"name\":\"list_files\""))
+        #expect(body.contains("\"index\":0"))
+        #expect(body.contains("\"index\":1"))
+        #expect(body.contains("\"finish_reason\":\"tool_calls\""))
+        #expect(body.contains("call_read"))
+        #expect(body.contains("call_list"))
     }
 
     // MARK: - Anthropic streaming (`/messages?stream=true`)

@@ -2741,9 +2741,11 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         )
                     }
 
-                    let stream = try await chatEngine.streamChat(request: enrichedReq)
-                    for try await delta in stream {
-                        if let reasoning = StreamingReasoningHint.decode(delta) {
+                    var toolCallRequests: [InferenceToolCallRecord] = []
+                    let stream = try await chatEngine.streamInferenceEvents(request: enrichedReq)
+                    for try await event in stream {
+                        switch event {
+                        case .reasoningDelta(let reasoning):
                             hop {
                                 writerBound.value.writeReasoning(
                                     reasoning,
@@ -2753,116 +2755,116 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                                     context: ctx.value
                                 )
                             }
+                        case .textDelta(let delta):
+                            hop {
+                                writerBound.value.writeContent(
+                                    delta,
+                                    model: model,
+                                    responseId: responseId,
+                                    created: created,
+                                    context: ctx.value
+                                )
+                            }
+                        case .toolCallRequested(let request):
+                            toolCallRequests.append(request)
+                        case .toolCallsRequested(let requests):
+                            toolCallRequests.append(contentsOf: requests)
+                        case .toolCallStarted, .toolCallArgumentsDelta, .stats:
                             continue
                         }
-                        if StreamingToolHint.isSentinel(delta) { continue }
+                    }
+
+                    if !toolCallRequests.isEmpty {
+                        let chunkSize = 1024
+                        var toolLogs: [ToolCallLog] = []
+
+                        for (index, request) in toolCallRequests.enumerated() {
+                            let callId: String
+                            if let preservedId = request.toolCallId, !preservedId.isEmpty {
+                                callId = preservedId
+                            } else {
+                                let raw = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                                callId = "call_" + String(raw.prefix(24))
+                            }
+                            let args = request.argumentsJSON
+                            hop {
+                                writerBound.value.writeToolCallStart(
+                                    callId: callId,
+                                    functionName: request.name,
+                                    index: index,
+                                    model: model,
+                                    responseId: responseId,
+                                    created: created,
+                                    context: ctx.value
+                                )
+                            }
+                            var i = args.startIndex
+                            while i < args.endIndex {
+                                let next =
+                                    args.index(i, offsetBy: chunkSize, limitedBy: args.endIndex) ?? args.endIndex
+                                let chunk = String(args[i ..< next])
+                                hop {
+                                    writerBound.value.writeToolCallArgumentsDelta(
+                                        callId: callId,
+                                        index: index,
+                                        argumentsChunk: chunk,
+                                        model: model,
+                                        responseId: responseId,
+                                        created: created,
+                                        context: ctx.value
+                                    )
+                                }
+                                i = next
+                            }
+                            toolLogs.append(ToolCallLog(name: request.name, arguments: request.argumentsJSON))
+                        }
+
                         hop {
-                            writerBound.value.writeContent(
-                                delta,
+                            writerBound.value.writeFinishWithReason(
+                                "tool_calls",
                                 model: model,
                                 responseId: responseId,
                                 created: created,
                                 context: ctx.value
                             )
+                            writerBound.value.writeEnd(ctx.value)
                         }
-                    }
-                    hop {
-                        writerBound.value.writeFinish(
-                            model,
-                            responseId: responseId,
-                            created: created,
-                            context: ctx.value
+                        logSelf.logRequest(
+                            method: "POST",
+                            path: "/chat/completions",
+                            userAgent: logUserAgent,
+                            requestBody: logRequestBody,
+                            responseStatus: 200,
+                            startTime: logStartTime,
+                            model: logModel,
+                            toolCalls: toolLogs,
+                            temperature: logTemperature,
+                            maxTokens: logMaxTokens,
+                            finishReason: .toolCalls
                         )
-                        writerBound.value.writeEnd(ctx.value)
-                    }
-                    logSelf.logRequest(
-                        method: "POST",
-                        path: "/chat/completions",
-                        userAgent: logUserAgent,
-                        requestBody: logRequestBody,
-                        responseStatus: 200,
-                        startTime: logStartTime,
-                        model: logModel,
-                        temperature: logTemperature,
-                        maxTokens: logMaxTokens,
-                        finishReason: .stop
-                    )
-                } catch let invs as ServiceToolInvocations {
-                    // Multi-tool MLX completion: emit one tool_call delta
-                    // per invocation, sharing one finish_reason="tool_calls".
-                    // OpenAI clients deduplicate by `index`.
-                    hop {
-                        for (idx, inv) in invs.invocations.enumerated() {
-                            self.writeOpenAIToolCallSSE(
-                                inv,
-                                index: idx,
-                                writer: writerBound.value,
-                                model: model,
+                    } else {
+                        hop {
+                            writerBound.value.writeFinish(
+                                model,
                                 responseId: responseId,
                                 created: created,
                                 context: ctx.value
                             )
+                            writerBound.value.writeEnd(ctx.value)
                         }
-                        writerBound.value.writeFinishWithReason(
-                            "tool_calls",
-                            model: model,
-                            responseId: responseId,
-                            created: created,
-                            context: ctx.value
+                        logSelf.logRequest(
+                            method: "POST",
+                            path: "/chat/completions",
+                            userAgent: logUserAgent,
+                            requestBody: logRequestBody,
+                            responseStatus: 200,
+                            startTime: logStartTime,
+                            model: logModel,
+                            temperature: logTemperature,
+                            maxTokens: logMaxTokens,
+                            finishReason: .stop
                         )
-                        writerBound.value.writeEnd(ctx.value)
                     }
-                    let toolLogs = invs.invocations.map {
-                        ToolCallLog(name: $0.toolName, arguments: $0.jsonArguments)
-                    }
-                    logSelf.logRequest(
-                        method: "POST",
-                        path: "/chat/completions",
-                        userAgent: logUserAgent,
-                        requestBody: logRequestBody,
-                        responseStatus: 200,
-                        startTime: logStartTime,
-                        model: logModel,
-                        toolCalls: toolLogs,
-                        temperature: logTemperature,
-                        maxTokens: logMaxTokens,
-                        finishReason: .toolCalls
-                    )
-                } catch let inv as ServiceToolInvocation {
-                    // Single tool invocation — same emission as above.
-                    hop {
-                        self.writeOpenAIToolCallSSE(
-                            inv,
-                            index: 0,
-                            writer: writerBound.value,
-                            model: model,
-                            responseId: responseId,
-                            created: created,
-                            context: ctx.value
-                        )
-                        writerBound.value.writeFinishWithReason(
-                            "tool_calls",
-                            model: model,
-                            responseId: responseId,
-                            created: created,
-                            context: ctx.value
-                        )
-                        writerBound.value.writeEnd(ctx.value)
-                    }
-                    let toolLog = ToolCallLog(name: inv.toolName, arguments: inv.jsonArguments)
-                    logSelf.logRequest(
-                        method: "POST",
-                        path: "/chat/completions",
-                        userAgent: logUserAgent,
-                        requestBody: logRequestBody,
-                        responseStatus: 200,
-                        startTime: logStartTime,
-                        model: logModel,
-                        toolCalls: [toolLog],
-                        temperature: logTemperature,
-                        maxTokens: logMaxTokens,
-                        finishReason: .toolCalls
-                    )
                 } catch {
                     hop {
                         writerBound.value.writeError(error.localizedDescription, context: ctx.value)
