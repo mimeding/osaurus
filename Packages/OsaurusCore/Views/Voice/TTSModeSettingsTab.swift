@@ -153,15 +153,36 @@ struct TTSModeSettingsTab: View {
 
                 modelAction
             }
+
+            if case .downloading(let fraction) = ttsService.modelState {
+                downloadProgressBar(fraction: fraction)
+            }
         }
         .padding(20)
         .background(cardBackground(selected: ttsService.isModelReady))
     }
 
+    @ViewBuilder
+    private func downloadProgressBar(fraction: Double?) -> some View {
+        if let fraction {
+            ProgressView(value: fraction)
+                .progressViewStyle(.linear)
+                .tint(theme.accentColor)
+        } else {
+            ProgressView()
+                .progressViewStyle(.linear)
+                .tint(theme.accentColor)
+        }
+    }
+
     private var modelStatusText: String {
         switch ttsService.modelState {
-        case .notReady: return L("Not downloaded")
-        case .downloading: return L("Downloading…")
+        case .notReady: return L("Not downloaded — about 700 MB")
+        case .downloading(let fraction):
+            if let fraction {
+                return String(format: "%@ %d%%", L("Downloading"), Int(fraction * 100))
+            }
+            return L("Preparing…")
         case .ready: return L("Ready")
         case .failed(let msg): return msg
         }

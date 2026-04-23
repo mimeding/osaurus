@@ -14,7 +14,8 @@ import Foundation
 /// Model-readiness state for PocketTTS.
 public enum TTSModelState: Equatable {
     case notReady
-    case downloading
+    /// `fraction` is in [0, 1]. `nil` means indeterminate (e.g. compile phase).
+    case downloading(fraction: Double?)
     case ready
     case failed(String)
 }
@@ -108,10 +109,29 @@ public final class TTSService: ObservableObject {
         if case .ready = modelState { return }
         if initTask != nil { return }
 
-        modelState = .downloading
+        modelState = .downloading(fraction: nil)
         let voice = TTSConfigurationStore.load().voice
         initTask = Task { [weak self] in
             do {
+                // Route through the downloader explicitly so we get progress callbacks.
+                // When models are already cached this returns nearly instantly.
+                _ = try await PocketTtsResourceDownloader.ensureModels(
+                    directory: nil,
+                    progressHandler: { progress in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            let fraction: Double?
+                            switch progress.phase {
+                            case .downloading:
+                                fraction = progress.fractionCompleted
+                            case .listing, .compiling:
+                                fraction = nil
+                            }
+                            self.modelState = .downloading(fraction: fraction)
+                        }
+                    }
+                )
+
                 let mgr = PocketTtsManager(defaultVoice: voice)
                 try await mgr.initialize()
                 await MainActor.run {

@@ -413,6 +413,9 @@ final class NativeAssistantActionsView: NSView {
         self.onSpeak = onSpeak
         self.currentTheme = theme
 
+        copyButton.isHidden = false
+        regenerateButton.isHidden = false
+
         let pointSize = CGFloat(theme.captionSize) - 1
         let cfg = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
         copyButton.setSymbol(
@@ -431,10 +434,23 @@ final class NativeAssistantActionsView: NSView {
         )
         applyTTSVisibility()
         refreshSpeakIcon()
+        invalidateIntrinsicContentSize()
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let buttonSize: CGFloat = 28
+        let spacing: CGFloat = 4
+        let speakContribution: CGFloat = speakButton.isHidden ? 0 : (buttonSize + spacing)
+        let width = buttonSize + spacing + buttonSize + speakContribution
+        return NSSize(width: width, height: buttonSize)
     }
 
     private func refreshSpeakIcon() {
         guard let theme = currentTheme else { return }
+        // Defensive: copy + regenerate must always be visible alongside the speaker.
+        copyButton.isHidden = false
+        regenerateButton.isHidden = false
+
         let pointSize = CGFloat(theme.captionSize) - 1
         let cfg = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
         let isThisTurnPlaying = TTSService.shared.playingMessageId == turnId
@@ -451,8 +467,12 @@ final class NativeAssistantActionsView: NSView {
 
     private func applyTTSVisibility() {
         let enabled = TTSConfigurationStore.load().enabled
-        speakButton.isHidden = !enabled
-        speakWidthConstraint?.constant = enabled ? 28 : 0
+        let shouldHide = !enabled
+        if speakButton.isHidden != shouldHide {
+            speakButton.isHidden = shouldHide
+            speakWidthConstraint?.constant = enabled ? 28 : 0
+            invalidateIntrinsicContentSize()
+        }
     }
 }
 
