@@ -334,6 +334,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
             object: nil
         )
 
+        // Route "user tapped speaker but model isn't ready" to the TTS settings tab.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleOpenTTSSettings(_:)),
+            name: .openTTSSettingsRequested,
+            object: nil
+        )
+
         // Listen for chat view closed to resume VAD
         NotificationCenter.default.addObserver(
             self,
@@ -424,6 +432,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
     @objc private func handleShowManagement(_ notification: Notification) {
         Task { @MainActor in
             showManagementWindow()
+        }
+    }
+
+    @objc private func handleOpenTTSSettings(_ notification: Notification) {
+        Task { @MainActor in
+            ManagementStateManager.shared.voiceSubTabRequest = "TTS"
+            showManagementWindow(initialTab: .voice)
         }
     }
 
