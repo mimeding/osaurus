@@ -149,6 +149,7 @@ let package = Package(
         .package(url: "https://github.com/raspu/Highlightr", from: "2.3.0"),
         .package(url: "https://github.com/AAChartModel/AAChartKit-Swift.git", from: "9.5.0"),
         .package(url: "https://github.com/CoreOffice/CoreXLSX.git", from: "0.14.2"),
+        .package(url: "https://github.com/jmcnamara/libxlsxwriter.git", from: "1.2.4"),
     ],
     targets: [
         // Vendored SQLCipher 4.6.1 amalgamation (CommonCrypto
@@ -273,6 +274,7 @@ let package = Package(
                 .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "AAInfographics", package: "AAChartKit-Swift"),
                 .product(name: "CoreXLSX", package: "CoreXLSX"),
+                .product(name: "libxlsxwriter", package: "libxlsxwriter"),
             ],
             path: ".",
             exclude: ["Tests", "SQLCipher"],
