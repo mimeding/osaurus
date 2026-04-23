@@ -32,6 +32,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
         // the specific crash class this prevents.
         MLXErrorRecovery.installGlobalHandler()
 
+        // Register in-tree document format adapters before any file-ingress
+        // path can run. Idempotent; safe if a future migration moves this.
+        DocumentAdaptersBootstrap.registerBuiltIns()
+
         // Detect repeated startup crashes and enter safe mode if needed
         LaunchGuard.checkOnLaunch()
 
