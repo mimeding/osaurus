@@ -43,6 +43,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
         // Configure local notifications
         NotificationService.shared.configureOnLaunch()
 
+        // If PocketTTS models are already on disk, preload them so the first
+        // speaker tap plays immediately without routing to settings.
+        TTSService.shared.refreshModelState()
+
         // Set up observers for server state changes
         setupObservers()
 

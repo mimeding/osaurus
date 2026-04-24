@@ -79,7 +79,12 @@ public final class TTSService: ObservableObject {
         }
 
         guard isModelReady else {
-            NotificationCenter.default.post(name: .openTTSSettingsRequested, object: nil)
+            if Self.pocketTtsModelsExistOnDisk() {
+                // Models already downloaded; just load them into memory.
+                ensureModelLoaded()
+            } else {
+                NotificationCenter.default.post(name: .openTTSSettingsRequested, object: nil)
+            }
             return
         }
 
@@ -171,7 +176,7 @@ public final class TTSService: ObservableObject {
             .appendingPathComponent(".cache", isDirectory: true)
             .appendingPathComponent("fluidaudio", isDirectory: true)
             .appendingPathComponent("Models", isDirectory: true)
-            .appendingPathComponent("pocket-tts-coreml", isDirectory: true)
+            .appendingPathComponent("pocket-tts", isDirectory: true)
         let required = ModelNames.PocketTTS.requiredModels
         let fm = FileManager.default
         return required.allSatisfy { fm.fileExists(atPath: repoDir.appendingPathComponent($0).path) }
