@@ -1016,6 +1016,9 @@ enum FolderToolFactory {
             FileWriteTool(rootPath: rootPath),
             FileEditTool(rootPath: rootPath),
             FileSearchTool(rootPath: rootPath),
+            ReadWorkbookTool(rootPath: rootPath),
+            ReadWorkbookCellTool(rootPath: rootPath),
+            WriteWorkbookTool(rootPath: rootPath),
         ]
     }
 
