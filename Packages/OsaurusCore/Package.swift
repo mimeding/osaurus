@@ -148,6 +148,7 @@ let package = Package(
         .package(url: "https://github.com/mgriebling/SwiftMath", from: "1.7.3"),
         .package(url: "https://github.com/raspu/Highlightr", from: "2.3.0"),
         .package(url: "https://github.com/AAChartModel/AAChartKit-Swift.git", from: "9.5.0"),
+        .package(url: "https://github.com/CoreOffice/CoreXLSX.git", from: "0.14.2"),
     ],
     targets: [
         // Vendored SQLCipher 4.6.1 amalgamation (CommonCrypto
@@ -271,6 +272,7 @@ let package = Package(
                 .product(name: "ContainerizationExtras", package: "containerization"),
                 .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "AAInfographics", package: "AAChartKit-Swift"),
+                .product(name: "CoreXLSX", package: "CoreXLSX"),
             ],
             path: ".",
             exclude: ["Tests", "SQLCipher"],
@@ -284,7 +286,8 @@ let package = Package(
                 .product(name: "NIOEmbedded", package: "swift-nio"),
                 .product(name: "VecturaKit", package: "VecturaKit"),
             ],
-            path: "Tests"
+            path: "Tests",
+            resources: [.copy("Documents/Fixtures")]
         ),
     ]
 )
