@@ -227,6 +227,7 @@ final class PluginManager {
                 if !loaded.skills.isEmpty {
                     await SkillManager.shared.unregisterPluginSkills(pluginId: loaded.plugin.id)
                 }
+                PluginDocumentRegistry.unregisterAll(pluginId: loaded.plugin.id)
                 await loaded.plugin.shutdown()
                 PluginHostContext.getContext(for: loaded.plugin.id)?.teardown()
                 lastPushedTunnelURL.removeValue(forKey: loaded.plugin.id)
@@ -266,6 +267,7 @@ final class PluginManager {
                 if !loaded.skills.isEmpty {
                     await SkillManager.shared.unregisterPluginSkills(pluginId: loaded.plugin.id)
                 }
+                PluginDocumentRegistry.unregisterAll(pluginId: loaded.plugin.id)
                 await loaded.plugin.shutdown()
                 PluginHostContext.getContext(for: loaded.plugin.id)?.teardown()
                 lastPushedTunnelURL.removeValue(forKey: loaded.plugin.id)

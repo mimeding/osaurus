@@ -18,8 +18,8 @@ struct PluginHostAPIStructLayoutTests {
         // From `clang -E` / offsetof against `osaurus_plugin.h` (arm64 Darwin,
         // standard LP64). The header promises a frozen layout — keep this
         // pin in lockstep when adding fields.
-        #expect(MemoryLayout<osr_host_api>.size == 200)
-        #expect(MemoryLayout<osr_host_api>.stride == 200)
+        #expect(MemoryLayout<osr_host_api>.size == 224)
+        #expect(MemoryLayout<osr_host_api>.stride == 224)
         #expect(MemoryLayout<osr_host_api>.alignment == 8)
 
         #expect(MemoryLayout<osr_host_api>.offset(of: \.version) == 0)
@@ -27,5 +27,8 @@ struct PluginHostAPIStructLayoutTests {
         #expect(MemoryLayout<osr_host_api>.offset(of: \.get_active_agent_id) == 176)
         #expect(MemoryLayout<osr_host_api>.offset(of: \.log_structured) == 184)
         #expect(MemoryLayout<osr_host_api>.offset(of: \.free_string) == 192)
+        #expect(MemoryLayout<osr_host_api>.offset(of: \.register_parser) == 200)
+        #expect(MemoryLayout<osr_host_api>.offset(of: \.register_emitter) == 208)
+        #expect(MemoryLayout<osr_host_api>.offset(of: \.unregister_format) == 216)
     }
 }

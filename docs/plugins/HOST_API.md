@@ -1,6 +1,6 @@
 # Host API Reference
 
-Reference for the **v6 host API**. Every callback your plugin can invoke is listed here, grouped by category. The canonical C declarations live in `Packages/OsaurusCore/Tools/PluginABI/osaurus_plugin.h`. Per-version evolution and the defensive-check pattern for older hosts are in [ABI_VERSIONS.md](ABI_VERSIONS.md).
+Reference for the **v7 host API**. Every callback your plugin can invoke is listed here, grouped by category. The canonical C declarations live in `Packages/OsaurusCore/Tools/PluginABI/osaurus_plugin.h`. Per-version evolution and the defensive-check pattern for older hosts are in [ABI_VERSIONS.md](ABI_VERSIONS.md).
 
 ## Conventions
 
@@ -52,6 +52,9 @@ The canonical pin is [`PluginHostAPIStructLayoutTests`](../../Packages/OsaurusCo
 | 22 | `get_active_agent_id` | `char* (*)()` | v4 |
 | 23 | **`log_structured`** | `void (*)(int32_t, const char*, const char*)` | **v5** |
 | 24 | `free_string` | `void (*)(const char*)` | v6 |
+| 25 | `register_parser` | `char* (*)(const char*)` | v7 |
+| 26 | `register_emitter` | `char* (*)(const char*)` | v7 |
+| 27 | `unregister_format` | `char* (*)(const char*)` | v7 |
 
 ### Pinned offsets (Apple Silicon, default alignment)
 
@@ -63,7 +66,10 @@ The struct uses default C alignment — every pointer slot is 8 bytes after `ver
 | `get_active_agent_id` | 176 |
 | `log_structured` | 184 |
 | `free_string` | 192 |
-| (struct stride) | 200 |
+| `register_parser` | 200 |
+| `register_emitter` | 208 |
+| `unregister_format` | 216 |
+| (struct stride) | 224 |
 
 If your mirror disagrees with any of these offsets, your `host->*` calls dispatch into adjacent slots and the host will look wedged or crash. Fix the mirror, don't add defensive checks downstream.
 
@@ -94,6 +100,7 @@ You give up the early misalignment detection if you do this, so prefer to leave 
 - [Dispatch (background tasks)](#dispatch)
 - [HTTP](#http)
 - [File I/O](#file-io)
+- [Document formats](#document-formats)
 - [Reserved slots](#reserved-slots)
 
 ---
@@ -483,6 +490,34 @@ Read a file from the artifacts directory (`~/.osaurus/artifacts/`). Hard-scoped 
 ```
 
 Returns `{"data": "<base64>", "size": <int>, "mime_type": "..."}` or an error envelope.
+
+---
+
+## Document formats
+
+### `register_parser(request_json) -> char*`
+
+Registers a plugin-backed parser with the host document registry. Check `host->version >= 7 && host->register_parser` before calling.
+
+```json
+{"plugin_id": "com.example.plugin", "format_id": "wacky", "extensions": [".wacky"], "mime_types": ["application/x-wacky"]}
+```
+
+When a matching document is parsed, the host calls `invoke(type: "parser", id: format_id, payload: ...)` on the plugin. The parser response is `{"ok": true, "filename": "...", "file_size": 123, "text_fallback": "..."}` or `{"ok": false, "error": "..."}`.
+
+### `register_emitter(request_json) -> char*`
+
+Registers a plugin-backed emitter for `format_id`. The registration JSON shape matches `register_parser`; emitter routing is based on the document's `format_id`.
+
+### `unregister_format(request_json) -> char*`
+
+Removes a plugin-owned format registration.
+
+```json
+{"plugin_id": "com.example.plugin", "format_id": "wacky"}
+```
+
+All three callbacks return `{"ok": true}` or `{"ok": false, "error": "..."}`.
 
 ---
 

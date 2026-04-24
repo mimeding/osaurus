@@ -20,7 +20,7 @@ Plugins are macOS dynamic libraries (`.dylib`) that extend Osaurus with new tool
 
 ## What you get from the host
 
-Plugins target the **v6 host API surface** (current). Callbacks span:
+Plugins target the **v7 host API surface** (current). Callbacks span:
 
 - **Config** — read/write per-plugin secrets backed by Keychain (`config_get`, `config_set`, `config_delete`)
 - **Storage** — per-plugin SQLite database (encrypted at rest, 100 MiB default cap), `db_exec` / `db_query`
@@ -29,10 +29,11 @@ Plugins target the **v6 host API surface** (current). Callbacks span:
 - **Dispatch** — fire-and-forget background tasks (`dispatch`, `task_status`, `dispatch_cancel`, `dispatch_interrupt`, `send_draft`, `list_active_tasks`)
 - **HTTP** — outbound requests with SSRF protection and a 60 req/min per-(plugin, agent) cap
 - **File I/O** — read shared artifacts the user has explicitly provided
+- **Document formats** — register custom parsers and emitters (`register_parser`, `register_emitter`, `unregister_format`)
 - **Agent context** — `get_active_agent_id` (v4) for per-agent state keying
 - **Memory** — `host->free_string` (v6) to release strings the host returned, replacing the previously ambiguous "free with the plugin's `free_string`" path
 
-Older plugins compiled against v1–v5 keep loading; the struct layout is frozen and v6 only appends one new optional slot. See [ABI_VERSIONS.md](ABI_VERSIONS.md) for the per-version evolution and the defensive `host->version >= N` check pattern.
+Older plugins compiled against v1–v6 keep loading; the struct layout is frozen and v7 only appends new optional slots. See [ABI_VERSIONS.md](ABI_VERSIONS.md) for the per-version evolution and the defensive `host->version >= N` check pattern.
 
 The full reference for each callback lives in [HOST_API.md](HOST_API.md).
 

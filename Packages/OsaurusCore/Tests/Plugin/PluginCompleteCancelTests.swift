@@ -40,10 +40,10 @@ struct PluginCompleteCancelTests {
         // deallocating it ourselves.
         let ptr = ctx.buildHostAPI()
         let api = ptr.pointee
-        // Host struct version reflects the current surface (v6 since
-        // the host-side `free_string` callback was added on top of the
-        // v5 `log_structured`).
-        #expect(api.version == 6)
+        // Host struct version reflects the current surface (v7 since
+        // document-format registration was added on top of the v6
+        // host-side `free_string` callback).
+        #expect(api.version == 7)
         // The cancel trampoline is wired (non-nil) so plugins can call it.
         #expect(api.complete_cancel != nil)
     }

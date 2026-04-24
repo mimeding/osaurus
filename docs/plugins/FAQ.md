@@ -6,9 +6,9 @@ Quick answers to common questions. For deeper guides see [README.md](README.md).
 
 ### Do old plugins still work?
 
-Yes. The Plugin ABI is **frozen** — the `osr_host_api` struct layout never changes; new versions only append optional slots at the end. Plugins compiled against v1 (`osaurus_plugin_entry`, no host API access) through v4 continue to load against the current v5 host unchanged. Two slots (`dispatch_clarify`, `dispatch_add_issue`) are reserved and return `not_supported` envelopes for backwards compat.
+Yes. The Plugin ABI is **frozen** — the `osr_host_api` struct layout never changes; new versions only append optional slots at the end. Plugins compiled against v1 (`osaurus_plugin_entry`, no host API access) through v6 continue to load against the current v7 host unchanged. Two slots (`dispatch_clarify`, `dispatch_add_issue`) are reserved and return `not_supported` envelopes for backwards compat.
 
-You only need to rebuild to pick up new callbacks (`complete_cancel` in v3, `get_active_agent_id` in v4, `log_structured` in v5). There is no forced migration. See [ABI_VERSIONS.md](ABI_VERSIONS.md) for the per-version evolution and the `host->version >= N` defensive-check pattern.
+You only need to rebuild to pick up new callbacks (`complete_cancel` in v3, `get_active_agent_id` in v4, `log_structured` in v5, `free_string` in v6, document registration in v7). There is no forced migration. See [ABI_VERSIONS.md](ABI_VERSIONS.md) for the per-version evolution and the `host->version >= N` defensive-check pattern.
 
 ### What's the difference between native plugins and sandbox plugins?
 

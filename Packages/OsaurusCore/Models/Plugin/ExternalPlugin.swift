@@ -124,6 +124,11 @@ typealias osr_log_structured_t =
 // Host-side string free (added in v6)
 typealias osr_host_free_string_t = @convention(c) (UnsafePointer<CChar>?) -> Void
 
+// Document-format registration (added in v7)
+typealias osr_register_parser_t = @convention(c) (UnsafePointer<CChar>?) -> UnsafePointer<CChar>?
+typealias osr_register_emitter_t = @convention(c) (UnsafePointer<CChar>?) -> UnsafePointer<CChar>?
+typealias osr_unregister_format_t = @convention(c) (UnsafePointer<CChar>?) -> UnsafePointer<CChar>?
+
 /// Frozen layout — field order and padding must match `osaurus_plugin.h`
 /// exactly (see `PluginHostAPIStructLayoutTests`). Swift plugins that mirror
 /// this struct must not skip middle fields (e.g. omitting v5 `log_structured`
@@ -181,6 +186,11 @@ struct osr_host_api {
 
     // Host-side string free (added in v6)
     var free_string: osr_host_free_string_t?
+
+    // Document-format registration (added in v7)
+    var register_parser: osr_register_parser_t?
+    var register_emitter: osr_register_emitter_t?
+    var unregister_format: osr_unregister_format_t?
 }
 
 struct osr_plugin_api {

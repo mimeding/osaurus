@@ -1,6 +1,6 @@
 // osaurus_plugin.h
 //
-// Osaurus Plugin ABI — current documented surface is v5.
+// Osaurus Plugin ABI — current documented surface is v7.
 //
 // COMPATIBILITY
 // =============
@@ -9,9 +9,9 @@
 //   - osaurus_plugin_entry      (v1 — never received the host API)
 //   - osaurus_plugin_entry_v2   (current — receives `osr_host_api*`)
 //
-// New plugins should target v5 by exporting `osaurus_plugin_entry_v2`
-// and reading `host->version >= 5`. Plugins compiled against an older
-// version (v3 / v4) keep working — `host->version` advertises the
+// New plugins should target v7 by exporting `osaurus_plugin_entry_v2`
+// and reading `host->version >= 7`. Plugins compiled against an older
+// version (v3 / v4 / v5 / v6) keep working — `host->version` advertises the
 // highest documented surface the host implements; new slots present
 // on a newer host are simply unused by older plugins. Plugins
 // compiled against a newer ABI than the host implements should
@@ -20,7 +20,8 @@
 //
 // See `docs/plugins/ABI_VERSIONS.md` for the per-version evolution
 // (v1 base, v2 host injection, v3 streaming cancel, v4 agent
-// introspection, v5 structured logging).
+// introspection, v5 structured logging, v6 host free, v7 document
+// format registration).
 //
 // The struct layout is FROZEN —
 // position of every callback is preserved across versions. Two slots
@@ -78,6 +79,7 @@ extern "C" {
 #define OSR_ABI_VERSION_4 4
 #define OSR_ABI_VERSION_5 5
 #define OSR_ABI_VERSION_6 6
+#define OSR_ABI_VERSION_7 7
 
 // Opaque context provided by the plugin, passed back to all function calls.
 typedef void* osr_plugin_ctx_t;
@@ -366,6 +368,38 @@ typedef void (*osr_log_structured_fn)(int level,
 //   }
 typedef void (*osr_host_free_string_fn)(const char* s);
 
+// Document-format registration — plugins call these from `init` to wire
+// their parser / emitter into the host's DocumentFormatRegistry. Once
+// registered, the host calls back into the plugin via `invoke` with
+// `type = "parser"` / `"emitter"` whenever a matching file arrives.
+//
+// register_parser / register_emitter request_json (required fields):
+//   {
+//     "plugin_id":  "com.example.myplugin",   // owner id for unregistration
+//     "format_id":  "wacky",                  // matches invoke id
+//     "extensions": [".wacky", ".wk"],        // optional
+//     "mime_types": ["application/x-wacky"]   // optional
+//   }
+// Returns JSON: {"ok": true} or {"ok": false, "error": "..."}.
+//
+// invoke(type = "parser", id = format_id) payload:
+//   {"path": "/abs/...", "size_limit": 104857600}
+// Plugin returns:
+//   {"ok": true, "filename": "...", "file_size": N, "text_fallback": "..."}
+//   {"ok": false, "error": "..."}
+//
+// invoke(type = "emitter", id = format_id) payload:
+//   {"destination": "/abs/...", "filename": "...", "text": "..."}
+// Plugin returns: {"ok": true} or {"ok": false, "error": "..."}.
+//
+// unregister_format(format_id_json): {"plugin_id": "...", "format_id": "..."}.
+//
+// Added in OSR_ABI_VERSION_7. Plugins compiled against earlier ABI
+// versions see NULL slots; check `host->version >= 7` before calling.
+typedef const char* (*osr_register_parser_fn)(const char* request_json);
+typedef const char* (*osr_register_emitter_fn)(const char* request_json);
+typedef const char* (*osr_unregister_format_fn)(const char* request_json);
+
 // ── Host API struct (injected into v2+ plugins at init) ──
 //
 // The struct layout is FROZEN. Field order and offsets are stable across
@@ -373,7 +407,7 @@ typedef void (*osr_host_free_string_fn)(const char* s);
 // surface the host implements.
 
 typedef struct {
-    uint32_t           version;       // OSR_ABI_VERSION_6 in current builds
+    uint32_t           version;       // OSR_ABI_VERSION_7 in current builds
 
     // Config + Storage + Logging
     osr_config_get_fn       config_get;
@@ -421,6 +455,11 @@ typedef struct {
     // plugin's own `free_string`. See typedef comment above for the
     // backwards-compat fallback to `libc free()` on older hosts.
     osr_host_free_string_fn    free_string;
+
+    // Document-format registration (added in v7)
+    osr_register_parser_fn     register_parser;
+    osr_register_emitter_fn    register_emitter;
+    osr_unregister_format_fn   unregister_format;
 } osr_host_api;
 
 // ── Task lifecycle event types ──

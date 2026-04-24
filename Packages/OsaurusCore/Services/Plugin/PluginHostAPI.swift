@@ -2235,7 +2235,7 @@ final class PluginHostContext: @unchecked Sendable {
         let ptr = UnsafeMutablePointer<osr_host_api>.allocate(capacity: 1)
         ptr.initialize(
             to: osr_host_api(
-                // v6 surface — frozen layout. Two trampoline slots
+                // v7 surface — frozen layout. Two trampoline slots
                 // (`dispatch_clarify`, `dispatch_add_issue`) remain wired
                 // for ABI compat but return structured `not_supported` JSON.
                 // `get_active_agent_id` (v4) lets plugins key per-agent
@@ -2246,7 +2246,7 @@ final class PluginHostContext: @unchecked Sendable {
                 // plugins don't accidentally route host-allocated
                 // pointers through their own `free_string` callback,
                 // which can corrupt the heap if it isn't plain `free`.
-                version: 6,
+                version: 7,
                 config_get: PluginHostContext.trampolineConfigGet,
                 config_set: PluginHostContext.trampolineConfigSet,
                 config_delete: PluginHostContext.trampolineConfigDelete,
@@ -2270,7 +2270,10 @@ final class PluginHostContext: @unchecked Sendable {
                 complete_cancel: PluginHostContext.trampolineCompleteCancel,
                 get_active_agent_id: PluginHostContext.trampolineGetActiveAgentId,
                 log_structured: PluginHostContext.trampolineLogStructured,
-                free_string: PluginHostContext.trampolineHostFreeString
+                free_string: PluginHostContext.trampolineHostFreeString,
+                register_parser: PluginHostContext.trampolineRegisterParser,
+                register_emitter: PluginHostContext.trampolineRegisterEmitter,
+                unregister_format: PluginHostContext.trampolineUnregisterFormat
             )
         )
         hostAPIPtr = ptr
@@ -2651,6 +2654,30 @@ private final class ResultBox<T>: @unchecked Sendable {
     var value: T?
 }
 
+private struct PluginManagerDocumentInvoker: PluginDocumentInvoker {
+    let pluginId: String
+
+    func invoke(type: String, id: String, payload: String) async -> String {
+        guard let plugin = await MainActor.run(body: {
+            PluginManager.shared.loadedPlugin(for: pluginId)?.plugin
+        }) else {
+            return PluginHostContext.jsonString([
+                "ok": false,
+                "error": "plugin '\(pluginId)' is not loaded",
+            ])
+        }
+
+        do {
+            return try await plugin.invoke(type: type, id: id, payload: payload)
+        } catch {
+            return PluginHostContext.jsonString([
+                "ok": false,
+                "error": error.localizedDescription,
+            ])
+        }
+    }
+}
+
 extension PluginHostContext {
     /// Dedicated GCD queue used to run the inner async-bridge `Task` so that
     /// the cooperative thread pool's executor cannot deadlock with the
@@ -2940,6 +2967,10 @@ extension PluginHostContext {
         return String(match[colonQuote ..< match.index(before: match.endIndex)])
     }
 
+    private static func pluginIdForDocumentRegistration(requestJSON: String, fallback: String) -> String {
+        extractJSONStringValue(from: requestJSON, key: "plugin_id") ?? fallback
+    }
+
     /// Maps a top-level `error` code in a host response envelope to the
     /// closest HTTP status for Insights/observability. Returns nil if the
     /// response does not contain a string-typed `error` key — used as the
@@ -2989,6 +3020,38 @@ extension PluginHostContext {
         guard let keyPtr, let ctx = activeContext() else { return }
         let key = String(cString: keyPtr)
         ctx.configDelete(key: key)
+    }
+
+    // MARK: Document Registration Trampolines (v7)
+
+    static let trampolineRegisterParser: osr_register_parser_t = { requestPtr in
+        withActiveContext(requestPtr: requestPtr) { ctx, json in
+            let pluginId = pluginIdForDocumentRegistration(requestJSON: json, fallback: ctx.pluginId)
+            return makeCString(
+                PluginDocumentRegistry.registerParser(
+                    requestJSON: json,
+                    invoker: PluginManagerDocumentInvoker(pluginId: pluginId)
+                )
+            )
+        }
+    }
+
+    static let trampolineRegisterEmitter: osr_register_emitter_t = { requestPtr in
+        withActiveContext(requestPtr: requestPtr) { ctx, json in
+            let pluginId = pluginIdForDocumentRegistration(requestJSON: json, fallback: ctx.pluginId)
+            return makeCString(
+                PluginDocumentRegistry.registerEmitter(
+                    requestJSON: json,
+                    invoker: PluginManagerDocumentInvoker(pluginId: pluginId)
+                )
+            )
+        }
+    }
+
+    static let trampolineUnregisterFormat: osr_unregister_format_t = { requestPtr in
+        withActiveContext(requestPtr: requestPtr) { _, json in
+            makeCString(PluginDocumentRegistry.unregisterFormat(requestJSON: json))
+        }
     }
 
     // MARK: Agent Context Introspection (v4)

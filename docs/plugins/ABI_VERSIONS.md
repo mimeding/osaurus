@@ -10,7 +10,7 @@ Three rules the host promises to keep:
 
 1. **Struct layout is frozen.** Field order and offsets in `osr_host_api` and `osr_plugin_api` never change. New callbacks are appended at the end.
 2. **Removed callbacks are RESERVED, not deleted.** Two slots (`dispatch_clarify`, `dispatch_add_issue`) remain wired for ABI compatibility but return a structured `not_supported` JSON envelope. Calling them is a no-op safe; new plugins should not invoke them.
-3. **Older plugins keep loading.** A plugin compiled against ABI v1 still loads against a v5 host. The plugin sees the v1 subset; the new slots are present but the plugin's struct has no fields for them.
+3. **Older plugins keep loading.** A plugin compiled against ABI v1 still loads against a v7 host. The plugin sees the v1 subset; the new slots are present but the plugin's struct has no fields for them.
 
 The reverse direction needs a defensive check: a plugin compiled against v5 dlopen'd by a v3 host sees `host->log_structured == NULL`. **Always check before calling a new slot:**
 
@@ -71,6 +71,13 @@ The `host->version` field on `osr_host_api` advertises the highest documented su
   ```
 - Behavior preservation: nothing about what the host returns changed. Existing plugins that already call `libc free()` directly keep working unchanged.
 
+### v7 (`OSR_ABI_VERSION_7`) — document-format registration
+
+- Host API additions: `register_parser(request_json)`, `register_emitter(request_json)`, and `unregister_format(request_json)`.
+- Why it exists: plugins can add specialized document parsers and emitters to the same `DocumentFormatRegistry` lookup path used by in-tree adapters, without changing the app binary for every new file format.
+- Contract: registration requests include `plugin_id`, `format_id`, and optional `extensions` / `mime_types`. The host calls back into the plugin with `invoke(type: "parser" | "emitter", id: format_id, payload: ...)`. Responses use `{"ok": true}` or `{"ok": false, "error": "..."}` envelopes.
+- Migration: existing plugins do nothing. Plugins that need custom document IO check `host->version >= 7 && host->register_parser` before registering during `init`.
+
 ### Event additions (no struct change)
 
 These changes alter `on_task_event` payloads or fire previously-silent slots without bumping `OSR_ABI_VERSION`. The struct layout is untouched, so older plugins keep loading; newer plugins simply add a `case` to their switch.
@@ -79,7 +86,7 @@ These changes alter `on_task_event` payloads or fire previously-silent slots wit
 
 ## Mirror Struct Audit
 
-Plugins that mirror `osr_host_api` in a non-C language (Swift, Rust, Zig, etc.) MUST keep their mirror byte-identical to the host's frozen layout. The host appends new callbacks to the end of the struct on every version bump (v4: `get_active_agent_id`, v5: `log_structured`, v6: `free_string`); mirrors that drop or reorder a slot dispatch every callback past the mismatch into the wrong host function.
+Plugins that mirror `osr_host_api` in a non-C language (Swift, Rust, Zig, etc.) MUST keep their mirror byte-identical to the host's frozen layout. The host appends new callbacks to the end of the struct on every version bump (v4: `get_active_agent_id`, v5: `log_structured`, v6: `free_string`, v7: document registration); mirrors that drop or reorder a slot dispatch every callback past the mismatch into the wrong host function.
 
 The classic foot-gun is jumping from a v4 mirror straight to v6 and skipping `log_structured` (v5). The plugin's `host->free_string(ptr)` then resolves to `host->log_structured` (one slot earlier), which discards the pointer. The plugin's *next* host call may also misroute — and the first call that returns a value reads garbage from the wrong slot, eventually crashing inside `libc free()` on a non-malloc pointer (`pointer being freed was not allocated`).
 
@@ -91,7 +98,10 @@ The canonical pin for the layout lives in [`PluginHostAPIStructLayoutTests`](../
 | `get_active_agent_id` | 176 | v4 |
 | `log_structured` | 184 | **v5 — most commonly skipped** |
 | `free_string` | 192 | v6 |
-| (struct stride) | 200 | — |
+| `register_parser` | 200 | v7 |
+| `register_emitter` | 208 | v7 |
+| `unregister_format` | 216 | v7 |
+| (struct stride) | 224 | — |
 
 ### Pre-flight handshake
 
@@ -109,14 +119,15 @@ If you need one of the above, file an issue — extending the ABI is cheap as lo
 
 ## Compatibility table
 
-| Host version | v1 plugins | v2 plugins | v3 plugins | v4 plugins | v5 plugins | v6 plugins |
-|---|---|---|---|---|---|---|
-| v1 (legacy) | works | won't load | won't load | won't load | won't load | won't load |
-| v2 | works | works | missing `complete_cancel` | missing v4 + v3 | missing v4 + v5 + v3 | missing v4 + v5 + v6 + v3 |
-| v3 | works | works | works | missing `get_active_agent_id` | missing `log_structured` | missing `free_string` (use `libc free`) |
-| v4 | works | works | works | works | missing `log_structured` | missing `free_string` (use `libc free`) |
-| v5 | works | works | works | works | works | missing `free_string` (use `libc free`) |
-| **v6 (current)** | **works** | **works** | **works** | **works** | **works** | **works** |
+| Host version | v1 plugins | v2 plugins | v3 plugins | v4 plugins | v5 plugins | v6 plugins | v7 plugins |
+|---|---|---|---|---|---|---|---|
+| v1 (legacy) | works | won't load | won't load | won't load | won't load | won't load | won't load |
+| v2 | works | works | missing `complete_cancel` | missing v4 + v3 | missing v4 + v5 + v3 | missing v4 + v5 + v6 + v3 | missing v7 + v6 + v5 + v4 + v3 |
+| v3 | works | works | works | missing `get_active_agent_id` | missing `log_structured` | missing `free_string` (use `libc free`) | missing v7 + v6 + v5 + v4 |
+| v4 | works | works | works | works | missing `log_structured` | missing `free_string` (use `libc free`) | missing v7 + v6 + v5 |
+| v5 | works | works | works | works | works | missing `free_string` (use `libc free`) | missing v7 + v6 |
+| v6 | works | works | works | works | works | works | missing document registration |
+| **v7 (current)** | **works** | **works** | **works** | **works** | **works** | **works** | **works** |
 
 "Missing" means the slot is `NULL` on the older host — the newer plugin's defensive `if (host->version >= N && host->callback)` check correctly falls through.
 

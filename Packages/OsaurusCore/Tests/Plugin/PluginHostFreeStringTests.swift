@@ -18,12 +18,15 @@ import Testing
 
 struct PluginHostFreeStringTests {
 
-    @Test func hostStructAdvertisesV6() throws {
+    @Test func hostStructAdvertisesV7() throws {
         let ctx = try PluginHostContext(pluginId: "com.test.hostfree.\(UUID())")
         defer { ctx.teardown() }
         let api = ctx.buildHostAPI().pointee
-        #expect(api.version == 6, "v6 ABI must be advertised when host->free_string is wired")
+        #expect(api.version == 7, "v7 ABI must be advertised when document registration is wired")
         #expect(api.free_string != nil, "free_string slot must be populated on v6 host")
+        #expect(api.register_parser != nil, "register_parser slot must be populated on v7 host")
+        #expect(api.register_emitter != nil, "register_emitter slot must be populated on v7 host")
+        #expect(api.unregister_format != nil, "unregister_format slot must be populated on v7 host")
     }
 
     @Test func nilPointerIsNoOp() {

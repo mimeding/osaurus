@@ -331,6 +331,9 @@ struct HostAPIStructTests {
         #expect(api.list_models == nil)
         #expect(api.http_request == nil)
         #expect(api.file_read == nil)
+        #expect(api.register_parser == nil)
+        #expect(api.register_emitter == nil)
+        #expect(api.unregister_format == nil)
     }
 
     @Test func versionFieldCarriesThrough() {
@@ -375,9 +378,12 @@ struct HostAPIStructTests {
         let dummyModels: osr_list_models_t = { nil }
         let dummyHTTP: osr_http_request_t = { _ in nil }
         let dummyFileRead: osr_file_read_t = { _ in nil }
+        let dummyRegisterParser: osr_register_parser_t = { _ in nil }
+        let dummyRegisterEmitter: osr_register_emitter_t = { _ in nil }
+        let dummyUnregisterFormat: osr_unregister_format_t = { _ in nil }
 
         let api = osr_host_api(
-            version: 2,
+            version: 7,
             config_get: dummyGet,
             config_set: dummySet,
             config_delete: dummyDel,
@@ -393,7 +399,10 @@ struct HostAPIStructTests {
             embed: dummyEmbed,
             list_models: dummyModels,
             http_request: dummyHTTP,
-            file_read: dummyFileRead
+            file_read: dummyFileRead,
+            register_parser: dummyRegisterParser,
+            register_emitter: dummyRegisterEmitter,
+            unregister_format: dummyUnregisterFormat
         )
 
         #expect(api.config_get != nil)
@@ -412,6 +421,9 @@ struct HostAPIStructTests {
         #expect(api.list_models != nil)
         #expect(api.http_request != nil)
         #expect(api.file_read != nil)
+        #expect(api.register_parser != nil)
+        #expect(api.register_emitter != nil)
+        #expect(api.unregister_format != nil)
     }
 }
 
