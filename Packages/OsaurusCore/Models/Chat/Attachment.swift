@@ -2,7 +2,29 @@
 //  Attachment.swift
 //  osaurus
 //
-//  Unified attachment model for images and documents in chat messages
+//  Unified attachment model for images and documents in chat messages.
+//
+//  Primary `Kind` cases:
+//    - `.image(Data)` — raw image bytes, surfaced to the model as an
+//      image input.
+//    - `.document(filename, content, fileSize)` — the legacy text-only
+//      shape. Still produced for formats where the registry has no
+//      adapter (or the adapter returns a `PlainTextRepresentation`).
+//    - `.structuredDocument(StructuredDocument)` — typed document
+//      preserving the format-native representation (`Workbook`,
+//      `PDFDocumentRepresentation`, `CSVTable`, …). Agent tools that
+//      understand the representation pull the typed value through
+//      `attachment.structuredDocument`; everything else falls back to
+//      the text view via `documentContent`.
+//    - `.imageRef` / `.documentRef` — encrypted spillover references for
+//      large persisted attachments.
+//
+//  Codable: `.structuredDocument` serialises as `.document` on the wire
+//  so persisted chat history stays compatible with older builds. The
+//  typed structure is rebuilt in-memory on every new file ingest (chat
+//  attachment, drop / paste); persistence intentionally does not
+//  round-trip it because the format-native representation is derived
+//  from the source bytes.
 //
 
 import Foundation
@@ -11,9 +33,10 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
     public let id: UUID
     public let kind: Kind
 
-    public enum Kind: Codable, Sendable, Equatable {
+    public enum Kind: Codable, @unchecked Sendable, Equatable {
         case image(Data)
         case document(filename: String, content: String, fileSize: Int)
+        case structuredDocument(StructuredDocument)
 
         /// Audio bytes + format hint (e.g. "wav", "mp3", "m4a", "flac",
         /// "ogg"). Format flows into `MessageContentPart.audioInput.format`
@@ -61,6 +84,13 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
                 try container.encode(filename, forKey: .filename)
                 try container.encode(content, forKey: .content)
                 try container.encode(fileSize, forKey: .fileSize)
+            case .structuredDocument(let document):
+                // Downgrade to the legacy `document` wire shape so
+                // persisted history stays readable by older builds.
+                try container.encode("document", forKey: .type)
+                try container.encode(document.filename, forKey: .filename)
+                try container.encode(document.textFallback, forKey: .content)
+                try container.encode(Int(document.fileSize), forKey: .fileSize)
             case .audio(let data, let format, let filename):
                 try container.encode("audio", forKey: .type)
                 try container.encode(data, forKey: .data)
@@ -142,6 +172,43 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
                 )
             }
         }
+
+        public static func == (lhs: Kind, rhs: Kind) -> Bool {
+            switch (lhs, rhs) {
+            case (.image(let a), .image(let b)):
+                return a == b
+            case (.document(let f1, let c1, let s1), .document(let f2, let c2, let s2)):
+                return f1 == f2 && c1 == c2 && s1 == s2
+            case (.structuredDocument(let a), .structuredDocument(let b)):
+                return a.filename == b.filename
+                    && a.textFallback == b.textFallback
+                    && a.fileSize == b.fileSize
+                    && a.formatId == b.formatId
+            case (.audio(let aData, let aFormat, let aFilename), .audio(let bData, let bFormat, let bFilename)):
+                return aData == bData && aFormat == bFormat && aFilename == bFilename
+            case (.video(let aData, let aFilename), .video(let bData, let bFilename)):
+                return aData == bData && aFilename == bFilename
+            case (.imageRef(let aHash, let aByteCount), .imageRef(let bHash, let bByteCount)):
+                return aHash == bHash && aByteCount == bByteCount
+            case (
+                .documentRef(let aFilename, let aHash, let aFileSize),
+                .documentRef(let bFilename, let bHash, let bFileSize)
+            ):
+                return aFilename == bFilename && aHash == bHash && aFileSize == bFileSize
+            case (
+                .audioRef(let aHash, let aByteCount, let aFormat, let aFilename),
+                .audioRef(let bHash, let bByteCount, let bFormat, let bFilename)
+            ):
+                return aHash == bHash && aByteCount == bByteCount && aFormat == bFormat && aFilename == bFilename
+            case (
+                .videoRef(let aHash, let aByteCount, let aFilename),
+                .videoRef(let bHash, let bByteCount, let bFilename)
+            ):
+                return aHash == bHash && aByteCount == bByteCount && aFilename == bFilename
+            default:
+                return false
+            }
+        }
     }
 
     public init(id: UUID = UUID(), kind: Kind) {
@@ -157,6 +224,10 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
 
     public static func document(filename: String, content: String, fileSize: Int) -> Attachment {
         Attachment(kind: .document(filename: filename, content: content, fileSize: fileSize))
+    }
+
+    public static func structuredDocument(_ document: StructuredDocument) -> Attachment {
+        Attachment(kind: .structuredDocument(document))
     }
 
     public static func audio(_ data: Data, format: String, filename: String? = nil) -> Attachment {
@@ -176,9 +247,12 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         }
     }
 
+    /// True for both the legacy `.document(…)` case and the new
+    /// `.structuredDocument(…)` case. Callers that only need the text
+    /// view can stay on this check + `documentContent`.
     public var isDocument: Bool {
         switch kind {
-        case .document, .documentRef: return true
+        case .document, .documentRef, .structuredDocument: return true
         default: return false
         }
     }
@@ -210,6 +284,8 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         switch kind {
         case .document(let name, _, _), .documentRef(let name, _, _):
             return name
+        case .structuredDocument(let doc):
+            return doc.filename
         case .audio(_, _, let name), .audioRef(_, _, _, let name),
             .video(_, let name), .videoRef(_, _, let name):
             return name
@@ -233,7 +309,20 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
     }
 
     public var documentContent: String? {
-        if case .document(_, let content, _) = kind { return content }
+        switch kind {
+        case .document(_, let content, _): return content
+        case .structuredDocument(let doc): return doc.textFallback
+        default: return nil
+        }
+    }
+
+    /// The typed representation, present only for `.structuredDocument`.
+    /// Agent tools that know how to consume a `Workbook` /
+    /// `PDFDocumentRepresentation` / `CSVTable` downcast
+    /// `structuredDocument?.representation.underlying` to the concrete
+    /// type. Every other consumer should keep using `documentContent`.
+    public var structuredDocument: StructuredDocument? {
+        if case .structuredDocument(let doc) = kind { return doc }
         return nil
     }
 
@@ -296,6 +385,8 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         switch kind {
         case .document(_, let content, _):
             return content
+        case .structuredDocument(let doc):
+            return doc.textFallback
         case .documentRef(_, let hash, _):
             return (try? AttachmentBlobStore.read(hash)).flatMap { String(data: $0, encoding: .utf8) }
         default:
@@ -309,6 +400,8 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         switch kind {
         case .document(_, _, let size), .documentRef(_, _, let size):
             return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        case .structuredDocument(let doc):
+            return ByteCountFormatter.string(fromByteCount: doc.fileSize, countStyle: .file)
         case .audio(let data, _, _):
             return ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
         case .video(let data, _):
@@ -333,7 +426,7 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         case "pdf": return "doc.richtext"
         case "docx", "doc": return "doc.text"
         case "md", "markdown": return "text.document"
-        case "csv": return "tablecells"
+        case "csv", "tsv", "xlsx", "xls", "ods": return "tablecells"
         case "json": return "curlybraces"
         case "xml", "html", "htm": return "chevron.left.forwardslash.chevron.right"
         case "rtf": return "doc.richtext"
@@ -362,6 +455,8 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
             return max(1, content.count / 4)
         case .documentRef(_, _, let fileSize):
             return max(1, fileSize / 4)
+        case .structuredDocument(let doc):
+            return max(1, doc.textFallback.count / 4)
         case .audio(let data, _, _):
             // ~50 acoustic tokens/sec @ 16kHz mono → ~1 token / 640 bytes
             return max(1, data.count / 640)

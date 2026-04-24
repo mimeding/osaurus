@@ -1058,7 +1058,7 @@ extension FloatingInputCard {
                                 }
                             )
                         }
-                    case .document, .documentRef:
+                    case .document, .documentRef, .structuredDocument:
                         DocumentChip(attachment: attachment) {
                             withAnimation(theme.springAnimation()) {
                                 _ = pendingAttachments.remove(at: index)

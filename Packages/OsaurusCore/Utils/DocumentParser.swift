@@ -294,13 +294,22 @@ enum DocumentParser {
             let document = try runBlocking {
                 try await adapter.parse(url: url, sizeLimit: sizeLimit)
             }
-            return [
-                .document(
-                    filename: document.filename,
-                    content: document.textFallback,
-                    fileSize: Int(document.fileSize)
-                )
-            ]
+            // Surface the typed document whenever the adapter emitted
+            // something richer than the plaintext fallback. Text-only
+            // adapters (PlainText / RichDocument wrappers) stay on the
+            // legacy `.document(…)` path so no downstream consumer has
+            // to handle a `.structuredDocument` case that carries the
+            // same content as `.document(…)` would.
+            if document.representation.underlying is PlainTextRepresentation {
+                return [
+                    .document(
+                        filename: document.filename,
+                        content: document.textFallback,
+                        fileSize: Int(document.fileSize)
+                    )
+                ]
+            }
+            return [.structuredDocument(document)]
         } catch DocumentAdapterError.emptyContent, DocumentAdapterError.unsupportedFormat {
             // Fall through so the legacy switch (image-only PDFs, formats
             // without an adapter yet) still gets a shot.
