@@ -108,6 +108,35 @@ typedef void        (*osr_dispatch_interrupt_fn)(const char* task_id,
 typedef const char* (*osr_dispatch_add_issue_fn)(const char* task_id,
                                                  const char* issue_json);
 
+// Document-format registration — plugins call these from `init` to wire
+// their parser / emitter into the host's DocumentFormatRegistry. Once
+// registered, the host calls back into the plugin via `invoke` with
+// `type = "parser"` / `"emitter"` whenever a matching file arrives.
+//
+// register_parser / register_emitter request_json (required fields):
+//   {
+//     "plugin_id":  "com.example.myplugin",   // owner id for unregistration
+//     "format_id":  "wacky",                  // matches invoke id
+//     "extensions": [".wacky", ".wk"],        // optional
+//     "mime_types": ["application/x-wacky"]   // optional
+//   }
+// Returns JSON: {"ok": true} or {"ok": false, "error": "..."}.
+//
+// invoke(type = "parser", id = format_id) payload:
+//   {"path": "/abs/...", "size_limit": 104857600}
+// Plugin returns:
+//   {"ok": true, "filename": "...", "file_size": N, "text_fallback": "..."}
+//   {"ok": false, "error": "..."}
+//
+// invoke(type = "emitter", id = format_id) payload:
+//   {"destination": "/abs/...", "filename": "...", "text": "..."}
+// Plugin returns: {"ok": true} or {"ok": false, "error": "..."}.
+//
+// unregister_format(format_id_json): {"plugin_id": "...", "format_id": "..."}.
+typedef const char* (*osr_register_parser_fn)(const char* request_json);
+typedef const char* (*osr_register_emitter_fn)(const char* request_json);
+typedef const char* (*osr_unregister_format_fn)(const char* request_json);
+
 typedef struct {
     uint32_t           version;       // OSR_ABI_VERSION_2
 
@@ -142,6 +171,11 @@ typedef struct {
     osr_send_draft_fn          send_draft;
     osr_dispatch_interrupt_fn  dispatch_interrupt;
     osr_dispatch_add_issue_fn  dispatch_add_issue;
+
+    // Document-format registration (v2 trailing fields)
+    osr_register_parser_fn     register_parser;
+    osr_register_emitter_fn    register_emitter;
+    osr_unregister_format_fn   unregister_format;
 } osr_host_api;
 
 // ── Task lifecycle event types ──
