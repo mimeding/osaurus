@@ -85,6 +85,7 @@ struct DocumentParserShimTests {
         #expect(ids.contains("plaintext"))
         #expect(ids.contains("pdf"))
         #expect(ids.contains("richdoc"))
+        #expect(ids.contains("xlsx"))
     }
 
     // MARK: - Fixtures
