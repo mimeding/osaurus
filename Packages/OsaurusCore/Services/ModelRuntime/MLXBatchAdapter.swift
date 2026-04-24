@@ -24,6 +24,7 @@ import CoreImage
 import Foundation
 import MLX
 @preconcurrency import MLXLMCommon
+import MLXRandom
 import MLXVLM  // MediaProcessing for image downscaling
 import os.log
 
@@ -168,13 +169,32 @@ struct MLXBatchAdapter {
             maxBatchSize: maxBatchSize
         )
 
+        // Honor the model's shipped sampling defaults (Hugging Face
+        // `generation_config.json`) when the OpenAI-wire request omits a
+        // field. Without this overlay osaurus served, e.g., Qwen 3.5 397B
+        // at 0.7 temperature when its recipe specifies 0.6, and Gemma-4
+        // 26B-A4B with top_k disabled when the recipe specifies top_k=64.
+        // Explicit client values still win — the `?? modelDefaults`
+        // ordering only applies when `generation.*` is nil.
+        let modelDefaults = LocalGenerationDefaults.defaults(forModelId: modelName)
         let mlxParams = ModelRuntime.makeGenerateParameters(
-            temperature: generation.temperature ?? 0.7,
+            temperature: generation.temperature ?? modelDefaults.temperature ?? 0.7,
             maxTokens: generation.maxTokens,
-            topP: generation.topPOverride ?? runtime.topP,
-            repetitionPenalty: generation.repetitionPenalty,
+            topP: generation.topPOverride ?? modelDefaults.topP ?? runtime.topP,
+            topK: modelDefaults.topK ?? 0,
+            repetitionPenalty: generation.repetitionPenalty ?? modelDefaults.repetitionPenalty,
             stopSequences: stopSequences
         )
+
+        // Best-effort per-request determinism: seed the MLX global random
+        // state immediately before submission. Note: vmlx's `Sampler`
+        // constructs its own `RandomState()` from time-of-day inside the
+        // engine, so concurrent seeded requests against the same model
+        // are NOT guaranteed reproducible. Single-request seeding still
+        // benefits any MLX code path that consults `MLXRandom.globalState`.
+        if let seed = generation.seed {
+            MLXRandom.seed(seed)
+        }
 
         // `engine.generate` returns `AsyncStream<Generation>` directly with
         // reasoning + tool-call extraction handled inside vmlx. We re-wrap

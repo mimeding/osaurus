@@ -1487,8 +1487,6 @@ final class ChatSession: ObservableObject {
                         tool_choice: toolSpecs.isEmpty ? nil : .auto,
                         session_id: sessionId?.uuidString
                     )
-                    req.cache_hint = context.cacheHint
-                    req.staticPrefix = context.staticPrefix
                     req.modelOptions = activeModelOptions.isEmpty ? nil : activeModelOptions
                     req.ttftTrace = ttftTrace
                     debugLog(
@@ -2408,7 +2406,7 @@ struct ChatView: View {
         let minimapMarkers = buildMinimapMarkers(from: blocks)
 
         return ZStack {
-           VStack(spacing: 8) {
+            VStack(spacing: 8) {
                 agentInlineBlocks
                 IsolatedThreadView(
                     store: session.visibleBlocksStore,
@@ -2430,13 +2428,12 @@ struct ChatView: View {
                     onCancelEdit: cancelEditing,
                     onUserImagePreview: openUserAttachmentPreview(attachmentId:),
                     onVisibleTopUserTurnChanged: { turnId in
-                      activeMinimapTurnId = turnId
+                        activeMinimapTurnId = turnId
                     },
                     scrollToTurnId: scrollToTurnId,
                     scrollToTurnTrigger: scrollToTurnTrigger
                 )
             }
-
 
             // Minimap overlay — sits at vertical center, right edge
             if minimapMarkers.count >= 2 {
