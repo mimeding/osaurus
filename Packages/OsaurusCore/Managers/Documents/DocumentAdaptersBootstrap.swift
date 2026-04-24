@@ -29,6 +29,10 @@ public enum DocumentAdaptersBootstrap {
         registry.register(adapter: RichDocumentAdapter())
         registry.register(adapter: XLSXAdapter())
         registry.register(emitter: XLSXEmitter())
+        // CSV registered after PlainText so later-wins routes .csv / .tsv
+        // through the typed adapter; PlainText still claims everything else.
+        registry.register(adapter: CSVAdapter())
+        registry.register(streamer: CSVStreamer())
         if registry === DocumentFormatRegistry.shared {
             didRegisterShared = true
         }
