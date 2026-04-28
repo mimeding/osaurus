@@ -157,6 +157,22 @@ public enum AttachmentBlobStore {
                 return attachment
             }
 
+        case .structuredDocument(let document):
+            let bytes = Data(document.textFallback.utf8)
+            guard bytes.count >= spillThreshold else { return attachment }
+            do {
+                let hash = try write(bytes)
+                return Attachment(
+                    id: attachment.id,
+                    kind: .documentRef(filename: document.filename, hash: hash, fileSize: Int(document.fileSize))
+                )
+            } catch {
+                log.warning(
+                    "structured document spill failed; keeping inline (size=\(bytes.count)): \(error.localizedDescription)"
+                )
+                return attachment
+            }
+
         case .audio(let data, let format, let filename):
             // Audio uses its own threshold (256 KB) so chat-history JSON
             // doesn't bloat with raw PCM. A 30 s wav at 16 kHz mono is

@@ -80,6 +80,39 @@ struct AttachmentSpilloverTests {
     }
 
     @Test
+    func largeStructuredDocumentSpillsAsDocumentRef() async throws {
+        try await StoragePathsTestLock.shared.run {
+            let root = try Self.setUpEnv()
+            defer { Self.tearDownEnv(root) }
+
+            let body = String(repeating: "cell,", count: 8 * 1024)
+            let document = StructuredDocument(
+                formatId: "csv",
+                filename: "large.csv",
+                fileSize: Int64(body.utf8.count),
+                representation: AnyStructuredRepresentation(
+                    formatId: "csv",
+                    underlying: PlainTextRepresentation(text: body)
+                ),
+                textFallback: body
+            )
+            let attachment = Attachment.structuredDocument(document)
+            let result = AttachmentBlobStore.spillIfNeeded([attachment])
+
+            #expect(result.count == 1)
+            switch result[0].kind {
+            case .documentRef(let filename, let hash, let fileSize):
+                #expect(filename == "large.csv")
+                #expect(fileSize == body.utf8.count)
+                let stored = try AttachmentBlobStore.read(hash)
+                #expect(String(data: stored, encoding: .utf8) == body)
+            default:
+                Issue.record("expected documentRef, got \(result[0].kind)")
+            }
+        }
+    }
+
+    @Test
     func dedupReusesSameBlob() async throws {
         try await StoragePathsTestLock.shared.run {
             let root = try Self.setUpEnv()
