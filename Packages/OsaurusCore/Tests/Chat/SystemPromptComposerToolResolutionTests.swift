@@ -32,6 +32,7 @@ struct SystemPromptComposerToolResolutionTests {
         if let names = manualToolNames {
             agent = Agent(
                 name: "ToolResolutionTestAgent-\(UUID().uuidString.prefix(6))",
+                agentAddress: "test-tool-resolution-\(UUID().uuidString)",
                 autonomousExec: autonomous ? AutonomousExecConfig(enabled: true) : nil,
                 toolSelectionMode: .manual,
                 manualToolNames: names
@@ -39,22 +40,25 @@ struct SystemPromptComposerToolResolutionTests {
         } else {
             agent = Agent(
                 name: "ToolResolutionTestAgent-\(UUID().uuidString.prefix(6))",
+                agentAddress: "test-tool-resolution-\(UUID().uuidString)",
                 autonomousExec: autonomous ? AutonomousExecConfig(enabled: true) : nil
             )
         }
         manager.add(agent)
-        defer { Task { _ = await manager.delete(id: agent.id) } }
         await body(agent.id)
+        _ = await manager.delete(id: agent.id)
     }
 
-    private func registerSandboxBuiltins(_ body: () -> Void) {
-        BuiltinSandboxTools.register(
-            agentId: "tool-resolution-test",
-            agentName: "tool-resolution-test",
-            config: AutonomousExecConfig(enabled: true)
-        )
-        defer { ToolRegistry.shared.unregisterAllSandboxTools() }
-        body()
+    private func withRegisteredSandboxBuiltins(_ body: @MainActor @Sendable () async -> Void) async {
+        await SandboxTestLock.shared.run {
+            BuiltinSandboxTools.register(
+                agentId: "tool-resolution-test",
+                agentName: "tool-resolution-test",
+                config: AutonomousExecConfig(enabled: true)
+            )
+            await body()
+            ToolRegistry.shared.unregisterAllSandboxTools()
+        }
     }
 
     // MARK: - Auto mode
@@ -101,7 +105,7 @@ struct SystemPromptComposerToolResolutionTests {
     @Test
     func manualMode_includesSandboxBuiltinsWhenSandboxActive() async {
         await withSandboxAgent(autonomous: true, manualToolNames: ["render_chart"]) { agentId in
-            registerSandboxBuiltins {
+            await withRegisteredSandboxBuiltins {
                 let tools = SystemPromptComposer.resolveTools(
                     agentId: agentId,
                     executionMode: .sandbox
@@ -120,7 +124,7 @@ struct SystemPromptComposerToolResolutionTests {
     @Test
     func manualMode_emptyManualNames_stillIncludesAlwaysLoaded() async {
         await withSandboxAgent(autonomous: true, manualToolNames: []) { agentId in
-            registerSandboxBuiltins {
+            await withRegisteredSandboxBuiltins {
                 let tools = SystemPromptComposer.resolveTools(
                     agentId: agentId,
                     executionMode: .sandbox
@@ -155,7 +159,7 @@ struct SystemPromptComposerToolResolutionTests {
         }
 
         await withSandboxAgent(autonomous: true) { agentId in
-            registerSandboxBuiltins {
+            await withRegisteredSandboxBuiltins {
                 let names = Set(
                     SystemPromptComposer.resolveTools(agentId: agentId, executionMode: .sandbox)
                         .map { $0.function.name }
@@ -171,7 +175,7 @@ struct SystemPromptComposerToolResolutionTests {
     @Test
     func canonicalToolOrder_pinsLoopToolsToTheTop() async {
         await withSandboxAgent(autonomous: true) { agentId in
-            registerSandboxBuiltins {
+            await withRegisteredSandboxBuiltins {
                 let names = SystemPromptComposer.resolveTools(
                     agentId: agentId,
                     executionMode: .sandbox
@@ -190,7 +194,7 @@ struct SystemPromptComposerToolResolutionTests {
     @Test
     func toolsDisabled_returnsEmpty() async {
         await withSandboxAgent(autonomous: true) { agentId in
-            registerSandboxBuiltins {
+            await withRegisteredSandboxBuiltins {
                 let tools = SystemPromptComposer.resolveTools(
                     agentId: agentId,
                     executionMode: .sandbox,
@@ -263,7 +267,7 @@ struct SystemPromptComposerToolResolutionTests {
     @Test
     func canonicalToolOrder_isStableAcrossInvocations() async {
         await withSandboxAgent(autonomous: true) { agentId in
-            registerSandboxBuiltins {
+            await withRegisteredSandboxBuiltins {
                 // Two compositions with identical inputs must return the
                 // exact same tool ordering — that's what makes the rendered
                 // <tools> block byte-stable across sends.
