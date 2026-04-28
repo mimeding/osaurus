@@ -17,6 +17,30 @@ struct TTSModeSettingsTab: View {
     @State private var previewText: String = "Hello from Osaurus. Text to speech is now ready."
     @State private var previewMessageId = UUID()
 
+    /// Built-in PocketTTS voices hosted on HuggingFace (kyutai/pocket-tts).
+    /// Each is downloaded on first use.
+    private static let availableVoices: [String] = [
+        "alba", "anna", "azelma", "bill_boerst", "caro_davy", "charles",
+        "cosette", "eponine", "eve", "fantine", "george", "jane",
+        "javert", "jean", "marius", "mary", "michael", "paul",
+        "peter_yearsley", "stuart_bell", "vera",
+    ]
+
+    private func displayName(for voice: String) -> String {
+        voice.split(separator: "_")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    private var voiceMenuOptions: [String] {
+        let builtIn = Self.availableVoices
+        let current = config.voice.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !current.isEmpty && !builtIn.contains(current) {
+            return [current] + builtIn
+        }
+        return builtIn
+    }
+
     private func loadSettings() {
         config = TTSConfigurationStore.load()
     }
@@ -262,15 +286,19 @@ struct TTSModeSettingsTab: View {
                 .foregroundColor(theme.primaryText)
 
             HStack {
-                Text("Voice ID", bundle: .module)
+                Text("Voice", bundle: .module)
                     .font(.system(size: 12))
                     .foregroundColor(theme.secondaryText)
                 Spacer()
-                TextField("alba", text: $config.voice)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .frame(maxWidth: 180)
-                    .onSubmit { saveSettings() }
-                    .onChange(of: config.voice) { _, _ in saveSettings() }
+                Picker("", selection: $config.voice) {
+                    ForEach(voiceMenuOptions, id: \.self) { voice in
+                        Text(displayName(for: voice)).tag(voice)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(MenuPickerStyle())
+                .frame(maxWidth: 180)
+                .onChange(of: config.voice) { _, _ in saveSettings() }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -302,6 +330,7 @@ struct TTSModeSettingsTab: View {
 
             TextEditor(text: $previewText)
                 .font(.system(size: 13))
+                .scrollContentBackground(.hidden)
                 .frame(minHeight: 60)
                 .padding(8)
                 .background(
