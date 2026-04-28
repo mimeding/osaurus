@@ -1,5 +1,5 @@
 {
-  "originHash" : "0fe21e9e78c9dca9c9c9090eaa922b8b3f63117b6f76e3f6d15c36acf5f71a72",
+  "originHash" : "c1188a7167ae42da4fce56bed21b6f0ad5f487ffcd6ff8a2788d7af08befc3a2",
   "pins" : [
     {
       "identity" : "aachartkit-swift",
@@ -98,6 +98,15 @@
       "state" : {
         "revision" : "2e90323a4543c1aaca01bc6e28e4c744c13811a2",
         "version" : "2.4.3"
+      }
+    },
+    {
+      "identity" : "libxlsxwriter",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jmcnamara/libxlsxwriter.git",
+      "state" : {
+        "revision" : "2894634d65cee6021901a165bfc2bb0fad6da193",
+        "version" : "1.2.4"
       }
     },
     {
