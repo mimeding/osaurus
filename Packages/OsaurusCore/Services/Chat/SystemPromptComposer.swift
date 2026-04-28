@@ -151,7 +151,9 @@ public struct SystemPromptComposer: Sendable {
 
         let effectiveToolsOff = toolsDisabled || AgentManager.shared.effectiveToolsDisabled(for: agentId)
         let memoryOff = AgentManager.shared.effectiveMemoryDisabled(for: agentId)
-        let autonomousEnabled = AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true
+        let autonomousConfig = AgentManager.shared.effectiveAutonomousExec(for: agentId)
+        let autonomousEnabled = autonomousConfig?.enabled == true
+        let canCreatePlugins = autonomousConfig.map { $0.enabled && $0.pluginCreate } ?? false
         let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
 
         // Memory is assembled here but returned separately (see ComposedContext.memorySection).
@@ -231,6 +233,31 @@ public struct SystemPromptComposer: Sendable {
                 .subtracting([BuiltinSandboxTools.initPendingToolName])
         }
 
+        // Plugin Companions: when preflight picked a tool from a plugin,
+        // surface the plugin's *other* enabled tools and bundled skill as
+        // a compact teaser. The model uses `capabilities_load` to pull
+        // them in on demand — so the schema stays small this turn but
+        // the model knows what's reachable. Gated on auto-mode (preflight
+        // only runs in auto) and on the presence of `capabilities_load`
+        // (the section instructs the model to call it). Rendering itself
+        // skips when `companions` is empty, so this just decides whether
+        // to even ask for a section.
+        if toolMode == .auto,
+            !effectiveToolsOff,
+            !preflight.companions.isEmpty,
+            tools.contains(where: { $0.function.name == "capabilities_load" }),
+            let companionsSection = PreflightCompanions.render(preflight.companions)
+        {
+            comp.append(
+                .dynamic(
+                    id: "pluginCompanions",
+                    label: "Plugin Companions",
+                    content: companionsSection
+                )
+            )
+            trace?.set("pluginCompanions", String(preflight.companions.count))
+        }
+
         // Agent-loop guidance: short cheat-sheet for the chat-layer-
         // intercepted tools (todo / complete / clarify / share_artifact).
         // Gated on at least one of those names appearing in the resolved
@@ -297,16 +324,32 @@ public struct SystemPromptComposer: Sendable {
         // We also fire during sandbox init-pending (autonomousEnabled but
         // sandbox tools haven't registered yet). Without that, the agent
         // had no signal that plugin creation would be available once the
-        // container finished provisioning — `pluginCreatorSkillSection`
-        // already gates on `canCreatePlugins`, so this stays correct.
-        let sandboxAvailable = executionMode.usesSandboxTools || autonomousEnabled
-        if !effectiveToolsOff,
-            sandboxAvailable,
-            ToolRegistry.shared.dynamicCatalogIsEmpty(),
-            !hasDynamicTools(toolMode: toolMode, preflight: preflight, agentId: agentId),
-            let pluginCreator = await PreflightCapabilitySearch.pluginCreatorSkillSection(for: agentId)
-        {
-            comp.append(.dynamic(id: "pluginCreator", label: "Plugin Creator", content: pluginCreator))
+        // container finished provisioning — `canCreatePlugins` already
+        // folds `autonomousEnabled && pluginCreate`, so this stays correct.
+        //
+        // All gate inputs are snapshotted here so the decision can't race
+        // a sibling test / plugin registration / skill toggle happening on
+        // the MainActor between our `await`s.
+        let pluginCreatorSkill = SkillManager.shared.skill(named: "Sandbox Plugin Creator")
+        let gateInputs = PluginCreatorGate.Inputs(
+            effectiveToolsOff: effectiveToolsOff,
+            sandboxAvailable: executionMode.usesSandboxTools || autonomousEnabled,
+            canCreatePlugins: canCreatePlugins,
+            dynamicCatalogIsEmpty: ToolRegistry.shared.dynamicCatalogIsEmpty(),
+            hasResolvedDynamicTools: hasDynamicTools(toolMode: toolMode, preflight: preflight, agentId: agentId),
+            skillEnabled: pluginCreatorSkill?.enabled ?? false
+        )
+        if PluginCreatorGate.shouldInject(gateInputs), let skill = pluginCreatorSkill {
+            comp.append(
+                .dynamic(
+                    id: "pluginCreator",
+                    label: "Plugin Creator",
+                    content: PluginCreatorGate.section(
+                        skillName: skill.name,
+                        instructions: skill.instructions
+                    )
+                )
+            )
             trace?.set("pluginCreatorInjected", "1")
         }
 
@@ -655,7 +698,11 @@ public struct SystemPromptComposer: Sendable {
     /// Compose agent base prompt and inject into an existing message array.
     /// Memory is now prepended to the latest user message instead of the
     /// system prompt so the system message stays byte-stable across turns.
-    /// Returns `(cacheHint, staticPrefix)` for the caller to set on the request.
+    /// The returned `(cacheHint, staticPrefix)` tuple is informational —
+    /// vmlx's `CacheCoordinator` is content-addressed and discovers
+    /// reusable prefixes autonomously, so callers no longer need to
+    /// thread these into the request. Kept on the signature for
+    /// preflight-cache bookkeeping callers (e.g. `SessionToolStateStore`).
     @discardableResult
     static func injectAgentContext(
         agentId: UUID,

@@ -137,7 +137,9 @@ struct EditableTextView: NSViewRepresentable {
     }
 
     private func syncScrollerVisibility(
-        _ textView: CustomNSTextView, scrollView: NSScrollView, coord: Coordinator
+        _ textView: CustomNSTextView,
+        scrollView: NSScrollView,
+        coord: Coordinator
     ) {
         // contentHeight runs ensureLayout (expensive) — only re-check when something
         // that could change scroller state has changed.
@@ -153,6 +155,7 @@ struct EditableTextView: NSViewRepresentable {
 
     // MARK: - Coordinator
 
+    @MainActor
     class Coordinator: NSObject, NSTextViewDelegate {
         var parent: EditableTextView
 
@@ -185,6 +188,7 @@ struct EditableTextView: NSViewRepresentable {
             parent.isComposing = false
         }
 
+        @MainActor
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             switch commandSelector {
             case #selector(NSResponder.moveUp(_:)):
@@ -200,6 +204,7 @@ struct EditableTextView: NSViewRepresentable {
             }
         }
 
+        @MainActor
         private func handleNewline() -> Bool {
             let isShift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
             if isShift {
@@ -258,7 +263,9 @@ final class CustomNSTextView: NSTextView {
     // MARK: IME composition
 
     override func setMarkedText(
-        _ string: Any, selectedRange: NSRange, replacementRange: NSRange
+        _ string: Any,
+        selectedRange: NSRange,
+        replacementRange: NSRange
     ) {
         super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
         notifyMarkedTextChanged(hasMarkedText())

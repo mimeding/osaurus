@@ -35,7 +35,17 @@ enum ContentBlockKind: Equatable {
     case sharedArtifact(artifact: SharedArtifact)
     case pendingToolCall(toolName: String, argPreview: String?, argSize: Int)
     case preflightCapabilities(items: [PreflightCapabilityItem])
-    case generationStats(ttft: TimeInterval?, tokensPerSecond: Double?, tokenCount: Int?)
+    /// Generation benchmarks footer for a completed assistant turn.
+    /// `unclosedReasoning` is true when vmlx's `GenerateCompletionInfo.unclosedReasoning`
+    /// fires — model ended the stream still inside a `<think>` block (trapped
+    /// thinking). Cell renderer surfaces a one-line "thinking didn't close"
+    /// warning beside the tok/s chip when set.
+    case generationStats(
+        ttft: TimeInterval?,
+        tokensPerSecond: Double?,
+        tokenCount: Int?,
+        unclosedReasoning: Bool
+    )
     case typingIndicator
     case groupSpacer
     case chart(spec: ChartSpec)
@@ -81,8 +91,12 @@ enum ContentBlockKind: Equatable {
         case let (.preflightCapabilities(lItems), .preflightCapabilities(rItems)):
             return lItems == rItems
 
-        case let (.generationStats(lTtft, lTps, lCount), .generationStats(rTtft, rTps, rCount)):
+        case let (
+            .generationStats(lTtft, lTps, lCount, lUnclosed),
+            .generationStats(rTtft, rTps, rCount, rUnclosed)
+        ):
             return lTtft == rTtft && lTps == rTps && lCount == rCount
+                && lUnclosed == rUnclosed
 
         case (.typingIndicator, .typingIndicator):
             return true
@@ -245,12 +259,18 @@ struct ContentBlock: Identifiable, Equatable, Hashable {
         ttft: TimeInterval?,
         tokensPerSecond: Double?,
         tokenCount: Int?,
+        unclosedReasoning: Bool = false,
         position: BlockPosition
     ) -> ContentBlock {
         ContentBlock(
             id: "stats-\(turnId.uuidString)",
             turnId: turnId,
-            kind: .generationStats(ttft: ttft, tokensPerSecond: tokensPerSecond, tokenCount: tokenCount),
+            kind: .generationStats(
+                ttft: ttft,
+                tokensPerSecond: tokensPerSecond,
+                tokenCount: tokenCount,
+                unclosedReasoning: unclosedReasoning
+            ),
             position: position
         )
     }
@@ -295,8 +315,12 @@ extension ContentBlock {
 
         let filteredTurns = turns.filter { $0.role != .tool }
 
-        for turn in filteredTurns {
+        for (index, turn) in filteredTurns.enumerated() {
             let isStreaming = turn.id == streamingTurnId
+            let nextRole: MessageRole? =
+                index + 1 < filteredTurns.count
+                ? filteredTurns[index + 1].role : nil
+            let isLastInGroup = nextRole != turn.role
             // User messages always start a new group (each is distinct input).
             // Assistant messages group consecutive turns (continuing responses).
             let isFirstInGroup = turn.role != previousRole || turn.role == .user
@@ -465,14 +489,16 @@ extension ContentBlock {
                         ttft: turn.timeToFirstToken,
                         tokensPerSecond: turn.generationTokensPerSecond,
                         tokenCount: turn.generationTokenCount,
+                        unclosedReasoning: turn.unclosedReasoning,
                         position: .middle
                     )
                 )
             }
 
-            // copy/regenerate bar pinned to the bottom of every completed assistant turn.
-            // only emitted once the turn is not streaming and has something worth acting on
-            if !isStreaming && turn.role == .assistant,
+            // copy/regenerate bar pinned to the bottom of the final completed assistant
+            // turn in a consecutive assistant group — intermediate tool-calling turns in
+            // an agent loop don't get their own footer.
+            if !isStreaming && turn.role == .assistant && isLastInGroup,
                 !turn.contentIsEmpty || !(turn.toolCalls ?? []).isEmpty
             {
                 turnBlocks.append(.assistantActions(turnId: turn.id, position: .last))

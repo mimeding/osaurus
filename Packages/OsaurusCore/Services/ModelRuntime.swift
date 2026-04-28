@@ -28,7 +28,7 @@ private let genLog = Logger(subsystem: "com.dinoki.osaurus", category: "Generati
 private let _vlmFactory = MLXVLM.VLMModelFactory.shared
 private let _llmFactory = MLXLLM.LLMModelFactory.shared
 
-actor ModelRuntime {
+public actor ModelRuntime {
     // MARK: - Types
 
     struct ModelCacheSummary: Sendable {
@@ -198,13 +198,6 @@ actor ModelRuntime {
         cachedConfig = nil
     }
 
-    /// Called when a chat window closes. With the package-level CacheCoordinator
-    /// the paged cache is content-addressed and bounded internally, so
-    /// per-session invalidation is not needed — stale blocks are LRU-evicted.
-    func invalidateSession(_ sessionId: String) {
-        // No-op: CacheCoordinator handles eviction via LRU on PagedCacheManager.
-    }
-
     // MARK: - Internals
 
     private func getConfig() async -> RuntimeConfig {
@@ -334,20 +327,32 @@ actor ModelRuntime {
     // selects model-aware cache types per layer (rotating for sliding-window
     // attention, paged for global attention, SSM state for Mamba layers),
     // sizes them based on the loaded model, and auto-flips into hybrid mode
-    // when the first SSM slot is admitted. Per OSAURUS-INTEGRATION.md,
-    // osaurus must not duplicate that work at the app layer — the only
-    // knobs we legitimately set here are:
-    //   - `modelKey`     — required for per-model isolation across loads
-    //   - `diskCacheDir` — osaurus-managed disk path (under our sandbox)
-    //   - `enableDiskCache=false` when the dir is not writable, so the
-    //     coordinator falls back to memory-only instead of crashing
+    // when the first SSM slot is admitted.
+    //
+    // Per OSAURUS-INTEGRATION.md §"Coordinator-owned KV sizing", osaurus
+    // adopts the four recommended knobs the library now ships defaults for:
+    //
+    //   - `usePagedCache: true`            — content-addressed paged blocks
+    //                                        (multi-turn cache reuse path)
+    //   - `defaultKVMode: .turboQuant(3,3)`— ~5x KV memory savings on slots
+    //                                        that submit `kvMode: .none`
+    //   - `defaultMaxKVSize: 8192`         — 8K ring window for slots that
+    //                                        submit `maxKVSize: nil`
+    //   - `longPromptMultiplier: 2.0`      — cap kicks in only past 16K
+    //                                        (8192 * 2.0) prompt tokens,
+    //                                        so short prompts keep full
+    //                                        attention.
+    //
+    // Per-request explicit values still override these. We continue to
+    // pass `modelKey` (per-model isolation) and `diskCacheDir` /
+    // `enableDiskCache` (osaurus-managed disk path, sandbox-aware).
     // Everything else (`maxCacheBlocks`, `diskCacheMaxGB`, `pagedBlockSize`,
-    // `ssmMaxEntries`) is left at the library default so vmlx can ship a
-    // single tuned answer per release.
+    // `ssmMaxEntries`) is left at the library default.
 
-    /// Builds a `CacheCoordinatorConfig` with the minimum overrides
-    /// required for osaurus's environment. See the file-level comment for
-    /// the rationale on why every other field is intentionally untouched.
+    /// Builds a `CacheCoordinatorConfig` with the overrides recommended
+    /// by vmlx-swift-lm's `OSAURUS-INTEGRATION.md` (Coordinator-owned KV
+    /// sizing) plus osaurus's per-environment disk-path config. See the
+    /// file-level comment for rationale on each knob.
     private nonisolated static func buildCacheCoordinatorConfig(
         modelName: String
     ) -> CacheCoordinatorConfig {
@@ -360,11 +365,15 @@ actor ModelRuntime {
             )
         }
 
-        var cacheConfig = CacheCoordinatorConfig()
-        cacheConfig.modelKey = modelName
-        cacheConfig.diskCacheDir = diskCacheDir
-        cacheConfig.enableDiskCache = diskDirUsable
-        return cacheConfig
+        return CacheCoordinatorConfig(
+            usePagedCache: true,
+            enableDiskCache: diskDirUsable,
+            diskCacheDir: diskCacheDir,
+            modelKey: modelName,
+            defaultKVMode: .turboQuant(keyBits: 3, valueBits: 3),
+            defaultMaxKVSize: 8192,
+            longPromptMultiplier: 2.0
+        )
     }
 
     /// Best-effort writability probe for the disk cache directory. Uses a
@@ -529,8 +538,9 @@ actor ModelRuntime {
     ) async throws -> String {
         var accumulated = ""
         var pendingTools: [ServiceToolInvocation] = []
+        let augmented = ModelRuntime.applyJSONMode(messages, jsonMode: parameters.jsonMode)
         let events = try await generateEventStream(
-            chatBuilder: { ModelRuntime.mapOpenAIChatToMLX(messages) },
+            chatBuilder: { ModelRuntime.mapOpenAIChatToMLX(augmented) },
             parameters: parameters,
             stopSequences: stopSequences,
             tools: tools,
@@ -572,8 +582,9 @@ actor ModelRuntime {
         modelId: String,
         modelName: String
     ) async throws -> AsyncThrowingStream<String, Error> {
+        let augmented = ModelRuntime.applyJSONMode(messages, jsonMode: parameters.jsonMode)
         let events = try await generateEventStream(
-            chatBuilder: { ModelRuntime.mapOpenAIChatToMLX(messages) },
+            chatBuilder: { ModelRuntime.mapOpenAIChatToMLX(augmented) },
             parameters: parameters,
             stopSequences: stopSequences,
             tools: tools,
@@ -582,6 +593,8 @@ actor ModelRuntime {
             modelName: modelName
         )
         let (stream, continuation) = AsyncThrowingStream<String, Error>.makeStream()
+        let modelSupportsThinking =
+            LocalReasoningCapability.capability(forModelId: modelName).supportsThinking
         let producerTask = Task {
             // Collect every tool invocation parsed from this completion. Local
             // models can emit multiple `<tool_call>` blocks per response;
@@ -589,6 +602,14 @@ actor ModelRuntime {
             // `.toolCall` event, so we keep iterating until the stream
             // finishes naturally instead of bailing on the first invocation.
             var pendingTools: [ServiceToolInvocation] = []
+            // Defensive scrubber for orphan `<think>` / `</think>` markers
+            // that vmlx's reasoning parser leaves in `.chunk` text when a
+            // low-bit MoE checkpoint emits a closer without a matching
+            // opener (or vice versa). Only engaged when the model
+            // declares thinking support — non-thinking models route
+            // through the untouched passthrough so legitimate `<think>`
+            // text in code blocks stays intact.
+            var scrubber = ThinkTagScrubber()
             do {
                 for try await ev in events {
                     if Task.isCancelled {
@@ -597,10 +618,17 @@ actor ModelRuntime {
                     }
                     switch ev {
                     case .tokens(let s):
-                        if !s.isEmpty { continuation.yield(s) }
+                        if !s.isEmpty {
+                            let cleaned = modelSupportsThinking ? scrubber.scrub(s) : s
+                            if !cleaned.isEmpty { continuation.yield(cleaned) }
+                        }
                     case .reasoning(let s):
                         if !s.isEmpty {
-                            continuation.yield(StreamingReasoningHint.encode(s))
+                            if modelSupportsThinking {
+                                continuation.yield(StreamingReasoningHint.encode(s))
+                            } else {
+                                continuation.yield(s)
+                            }
                         }
                     case .toolInvocation(let name, let argsJSON):
                         continuation.yield(StreamingToolHint.encode(name))
@@ -608,15 +636,23 @@ actor ModelRuntime {
                         pendingTools.append(
                             ServiceToolInvocation(toolName: name, jsonArguments: argsJSON)
                         )
-                    case .completionInfo(let tokenCount, let tokensPerSecond):
+                    case .completionInfo(let tokenCount, let tokensPerSecond, let unclosedReasoning):
                         continuation.yield(
                             StreamingStatsHint.encode(
                                 tokenCount: tokenCount,
-                                tokensPerSecond: tokensPerSecond
+                                tokensPerSecond: tokensPerSecond,
+                                unclosedReasoning: unclosedReasoning
                             )
                         )
                     }
                 }
+                // Drain any tail bytes the scrubber held back as a
+                // partial-tag candidate. If the stream ended without a
+                // following chunk to complete the candidate, those bytes
+                // are real content (the model just happened to end on
+                // `<` or `<th` etc.) and must be surfaced.
+                let tail = scrubber.flush()
+                if !tail.isEmpty { continuation.yield(tail) }
                 do {
                     try Self.throwIfTools(pendingTools)
                     continuation.finish()
@@ -653,7 +689,7 @@ actor ModelRuntime {
 
     /// Computes a deterministic hash from system content and tool names.
     /// Used by the HTTP API to expose a prefix_hash field in responses.
-    nonisolated static func computePrefixHash(
+    public nonisolated static func computePrefixHash(
         systemContent: String,
         toolNames: [String]
     ) -> String {
@@ -680,6 +716,7 @@ actor ModelRuntime {
         temperature: Float,
         maxTokens: Int,
         topP: Float,
+        topK: Int = 0,
         repetitionPenalty: Float?,
         stopSequences: [String] = []
     ) -> MLXLMCommon.GenerateParameters {
@@ -687,6 +724,7 @@ actor ModelRuntime {
             maxTokens: maxTokens,
             temperature: temperature,
             topP: topP,
+            topK: topK,
             repetitionPenalty: repetitionPenalty,
             repetitionContextSize: 20,
             extraStopStrings: stopSequences
@@ -712,6 +750,40 @@ actor ModelRuntime {
         } else {
             return tools.map { $0.toTokenizerToolSpec() }
         }
+    }
+
+    /// When `jsonMode` is true, prepend (or augment) a system instruction
+    /// telling the model to respond with a single valid JSON object.
+    /// OpenAI's `response_format: {type: json_object}` semantics — local
+    /// models honor it via prompt injection (vmlx does not yet ship a
+    /// constraint-grammar sampler hook). Returns `messages` unchanged
+    /// when `jsonMode` is false so the no-op path is free.
+    nonisolated static func applyJSONMode(
+        _ messages: [ChatMessage],
+        jsonMode: Bool
+    ) -> [ChatMessage] {
+        guard jsonMode else { return messages }
+        let directive = """
+            You must respond with a single valid JSON object and nothing else. \
+            Do not include markdown code fences, prose, or explanations — output \
+            only the JSON.
+            """
+        var out = messages
+        if let firstSystemIdx = out.firstIndex(where: { $0.role == "system" }) {
+            let existing = out[firstSystemIdx].content ?? ""
+            out[firstSystemIdx] = ChatMessage(
+                role: "system",
+                content: existing.isEmpty ? directive : existing + "\n\n" + directive,
+                tool_calls: out[firstSystemIdx].tool_calls,
+                tool_call_id: out[firstSystemIdx].tool_call_id
+            )
+        } else {
+            out.insert(
+                ChatMessage(role: "system", content: directive, tool_calls: nil, tool_call_id: nil),
+                at: 0
+            )
+        }
+        return out
     }
 
     /// Map OpenAI-format chat messages to MLX `Chat.Message`s.
@@ -742,23 +814,27 @@ actor ModelRuntime {
                 let toolCalls = toMLXToolCalls(m.tool_calls)
                 // Skip fully-empty assistant turns (no content AND no tool calls).
                 if content.isEmpty && (toolCalls?.isEmpty ?? true) { continue }
-                out.append(MLXLMCommon.Chat.Message(
-                    role: .assistant,
-                    content: content,
-                    images: images,
-                    videos: [],
-                    toolCalls: toolCalls,
-                    toolCallId: nil
-                ))
+                out.append(
+                    MLXLMCommon.Chat.Message(
+                        role: .assistant,
+                        content: content,
+                        images: images,
+                        videos: [],
+                        toolCalls: toolCalls,
+                        toolCallId: nil
+                    )
+                )
             case "tool":
-                out.append(MLXLMCommon.Chat.Message(
-                    role: .tool,
-                    content: m.content ?? "",
-                    images: images,
-                    videos: [],
-                    toolCalls: nil,
-                    toolCallId: m.tool_call_id
-                ))
+                out.append(
+                    MLXLMCommon.Chat.Message(
+                        role: .tool,
+                        content: m.content ?? "",
+                        images: images,
+                        videos: [],
+                        toolCalls: nil,
+                        toolCallId: m.tool_call_id
+                    )
+                )
             default:
                 out.append(.init(role: .user, content: m.content ?? "", images: images))
             }
@@ -778,7 +854,8 @@ actor ModelRuntime {
             let argsData = tc.function.arguments.data(using: .utf8) ?? Data()
             let args: [String: MLXLMCommon.JSONValue] =
                 (try? JSONDecoder().decode(
-                    [String: MLXLMCommon.JSONValue].self, from: argsData
+                    [String: MLXLMCommon.JSONValue].self,
+                    from: argsData
                 )) ?? [:]
             return MLXLMCommon.ToolCall(
                 function: .init(name: tc.function.name, arguments: args)
@@ -836,17 +913,35 @@ actor ModelRuntime {
     }
 
     /// Preflight check for JANGTQ-routed models. Reads `jang_config.json`
-    /// and, if `weight_format == "mxtq"`, verifies the `jangtq_runtime.safetensors`
-    /// sidecar is present in the model directory. Throws a clear error on
-    /// mismatch so callers see a message instead of waiting for vmlx to
-    /// report the same problem later.
+    /// and validates the bundle's `weight_format` stamp against the presence
+    /// of the `jangtq_runtime.safetensors` sidecar. Throws a clear error
+    /// on either mismatch (forward or inverse) so callers see a message
+    /// instead of waiting for vmlx to report the same problem 60+ shards
+    /// later — or worse, hitting an unhandled-keys runtime crash.
     ///
-    /// As of `vmlx-swift-lm 9e647a6`, vmlx itself fails-fast with an equivalent
-    /// NSError at weight-load time, so this osaurus-side check is primarily a
-    /// speed optimization: we refuse before the 60+ safetensors shards start
-    /// loading, giving users an instant error instead of a multi-second wait.
-    /// It also defends against older vmlx pins where the same mismatch would
-    /// instead reach `TurboQuantSwitchLinear.fatalError` and abort the process.
+    /// Two failure modes detected:
+    ///
+    /// 1. **Forward mismatch**: `weight_format == "mxtq"` declared but the
+    ///    sidecar is absent. vmlx's `LLMModelFactory.dispatchDeepseekV4`
+    ///    routes to the JANGTQ class purely on the stamp, then
+    ///    `TurboQuantSwitchLinear.callAsFunction` `fatalError`s on the first
+    ///    forward pass when the runtime cache is empty. (As of
+    ///    `vmlx-swift-lm 9e647a6` vmlx fails-fast with an NSError at load
+    ///    time instead of aborting, but defense-in-depth costs nothing.)
+    ///
+    /// 2. **Inverse mismatch (mislabeled bundle)**: sidecar IS present but
+    ///    `weight_format != "mxtq"` (typically stamped `"bf16"` from a
+    ///    quantization pipeline that forgot to update the label after
+    ///    swapping in TurboQuant codebooks). vmlx's factory then dispatches
+    ///    to the BASE `DeepseekV4Model` / `MiniMaxModel` / etc. class, hits
+    ///    the `tq_norms` / `tq_packed` keys in the safetensors, and the
+    ///    parameter loader throws `Unhandled keys [...]`. Confirmed in the
+    ///    wild on early DSV4-Flash JANGTQ bundles (live-repro 2026-04-25).
+    ///    The vmlx integration doc explicitly notes this case via the
+    ///    `DSV4_FORCE_JANGTQ=1` env-var workaround. Throwing here gives the
+    ///    user a remediation step (patch `weight_format` to `"mxtq"` or
+    ///    re-download from a corrected source) before vmlx loads any shards.
+    ///
     /// Exposed at module scope for unit testing (same pattern as
     /// `resolveLocalModelDirectory`).
     static func validateJANGTQSidecarIfRequired(at directory: URL, name: String) throws {
@@ -860,25 +955,49 @@ actor ModelRuntime {
             let weight_format: String?
         }
         guard let data = try? Data(contentsOf: jangConfigURL),
-            let probe = try? JSONDecoder().decode(JangConfigProbe.self, from: data),
-            probe.weight_format == "mxtq"
+            let probe = try? JSONDecoder().decode(JangConfigProbe.self, from: data)
         else {
             return
         }
 
         let sidecarURL = directory.appendingPathComponent("jangtq_runtime.safetensors")
-        guard !FileManager.default.fileExists(atPath: sidecarURL.path) else { return }
+        let sidecarPresent = FileManager.default.fileExists(atPath: sidecarURL.path)
+        let isMxtq = probe.weight_format == "mxtq"
 
-        throw NSError(
-            domain: "ModelRuntime",
-            code: 2,
-            userInfo: [
-                NSLocalizedDescriptionKey:
-                    "Model '\(name)' declares JANGTQ (weight_format: \"mxtq\") but is missing "
-                    + "required sidecar file 'jangtq_runtime.safetensors'. "
-                    + "Re-download the full model or obtain the sidecar from the original publisher."
-            ]
-        )
+        // Forward mismatch: declared JANGTQ, sidecar missing.
+        if isMxtq && !sidecarPresent {
+            throw NSError(
+                domain: "ModelRuntime",
+                code: 2,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Model '\(name)' declares JANGTQ (weight_format: \"mxtq\") but is missing "
+                        + "required sidecar file 'jangtq_runtime.safetensors'. "
+                        + "Re-download the full model or obtain the sidecar from the original publisher."
+                ]
+            )
+        }
+
+        // Inverse mismatch: sidecar present but stamp says non-JANGTQ. The
+        // safetensors carry `tq_norms` / `tq_packed` keys vmlx's base class
+        // can't decode → "Unhandled keys" runtime error. Catch it here.
+        if sidecarPresent && !isMxtq {
+            let actualStamp = probe.weight_format ?? "absent"
+            throw NSError(
+                domain: "ModelRuntime",
+                code: 3,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Model '\(name)' ships the JANGTQ runtime sidecar "
+                        + "('jangtq_runtime.safetensors') but its jang_config.json "
+                        + "declares weight_format: \"\(actualStamp)\". This is a mislabeled "
+                        + "bundle — the safetensors carry TurboQuant tensors (tq_norms / "
+                        + "tq_packed) that vmlx's base model class cannot decode. "
+                        + "Fix: set weight_format to \"mxtq\" in jang_config.json, "
+                        + "or re-download from a corrected source."
+                ]
+            )
+        }
     }
 
     /// Pure, testable sibling of `findLocalDirectory` that takes the root

@@ -42,6 +42,7 @@ public actor RemoteProviderService: ToolCapableService {
     private let providerPrefix: String
     private var availableModels: [String]
     private var session: URLSession
+    private var cachedOAuthTokens: RemoteProviderOAuthTokens?
 
     public nonisolated var id: String {
         "remote-\(provider.id.uuidString)"
@@ -50,6 +51,7 @@ public actor RemoteProviderService: ToolCapableService {
     public init(provider: RemoteProvider, models: [String], resolvedHeaders: [String: String]) {
         self.provider = provider
         self.cachedHeaders = resolvedHeaders
+        self.cachedOAuthTokens = provider.getOAuthTokens()
         self.availableModels = models
         // Create a unique prefix for model names (lowercase, sanitized)
         self.providerPrefix = provider.name
@@ -173,6 +175,7 @@ public actor RemoteProviderService: ToolCapableService {
             toolChoice: nil
         )
 
+        try await refreshCodexOAuthIfNeeded()
         let (data, response) = try await session.data(for: try buildURLRequest(for: request))
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -210,7 +213,7 @@ public actor RemoteProviderService: ToolCapableService {
             )
         }
 
-        return try _streamRemote(
+        return try await _streamRemote(
             modelName: modelName,
             messages: messages,
             parameters: parameters,
@@ -257,6 +260,7 @@ public actor RemoteProviderService: ToolCapableService {
             request.stop = stopSequences
         }
 
+        try await refreshCodexOAuthIfNeeded()
         let (data, response) = try await session.data(for: try buildURLRequest(for: request))
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -319,7 +323,7 @@ public actor RemoteProviderService: ToolCapableService {
             )
         }
 
-        return try _streamRemote(
+        return try await _streamRemote(
             modelName: modelName,
             messages: messages,
             parameters: parameters,
@@ -445,6 +449,57 @@ public actor RemoteProviderService: ToolCapableService {
     /// stream — which avoids the iterator-corruption mode where racing
     /// `iterator.next()` against a sleep would leave the underlying URLSession
     /// task in a half-cancelled state and silently truncate the stream.
+    /// Idempotent connect-phase retry. Wraps `URLSession.bytes(for:)` so
+    /// transient TCP / DNS / TLS failures and 5xx-without-body upstream
+    /// hiccups don't surface as fatal errors before the consumer has
+    /// seen any bytes. Once the response head arrives (or we've tried
+    /// `maxAttempts` times) we hand the result back to the caller and
+    /// retry never happens again — by design, mid-stream errors are not
+    /// retried because the consumer has already begun seeing tokens.
+    ///
+    /// Backoff: 200ms, 800ms (exponential, capped). Total wall time at
+    /// `maxAttempts = 3` is therefore ≤ ~1s of added latency on success.
+    static func connectWithRetry(
+        session: URLSession,
+        urlRequest: URLRequest,
+        maxAttempts: Int = 3
+    ) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        var lastError: Error?
+        for attempt in 0 ..< maxAttempts {
+            if attempt > 0 {
+                let delayMs: UInt64 = attempt == 1 ? 200_000_000 : 800_000_000
+                try? await Task.sleep(nanoseconds: delayMs)
+            }
+            do {
+                return try await session.bytes(for: urlRequest)
+            } catch {
+                if Task.isCancelled { throw error }
+                lastError = error
+                // Only retry on classic transient categories. Auth /
+                // bad-request type errors are not retried.
+                guard Self.isRetryableConnectError(error) else { throw error }
+            }
+        }
+        throw lastError ?? RemoteProviderServiceError.invalidResponse
+    }
+
+    /// Heuristic: classify a URLError as a connect-phase transient. We
+    /// retry the connection on these and treat everything else as
+    /// terminal. Errors on auth / DNS-permanent / cancelled fall through
+    /// to the caller untouched.
+    private static func isRetryableConnectError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .timedOut, .cannotFindHost, .cannotConnectToHost,
+            .networkConnectionLost, .dnsLookupFailed, .notConnectedToInternet,
+            .secureConnectionFailed, .serverCertificateUntrusted,
+            .resourceUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func makeChunkStream(
         from bytes: URLSession.AsyncBytes
     ) -> AsyncThrowingStream<Data, Error> {
@@ -684,7 +739,7 @@ public actor RemoteProviderService: ToolCapableService {
                 return try handleGeminiEvent(jsonData, state: &state, yield: yield)
             case .anthropic:
                 return try handleAnthropicEvent(jsonData, state: &state, yield: yield)
-            case .openResponses:
+            case .openResponses, .openAICodex:
                 return try handleOpenResponsesEvent(jsonData, state: &state, yield: yield)
             case .openaiLegacy, .osaurus:
                 return try handleOpenAIEvent(jsonData, state: &state, yield: yield)
@@ -1080,7 +1135,7 @@ public actor RemoteProviderService: ToolCapableService {
         stopSequences: [String],
         tools: [Tool]?,
         toolChoice: ToolChoiceOption?
-    ) throws -> AsyncThrowingStream<String, Error> {
+    ) async throws -> AsyncThrowingStream<String, Error> {
         var request = buildChatRequest(
             messages: messages,
             parameters: parameters,
@@ -1091,6 +1146,7 @@ public actor RemoteProviderService: ToolCapableService {
         )
         if !stopSequences.isEmpty { request.stop = stopSequences }
 
+        try await refreshCodexOAuthIfNeeded()
         let urlRequest = try buildURLRequest(for: request)
         let currentSession = self.session
         let providerType = self.provider.providerType
@@ -1105,7 +1161,15 @@ public actor RemoteProviderService: ToolCapableService {
 
         let producerTask = Task {
             do {
-                let (bytes, response) = try await currentSession.bytes(for: urlRequest)
+                // Idempotent connect-phase retry: only retries the
+                // `bytes(for:)` call (no stream data has been delivered
+                // upstream yet, so retrying is safe). Once we start
+                // iterating bytes / dispatching SSE chunks we never
+                // retry — the consumer has already begun seeing output.
+                let (bytes, response) = try await Self.connectWithRetry(
+                    session: currentSession,
+                    urlRequest: urlRequest
+                )
 
                 guard let httpResponse = response as? HTTPURLResponse else {
                     continuation.finish(throwing: RemoteProviderServiceError.invalidResponse)
@@ -1463,8 +1527,11 @@ public actor RemoteProviderService: ToolCapableService {
             max_completion_tokens: parameters.maxTokens,
             stream: stream,
             top_p: isReasoningModel ? nil : parameters.topPOverride,
-            frequency_penalty: nil,
-            presence_penalty: nil,
+            // Forward the raw OpenAI penalties — most upstream OpenAI-
+            // compatible providers accept these natively, and stripping
+            // them silently was a previous gap that surprised clients.
+            frequency_penalty: isReasoningModel ? nil : parameters.frequencyPenalty,
+            presence_penalty: isReasoningModel ? nil : parameters.presencePenalty,
             stop: nil,
             tools: tools,
             tool_choice: toolChoice,
@@ -1495,6 +1562,30 @@ public actor RemoteProviderService: ToolCapableService {
             disable_thinking: disableThinking == true ? true : nil,
             include_venice_system_prompt: includeSystemPrompt == false ? false : nil
         )
+    }
+
+    private func refreshCodexOAuthIfNeeded() async throws {
+        guard provider.authType == .openAICodexOAuth else { return }
+        guard let tokens = cachedOAuthTokens else {
+            throw RemoteProviderServiceError.requestFailed("Missing ChatGPT/Codex sign-in tokens")
+        }
+        guard tokens.isExpired else { return }
+
+        let refreshed = try await OpenAICodexOAuthService.refresh(tokens)
+        cachedOAuthTokens = refreshed
+        RemoteProviderKeychain.saveOAuthTokens(refreshed, for: provider.id)
+    }
+
+    private func codexOAuthHeaders() throws -> [String: String] {
+        guard let tokens = cachedOAuthTokens else {
+            throw RemoteProviderServiceError.requestFailed("Missing ChatGPT/Codex sign-in tokens")
+        }
+        return [
+            "Authorization": "Bearer \(tokens.accessToken)",
+            "chatgpt-account-id": tokens.accountId,
+            "OpenAI-Beta": "responses=experimental",
+            "originator": "codex_cli_rs",
+        ]
     }
 
     /// Non-streaming `generateContent` fallback for Gemini image models (Nano Banana).
@@ -1684,9 +1775,15 @@ public actor RemoteProviderService: ToolCapableService {
             urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         }
 
-        // Headers are resolved once at service creation time (on @MainActor)
-        // to avoid Keychain access issues from the actor's background executor.
-        for (key, value) in cachedHeaders {
+        let headers: [String: String]
+        if provider.authType == .openAICodexOAuth {
+            headers = try codexOAuthHeaders()
+        } else {
+            // Headers are resolved once at service creation time (on @MainActor)
+            // to avoid Keychain access issues from the actor's background executor.
+            headers = cachedHeaders
+        }
+        for (key, value) in headers {
             urlRequest.setValue(value, forHTTPHeaderField: key)
         }
 
@@ -1702,6 +1799,8 @@ public actor RemoteProviderService: ToolCapableService {
         case .openResponses:
             let openResponsesRequest = request.toOpenResponsesRequest()
             bodyData = try encoder.encode(openResponsesRequest)
+        case .openAICodex:
+            bodyData = try request.toCodexOpenResponsesRequest().toCodexOAuthPayloadData()
         case .gemini:
             let geminiRequest = request.toGeminiRequest()
             bodyData = try encoder.encode(geminiRequest)
@@ -1746,7 +1845,7 @@ public actor RemoteProviderService: ToolCapableService {
             let toolCalls = response.choices.first?.message.tool_calls
             return (content, toolCalls)
 
-        case .openResponses:
+        case .openResponses, .openAICodex:
             let response = try JSONDecoder().decode(OpenResponsesResponse.self, from: data)
             var textContent = ""
             var toolCalls: [ToolCall] = []
@@ -1935,24 +2034,27 @@ private struct OpenResponsesSSEEvent: Decodable {
 // MARK: - Request/Response Models for Remote Provider
 
 /// Reasoning configuration for OpenAI reasoning models (o-series, gpt-5+).
-private struct ReasoningConfig: Encodable {
+struct ReasoningConfig: Encodable {
     let effort: String
 }
 
 /// Venice-specific parameters injected into the request body for Venice AI providers.
 /// See https://docs.venice.ai/api-reference/api-spec
-private struct VeniceParameters: Encodable {
+struct VeniceParameters: Encodable {
     var enable_web_search: String?
     var disable_thinking: Bool?
     var include_venice_system_prompt: Bool?
 }
 
 /// Chat request structure for remote providers (matches OpenAI format)
-private struct RemoteChatRequest: Encodable {
+struct RemoteChatRequest: Encodable {
     let model: String
     let messages: [ChatMessage]
     let temperature: Float?
-    let max_completion_tokens: Int?  // OpenAI's newer parameter name
+    /// Canonical token-cap field. Named after OpenAI's newer parameter; the
+    /// on-the-wire key is chosen in `encode(to:)` based on the model — see
+    /// the block below for the Mistral / OpenAI-compat rationale.
+    let max_completion_tokens: Int?
     let stream: Bool
     let top_p: Float?
     let frequency_penalty: Float?
@@ -1965,12 +2067,52 @@ private struct RemoteChatRequest: Encodable {
     let modelOptions: [String: ModelOptionValue]
     let veniceParameters: VeniceParameters?
 
-    private enum CodingKeys: String, CodingKey {
-        case model, messages, temperature, max_completion_tokens, stream
+    enum CodingKeys: String, CodingKey {
+        case model, messages, temperature, max_completion_tokens, max_tokens, stream
         case top_p, frequency_penalty, presence_penalty, stop, tools, tool_choice
         case reasoning_effort
         case reasoning
         case veniceParameters = "venice_parameters"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(model, forKey: .model)
+        try container.encode(messages, forKey: .messages)
+        try container.encodeIfPresent(temperature, forKey: .temperature)
+
+        // OpenAI-compatible endpoints disagree on the token-cap key:
+        //   - OpenAI's o1/o3/o4/gpt-5 reasoning models REQUIRE
+        //     `max_completion_tokens` and reject `max_tokens`.
+        //   - Mistral, OpenRouter, DeepSeek, Groq, Azure, and most other
+        //     "OpenAI-compatible" schemas are strict and reject
+        //     `max_completion_tokens` with a 422 (issue #556).
+        //   - OpenAI's own non-reasoning models accept BOTH names.
+        // Emit the widely-accepted `max_tokens` by default and only switch
+        // to `max_completion_tokens` for reasoning-model IDs, which are
+        // identified by prefix and don't collide with third-party
+        // provider naming.
+        if OpenAIReasoningProfile.matches(modelId: model) {
+            try container.encodeIfPresent(
+                max_completion_tokens,
+                forKey: .max_completion_tokens
+            )
+        } else {
+            try container.encodeIfPresent(max_completion_tokens, forKey: .max_tokens)
+        }
+
+        try container.encode(stream, forKey: .stream)
+        try container.encodeIfPresent(top_p, forKey: .top_p)
+        try container.encodeIfPresent(frequency_penalty, forKey: .frequency_penalty)
+        try container.encodeIfPresent(presence_penalty, forKey: .presence_penalty)
+        try container.encodeIfPresent(stop, forKey: .stop)
+        try container.encodeIfPresent(tools, forKey: .tools)
+        try container.encodeIfPresent(tool_choice, forKey: .tool_choice)
+        try container.encodeIfPresent(reasoning_effort, forKey: .reasoning_effort)
+        try container.encodeIfPresent(reasoning, forKey: .reasoning)
+        try container.encodeIfPresent(veniceParameters, forKey: .veniceParameters)
+        // `modelOptions` is intentionally not in `CodingKeys` — it stays
+        // in-process for model-specific feature flags.
     }
 
     /// Convert to Anthropic Messages API request format
@@ -2326,7 +2468,7 @@ private struct RemoteChatRequest: Encodable {
     }
 
     /// Convert to Open Responses API request format
-    func toOpenResponsesRequest() -> OpenResponsesRequest {
+    func toOpenResponsesRequest(alwaysUseInputItems: Bool = false) -> OpenResponsesRequest {
         var inputItems: [OpenResponsesInputItem] = []
         var instructions: String? = nil
 
@@ -2427,7 +2569,7 @@ private struct RemoteChatRequest: Encodable {
 
         // Determine input format
         let input: OpenResponsesInput
-        if inputItems.count == 1, case .message(let msg) = inputItems[0], msg.role == "user" {
+        if !alwaysUseInputItems, inputItems.count == 1, case .message(let msg) = inputItems[0], msg.role == "user" {
             // Single user message - use text shorthand
             input = .text(msg.content.plainText)
         } else {
@@ -2454,6 +2596,25 @@ private struct RemoteChatRequest: Encodable {
             reasoning: reasoning
         )
     }
+
+    func toCodexOpenResponsesRequest() -> OpenResponsesRequest {
+        toOpenResponsesRequest(alwaysUseInputItems: true)
+    }
+}
+
+extension OpenResponsesRequest {
+    func toCodexOAuthPayloadData() throws -> Data {
+        let encoded = try JSONEncoder().encode(self)
+        guard var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+            return encoded
+        }
+
+        object["store"] = false
+        object["include"] = ["reasoning.encrypted_content"]
+        object.removeValue(forKey: "max_output_tokens")
+
+        return try JSONSerialization.data(withJSONObject: object)
+    }
 }
 
 // MARK: - Static Factory for Creating Services
@@ -2461,6 +2622,13 @@ private struct RemoteChatRequest: Encodable {
 extension RemoteProviderService {
     /// Fetch models from a remote provider and create a service instance
     public static func fetchModels(from provider: RemoteProvider) async throws -> [String] {
+        if provider.providerType == .openAICodex {
+            guard provider.hasOAuthTokens else {
+                throw RemoteProviderServiceError.requestFailed("Missing ChatGPT/Codex sign-in tokens")
+            }
+            return OpenAICodexOAuthService.supportedModels
+        }
+
         if provider.providerType == .anthropic {
             guard let baseURL = provider.url(for: "/models") else {
                 throw RemoteProviderServiceError.invalidURL

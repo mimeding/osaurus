@@ -1,5 +1,5 @@
 {
-  "originHash" : "296736b807a5598b54c06ee08a44b2ae494ab97f2481e87e9d8c3319126ba8bf",
+  "originHash" : "74f2646e633968b3c9810fe6d2934ac0c8ec16744addf691c0270a4d68eba943",
   "pins" : [
     {
       "identity" : "aachartkit-swift",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/FluidInference/FluidAudio.git",
       "state" : {
-        "revision" : "57551cd90e0bbec342766244358bcf08afb05290",
-        "version" : "0.13.6"
+        "revision" : "d302273d49ef4d8914b27f20d342be482e8810f1",
+        "version" : "0.14.1"
       }
     },
     {
@@ -186,8 +186,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jkrukowski/swift-embeddings.git",
       "state" : {
-        "revision" : "66994e3b3ed172a9b691b59d11bd0702c3f5eb33",
-        "version" : "0.0.26"
+        "branch" : "main",
+        "revision" : "66994e3b3ed172a9b691b59d11bd0702c3f5eb33"
       }
     },
     {
@@ -393,8 +393,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/rryam/VecturaKit",
       "state" : {
-        "branch" : "main",
-        "revision" : "5fed66f3700bee561326e719250aa01c49fc53d5"
+        "revision" : "a1b93774d16d8a6e7fc39b7cda9449b719f07f48"
       }
     },
     {
@@ -402,8 +401,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/osaurus-ai/vmlx-swift-lm",
       "state" : {
-        "branch" : "main",
-        "revision" : "105ff8bf6a1665aa4e19e64586e63fd8d370d244"
+        "revision" : "a7db6e5fdde525c43f72ba48df8ba12a07451ee9"
       }
     },
     {

@@ -840,6 +840,7 @@ final class NativeStatsView: NSView {
         ttft: TimeInterval?,
         tokensPerSecond: Double?,
         tokenCount: Int?,
+        unclosedReasoning: Bool = false,
         theme: any ThemeProtocol
     ) {
         var parts: [String] = []
@@ -855,6 +856,23 @@ final class NativeStatsView: NSView {
         }
         if let count = tokenCount {
             parts.append("\(count) tokens")
+        }
+        // Trailing diagnostic chip — vmlx tells us the model never emitted
+        // `</think>` (or the family's close tag) before EOS / max_tokens.
+        // Three observed scenarios all benefit from the same hint:
+        //   1. Reasoning-trained Qwen3.6-A3B / DSV4 fine-tunes loop on
+        //      validation prompts ("give me a 20-digit number") — answer
+        //      buried in reasoning; user should toggle the model's
+        //      "Disable Thinking" option for the next turn (verified live).
+        //   2. Gemma-4 / harmony-channel models capped early by
+        //      `max_tokens` — analysis channel didn't close; user should
+        //      raise the cap (verified live, gemma-4-e2b at 32 tok cap).
+        //   3. Any thinking model that emitted EOS while still in
+        //      reasoning — answer is in the pane above.
+        // Text intentionally does NOT name a specific toggle so the chip
+        // reads accurately for every model family.
+        if unclosedReasoning {
+            parts.append("⚠ thinking didn't close — answer may be in reasoning above")
         }
         label.stringValue = parts.joined(separator: " \u{2022} ")
         label.font = NSFont.monospacedDigitSystemFont(
@@ -1044,21 +1062,18 @@ final class NativeMessageCellView: NSTableCellView {
         case let .preflightCapabilities(items):
             configureAsPreflight(block: block, items: items, context: context, sameKind: sameKind)
 
-        case let .generationStats(ttft, tokensPerSecond, tokenCount):
+        case let .generationStats(ttft, tokensPerSecond, tokenCount, unclosedReasoning):
             configureAsStats(
                 ttft: ttft,
                 tokensPerSecond: tokensPerSecond,
                 tokenCount: tokenCount,
+                unclosedReasoning: unclosedReasoning,
                 context: context,
                 sameKind: sameKind
             )
 
         case let .assistantActions(turnId):
             configureAsAssistantActions(turnId: turnId, context: context, sameKind: sameKind)
-
-        default:
-            // last resort: no hosted fallback — render a compact unsupported-block placeholder
-            configureAsUnsupported(sameKind: sameKind)
         }
     }
 
@@ -1170,7 +1185,8 @@ final class NativeMessageCellView: NSTableCellView {
         let targetBg: CGColor?
         let targetRadius: CGFloat
         if role == .assistant, let bubbleColor = context.theme.assistantBubbleColor {
-            targetBg = NSColor(bubbleColor)
+            targetBg =
+                NSColor(bubbleColor)
                 .withAlphaComponent(context.theme.assistantBubbleOpacity).cgColor
             targetRadius = 12
         } else {
@@ -1618,6 +1634,7 @@ final class NativeMessageCellView: NSTableCellView {
         ttft: TimeInterval?,
         tokensPerSecond: Double?,
         tokenCount: Int?,
+        unclosedReasoning: Bool,
         context: CellRenderingContext,
         sameKind: Bool
     ) {
@@ -1639,6 +1656,7 @@ final class NativeMessageCellView: NSTableCellView {
             ttft: ttft,
             tokensPerSecond: tokensPerSecond,
             tokenCount: tokenCount,
+            unclosedReasoning: unclosedReasoning,
             theme: context.theme
         )
     }
