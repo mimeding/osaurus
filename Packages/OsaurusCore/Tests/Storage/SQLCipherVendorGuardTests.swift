@@ -137,6 +137,15 @@ struct SQLCipherVendorGuardTests {
             """
         )
         #expect(
+            contents.contains("OSAURUS_OMIT_FTS5_HEADERS"),
+            """
+            OsaurusSQLCipher.h must define OSAURUS_OMIT_FTS5_HEADERS
+            before including sqlite3.h. The target cSettings flag
+            protects the C compilation, but Swift's Clang module
+            import parses this umbrella header separately.
+            """
+        )
+        #expect(
             contents.contains("#include \"sqlite3.h\""),
             "OsaurusSQLCipher.h must #include \"sqlite3.h\" so the codec define applies in the same translation unit."
         )

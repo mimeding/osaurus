@@ -30,6 +30,10 @@
 #define SQLITE_HAS_CODEC 1
 #endif
 
+#ifndef OSAURUS_OMIT_FTS5_HEADERS
+#define OSAURUS_OMIT_FTS5_HEADERS 1
+#endif
+
 #include "sqlite3.h"
 /* `sqlite3ext.h` lives in the same `include/` dir alongside us, so
  * Clang's umbrella-header consistency check requires it to either
