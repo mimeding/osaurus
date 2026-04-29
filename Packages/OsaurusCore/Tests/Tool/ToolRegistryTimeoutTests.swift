@@ -36,6 +36,25 @@ struct ToolRegistryTimeoutTests {
         }
     }
 
+    /// Tool body that ignores cooperative Swift cancellation. This mirrors
+    /// process / blocking I/O classes where returning a timeout envelope must
+    /// not wait for the losing branch to drain.
+    private struct BlockingSleepTool: OsaurusTool {
+        let name: String = "test_blocking_sleep"
+        let description: String = "Test fixture: blocks the thread longer than the timeout."
+        let parameters: JSONValue? = .object(["type": .string("object")])
+
+        func execute(argumentsJSON: String) async throws -> String {
+            let deadline = Date().timeIntervalSinceReferenceDate + 1.2
+            var spin = 0
+            while Date().timeIntervalSinceReferenceDate < deadline {
+                spin &+= 1
+            }
+            _ = spin
+            return ToolEnvelope.success(tool: name, text: "did not time out")
+        }
+    }
+
     /// Tool body that completes well within the test timeout. Used as a
     /// happy-path control to confirm the timeout race doesn't fire
     /// spuriously on fast tools.
@@ -80,6 +99,25 @@ struct ToolRegistryTimeoutTests {
             elapsed < latestAcceptableTimeout,
             "took \(elapsed)s — expected timeout at least \(SlowSleepTool.minimumTimeoutLeadSeconds)s before slow tool could finish"
         )
+    }
+
+    @Test
+    func blockingToolReturnsTimeoutWithoutWaitingForBodyToDrain() async throws {
+        let tool = BlockingSleepTool()
+        let started = Date()
+        let result = try await ToolRegistry.runToolBody(
+            tool,
+            argumentsJSON: "{}",
+            timeoutSeconds: 0.1
+        )
+        let elapsed = Date().timeIntervalSince(started)
+
+        #expect(ToolEnvelope.isError(result))
+        let data = result.data(using: .utf8)!
+        let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(parsed?["kind"] as? String == "timeout")
+        #expect(parsed?["tool"] as? String == tool.name)
+        #expect(elapsed < 1.0, "took \(elapsed)s — timeout waited for the blocked body")
     }
 
     @Test
