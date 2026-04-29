@@ -34,7 +34,7 @@ struct RemoteProviderEditSheet: View {
     @ObservedObject private var themeManager = ThemeManager.shared
 
     let provider: RemoteProvider?
-    var initialPreset: ProviderPreset? = nil
+    var initialPreset: ProviderPreset?
     let onSave: (RemoteProvider, String?, RemoteProviderOAuthTokens?) -> Void
 
     var body: some View {
@@ -60,12 +60,12 @@ private struct AddProviderFlow: View {
     let initialPreset: ProviderPreset?
     let onSave: (RemoteProvider, String?, RemoteProviderOAuthTokens?) -> Void
 
-    @State private var selectedPreset: ProviderPreset? = nil
+    @State private var selectedPreset: ProviderPreset?
     @State private var apiKey: String = ""
     @State private var openAIAuthMode: OpenAIProviderCredentialMode = .chatGPTSubscription
-    @State private var oauthTokens: RemoteProviderOAuthTokens? = nil
+    @State private var oauthTokens: RemoteProviderOAuthTokens?
     @State private var isTesting = false
-    @State private var testResult: ProviderTestResult? = nil
+    @State private var testResult: ProviderTestResult?
     @State private var hasAppeared = false
 
     // Known provider connection overrides for presets whose endpoint is user-specific.
@@ -189,13 +189,13 @@ private struct AddProviderFlow: View {
 
             Spacer()
 
-            Button(action: { dismiss() }) {
+            Button(action: { dismiss() }, label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(theme.secondaryText)
                     .frame(width: 28, height: 28)
                     .background(Circle().fill(theme.tertiaryBackground))
-            }
+            })
             .buttonStyle(PlainButtonStyle())
             .keyboardShortcut(.escape, modifiers: [])
         }
@@ -293,8 +293,7 @@ private struct AddProviderFlow: View {
 
                     // Help section
                     if let preset = selectedPreset, preset.isKnown, !preset.consoleURL.isEmpty,
-                        preset != .openai || openAIAuthMode == .platformAPIKey
-                    {
+                        preset != .openai || openAIAuthMode == .platformAPIKey {
                         helpSection(for: preset)
                     }
 
@@ -780,7 +779,7 @@ private struct AddProviderFlow: View {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     showAdvanced.toggle()
                 }
-            }) {
+            }, label: {
                 HStack(spacing: 8) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
@@ -800,7 +799,7 @@ private struct AddProviderFlow: View {
                         .fill(theme.tertiaryBackground.opacity(0.5))
                 )
                 .contentShape(Rectangle())
-            }
+            })
             .buttonStyle(PlainButtonStyle())
 
             if showAdvanced {
@@ -837,13 +836,13 @@ private struct AddProviderFlow: View {
                             Spacer()
                             Button(action: {
                                 customHeaders.append(HeaderEntry(key: "", value: "", isSecret: false))
-                            }) {
+                            }, label: {
                                 Image(systemName: "plus")
                                     .font(.system(size: 10, weight: .semibold))
                                     .foregroundColor(theme.accentColor)
                                     .frame(width: 24, height: 24)
                                     .background(Circle().fill(theme.accentColor.opacity(0.1)))
-                            }
+                            })
                             .buttonStyle(PlainButtonStyle())
                         }
 
@@ -980,7 +979,7 @@ private struct AddProviderFlow: View {
 
     // MARK: - Actions
 
-    private func testKnownProvider() {
+    func testKnownProvider() {
         guard let preset = selectedPreset else { return }
         let config = preset.configuration
         let connection = knownProviderConnection(for: preset)
@@ -1054,7 +1053,7 @@ private struct AddProviderFlow: View {
         dismiss()
     }
 
-    private func testCustomProvider() {
+    func testCustomProvider() {
         let trimmedHost = customHost.trimmingCharacters(in: .whitespaces)
         let trimmedBasePath = customBasePath.trimmingCharacters(in: .whitespaces)
         let port: Int? = customPort.trimmingCharacters(in: .whitespaces).isEmpty ? nil : Int(customPort)
@@ -1266,13 +1265,13 @@ private struct EditProviderFlow: View {
 
             Spacer()
 
-            Button(action: { dismiss() }) {
+            Button(action: { dismiss() }, label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(theme.secondaryText)
                     .frame(width: 28, height: 28)
                     .background(Circle().fill(theme.tertiaryBackground))
-            }
+            })
             .buttonStyle(PlainButtonStyle())
             .keyboardShortcut(.escape, modifiers: [])
         }
@@ -1522,7 +1521,7 @@ private struct EditProviderFlow: View {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     showAdvanced.toggle()
                 }
-            }) {
+            }, label: {
                 HStack(spacing: 8) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
@@ -1542,7 +1541,7 @@ private struct EditProviderFlow: View {
                         .fill(theme.tertiaryBackground.opacity(0.5))
                 )
                 .contentShape(Rectangle())
-            }
+            })
             .buttonStyle(PlainButtonStyle())
 
             if showAdvanced {
@@ -1594,13 +1593,13 @@ private struct EditProviderFlow: View {
                             Spacer()
                             Button(action: {
                                 customHeaders.append(HeaderEntry(key: "", value: "", isSecret: false))
-                            }) {
+                            }, label: {
                                 Image(systemName: "plus")
                                     .font(.system(size: 10, weight: .semibold))
                                     .foregroundColor(theme.accentColor)
                                     .frame(width: 24, height: 24)
                                     .background(Circle().fill(theme.accentColor.opacity(0.1)))
-                            }
+                            })
                             .buttonStyle(PlainButtonStyle())
                         }
 
@@ -1683,7 +1682,7 @@ private struct EditProviderFlow: View {
         // Test button
         Button(action: {
             if testResult != nil { testResult = nil } else { testConnection() }
-        }) {
+        }, label: {
             HStack(spacing: 6) {
                 if isTesting {
                     ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
@@ -1708,8 +1707,8 @@ private struct EditProviderFlow: View {
                         RoundedRectangle(cornerRadius: 8)
                             .stroke(testButtonColor.opacity(0.3), lineWidth: 1)
                     )
-            )
-        }
+                )
+        })
         .buttonStyle(PlainButtonStyle())
         .disabled(isTesting)
     }
@@ -1765,7 +1764,7 @@ private struct EditProviderFlow: View {
         }
     }
 
-    private func testConnection() {
+    func testConnection() {
         isTesting = true
         testResult = nil
 
@@ -2053,7 +2052,7 @@ private struct CompactHeaderRow: View {
             )
             .foregroundColor(themeManager.currentTheme.primaryText)
 
-            Button(action: { header.isSecret.toggle() }) {
+            Button(action: { header.isSecret.toggle() }, label: {
                 Image(systemName: header.isSecret ? "lock.fill" : "lock.open")
                     .font(.system(size: 10))
                     .foregroundColor(
@@ -2061,7 +2060,7 @@ private struct CompactHeaderRow: View {
                     )
                     .frame(width: 26, height: 26)
                     .background(Circle().fill(themeManager.currentTheme.tertiaryBackground))
-            }
+            })
             .buttonStyle(PlainButtonStyle())
             .help(Text(header.isSecret ? L("This value is stored securely") : L("Click to make this a secret value")))
 

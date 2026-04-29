@@ -11,8 +11,8 @@ import Foundation
 
 /// Protocol type for remote provider connections
 public enum RemoteProviderProtocol: String, Codable, Sendable, CaseIterable {
-    case http = "http"
-    case https = "https"
+    case http
+    case https
 
     public var defaultPort: Int {
         switch self {
@@ -26,9 +26,9 @@ public enum RemoteProviderProtocol: String, Codable, Sendable, CaseIterable {
 
 /// Authentication type for remote providers
 public enum RemoteProviderAuthType: String, Codable, Sendable, CaseIterable {
-    case none = "none"
-    case apiKey = "apiKey"
-    case openAICodexOAuth = "openAICodexOAuth"
+    case none
+    case apiKey
+    case openAICodexOAuth
 }
 
 // MARK: - Provider Type
@@ -188,8 +188,7 @@ public struct RemoteProvider: Codable, Identifiable, Sendable, Equatable {
 
         // Check if host contains a port (e.g., "localhost:8080")
         if let colonIndex = actualHost.lastIndex(of: ":"),
-            let portValue = Int(String(actualHost[actualHost.index(after: colonIndex)...]))
-        {
+            let portValue = Int(String(actualHost[actualHost.index(after: colonIndex)...])) {
             // Extract port from host if not already set
             if port == nil {
                 components.port = portValue

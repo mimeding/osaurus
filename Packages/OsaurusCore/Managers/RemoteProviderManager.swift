@@ -78,8 +78,7 @@ public final class RemoteProviderManager: ObservableObject {
         for i in configuration.providers.indices {
             let host = configuration.providers[i].host.lowercased()
             if configuration.providers[i].providerType == .openaiLegacy
-                && host.contains("openai.com")
-            {
+                && host.contains("openai.com") {
                 configuration.providers[i].providerType = .openResponses
                 didChange = true
             }
@@ -231,8 +230,7 @@ public final class RemoteProviderManager: ObservableObject {
         do {
             if provider.authType == .openAICodexOAuth,
                 let tokens = provider.getOAuthTokens(),
-                tokens.isExpired
-            {
+                tokens.isExpired {
                 let refreshed = try await OpenAICodexOAuthService.refresh(tokens)
                 RemoteProviderKeychain.saveOAuthTokens(refreshed, for: provider.id)
             }
@@ -386,10 +384,8 @@ public final class RemoteProviderManager: ObservableObject {
 
     /// Find the service that handles a given model
     public func findService(forModel model: String) -> RemoteProviderService? {
-        for service in services.values {
-            if service.handles(requestedModel: model) {
-                return service
-            }
+        for service in services.values where service.handles(requestedModel: model) {
+            return service
         }
         return nil
     }
@@ -475,8 +471,7 @@ public final class RemoteProviderManager: ObservableObject {
         for (key, value) in testHeaders {
             // Don't log the full auth header for security
             if key.lowercased() == "authorization" || key.lowercased() == "x-api-key"
-                || key.lowercased() == "x-goog-api-key"
-            {
+                || key.lowercased() == "x-goog-api-key" {
                 print("[Osaurus] Test Connection: Adding header \(key)=***")
             } else {
                 print("[Osaurus] Test Connection: Adding header \(key)=\(value)")
@@ -560,8 +555,7 @@ public final class RemoteProviderManager: ObservableObject {
 
     /// Test Anthropic connection by fetching models from the /models endpoint
     private func testAnthropicConnection(tempProvider: RemoteProvider, testHeaders: [String: String]) async throws
-        -> [String]
-    {
+        -> [String] {
         guard let baseURL = tempProvider.url(for: "/models") else {
             print("[Osaurus] Test Connection (Anthropic): Invalid URL")
             throw RemoteProviderError.invalidURL
