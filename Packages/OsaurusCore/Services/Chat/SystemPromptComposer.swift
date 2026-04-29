@@ -77,9 +77,9 @@ public struct SystemPromptComposer: Sendable {
     ///
     /// Pass `cachedPreflight` from a per-session `SessionToolState` to skip
     /// the LLM-based selection (it only ever needs to run on the first send
-    /// of a session). Pass `additionalToolNames` to merge tools the agent has
-    /// loaded mid-session via `capabilities_load`, so they survive across
-    /// subsequent composes.
+    /// of a session). Pass `additionalToolNames` / `additionalSkillNames` to
+    /// merge capabilities the agent has loaded mid-session via
+    /// `capabilities_load`, so they survive across subsequent composes.
     @MainActor
     static func composeChatContext(
         agentId: UUID,
@@ -90,6 +90,7 @@ public struct SystemPromptComposer: Sendable {
         toolsDisabled: Bool = false,
         cachedPreflight: PreflightResult? = nil,
         additionalToolNames: Set<String> = [],
+        additionalSkillNames: Set<String> = [],
         frozenAlwaysLoadedNames: Set<String>? = nil,
         trace: TTFTTrace? = nil
     ) async -> ComposedContext {
@@ -103,6 +104,7 @@ public struct SystemPromptComposer: Sendable {
             toolsDisabled: toolsDisabled,
             cachedPreflight: cachedPreflight,
             additionalToolNames: additionalToolNames,
+            additionalSkillNames: additionalSkillNames,
             frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
             model: model,
             trace: trace
@@ -143,6 +145,7 @@ public struct SystemPromptComposer: Sendable {
         toolsDisabled: Bool,
         cachedPreflight: PreflightResult? = nil,
         additionalToolNames: Set<String> = [],
+        additionalSkillNames: Set<String> = [],
         frozenAlwaysLoadedNames: Set<String>? = nil,
         model: String? = nil,
         trace: TTFTTrace? = nil
@@ -208,6 +211,19 @@ public struct SystemPromptComposer: Sendable {
             trace?.set("preflightSource", "skipped")
         }
 
+        // Skills inject in BOTH Auto and Manual modes — they're the user's
+        // explicitly-enabled set and aren't part of pre-flight (preflight only
+        // ranks tools). Per-item Enabled toggles in the capability picker are
+        // the single source of truth for what reaches the system prompt.
+        if !effectiveToolsOff,
+            let section = await SkillManager.shared.enabledSkillPromptSection(
+                for: agentId,
+                additionalSkillNames: additionalSkillNames
+            )
+        {
+            comp.append(.dynamic(id: "skills", label: "Skills", content: section))
+        }
+
         trace?.mark("resolve_tools_start")
         let tools = resolveTools(
             agentId: agentId,
@@ -237,7 +253,7 @@ public struct SystemPromptComposer: Sendable {
                 tools.contains(where: { $0.function.name == "capabilities_load" })
             else { return [] }
             let alreadySurfaced = Set(preflight.companions.compactMap(\.skill?.name))
-                .union(additionalToolNames)
+                .union(additionalSkillNames)
             trace?.mark("skill_suggestions_start")
             let teasers = await PreflightCompanions.deriveSkillSuggestions(
                 query: query,

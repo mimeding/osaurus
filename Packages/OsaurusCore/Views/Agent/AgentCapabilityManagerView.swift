@@ -726,7 +726,9 @@ struct AgentCapabilityManagerView: View {
     private func seedIfNeeded() {
         guard case .live(let agentId) = source else { return }
         let liveToolNames = ToolRegistry.shared.listDynamicTools().map(\.name)
-        let liveSkillNames = SkillManager.shared.skills.map(\.name)
+        let liveSkillNames = SkillManager.shared.skills
+            .filter(\.isDefaultSelectedForAgents)
+            .map(\.name)
         agentManager.seedEnabledCapabilitiesIfNeeded(
             for: agentId,
             defaultToolNames: liveToolNames,

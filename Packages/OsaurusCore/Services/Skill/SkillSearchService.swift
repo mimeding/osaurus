@@ -95,6 +95,10 @@ public actor SkillSearchService {
 
     public func indexSkill(_ skill: Skill) async {
         guard let db = vectorDB else { return }
+        guard skill.isDiscoverable else {
+            await removeSkill(id: skill.id)
+            return
+        }
         do {
             let id = deterministicUUID(for: skill.id)
             let text = buildIndexText(for: skill)
@@ -145,7 +149,7 @@ public actor SkillSearchService {
 
             return Array(
                 matchedSkillIds.compactMap { skillId -> SkillSearchResult? in
-                    guard let skill = skillById[skillId], skill.enabled else { return nil }
+                    guard let skill = skillById[skillId], skill.enabled, skill.isDiscoverable else { return nil }
                     let uuid = deterministicUUID(for: skillId)
                     guard let score = scoreMap[uuid.uuidString] else { return nil }
                     return SkillSearchResult(skill: skill, searchScore: score)
@@ -167,7 +171,9 @@ public actor SkillSearchService {
             try await db.reset()
             reverseIdMap.removeAll()
 
-            let allSkills = await MainActor.run { SkillManager.shared.skills }
+            let allSkills = await MainActor.run {
+                SkillManager.shared.skills.filter(\.isDiscoverable)
+            }
             var texts: [String] = []
             var ids: [UUID] = []
             texts.reserveCapacity(allSkills.count)
@@ -189,10 +195,28 @@ public actor SkillSearchService {
     // MARK: - Helpers
 
     private func buildIndexText(for skill: Skill) -> String {
-        if !skill.keywords.isEmpty {
-            return "\(skill.name) \(skill.keywords.joined(separator: " "))"
-        }
-        return "\(skill.name) \(skill.description)"
+        let headings =
+            skill.instructions
+            .components(separatedBy: .newlines)
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("#") else { return nil }
+                let heading = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "# "))
+                return heading.isEmpty ? nil : heading
+            }
+            .prefix(8)
+            .joined(separator: " ")
+
+        return [
+            skill.name,
+            skill.description,
+            skill.category ?? "",
+            skill.keywords.joined(separator: " "),
+            headings,
+        ]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
     }
 
     private func deterministicUUID(for skillId: UUID) -> UUID {

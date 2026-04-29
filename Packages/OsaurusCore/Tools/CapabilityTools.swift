@@ -18,15 +18,26 @@ actor CapabilityLoadBuffer {
     static let shared = CapabilityLoadBuffer()
 
     private var pendingTools: [Tool] = []
+    private var pendingSkillNames: [String] = []
 
     func add(_ tool: Tool) {
         pendingTools.append(tool)
+    }
+
+    func addSkillName(_ name: String) {
+        pendingSkillNames.append(name)
     }
 
     func drain() -> [Tool] {
         let tools = pendingTools
         pendingTools = []
         return tools
+    }
+
+    func drainSkillNames() -> [String] {
+        let names = pendingSkillNames
+        pendingSkillNames = []
+        return names
     }
 }
 
@@ -256,10 +267,12 @@ final class CapabilitiesLoadTool: OsaurusTool, @unchecked Sendable {
             if !method.skillsUsed.isEmpty {
                 let skills: [(String, String)] = await MainActor.run {
                     method.skillsUsed.compactMap { name in
-                        SkillManager.shared.skill(named: name).map { (name, $0.instructions) }
+                        guard let skill = SkillManager.shared.skill(named: name), skill.enabled else { return nil }
+                        return (name, skill.instructions)
                     }
                 }
                 for (name, instructions) in skills {
+                    await CapabilityLoadBuffer.shared.addSkillName(name)
                     output += "\n## Skill: \(name)\n"
                     output += instructions
                     output += "\n\n"
@@ -299,6 +312,10 @@ final class CapabilitiesLoadTool: OsaurusTool, @unchecked Sendable {
         guard let skill = skill else {
             return "Error: Skill '\(skillName)' not found.\n"
         }
+        guard skill.enabled else {
+            return "Error: Skill '\(skillName)' is disabled.\n"
+        }
+        await CapabilityLoadBuffer.shared.addSkillName(skill.name)
         var output = "## Skill: \(skill.name)\n"
         if !skill.description.isEmpty {
             output += "*\(skill.description)*\n\n"

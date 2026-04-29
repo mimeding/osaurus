@@ -23,6 +23,11 @@ public struct SkillFile: Codable, Identifiable, Sendable, Equatable {
     }
 }
 
+public enum SkillActivation: String, Codable, Sendable, Equatable {
+    case selected
+    case onDemand = "on-demand"
+}
+
 /// A skill containing instructions/guidance for the AI
 /// Follows the Agent Skills specification: https://agentskills.io/specification
 public struct Skill: Codable, Identifiable, Sendable, Equatable {
@@ -34,6 +39,9 @@ public struct Skill: Codable, Identifiable, Sendable, Equatable {
     public var category: String?
     public var keywords: [String]
     public var enabled: Bool
+    public var discoverable: Bool?
+    public var defaultSelectedForAgents: Bool?
+    public var activation: SkillActivation?
     public var instructions: String
     public let isBuiltIn: Bool
     public let createdAt: Date
@@ -65,6 +73,9 @@ public struct Skill: Codable, Identifiable, Sendable, Equatable {
         category: String? = nil,
         keywords: [String] = [],
         enabled: Bool = true,
+        discoverable: Bool = true,
+        defaultSelectedForAgents: Bool = true,
+        activation: SkillActivation = .selected,
         instructions: String = "",
         isBuiltIn: Bool = false,
         createdAt: Date = Date(),
@@ -82,6 +93,9 @@ public struct Skill: Codable, Identifiable, Sendable, Equatable {
         self.category = category
         self.keywords = keywords
         self.enabled = enabled
+        self.discoverable = discoverable
+        self.defaultSelectedForAgents = defaultSelectedForAgents
+        self.activation = activation
         self.instructions = instructions
         self.isBuiltIn = isBuiltIn
         self.createdAt = createdAt
@@ -100,6 +114,12 @@ public struct Skill: Codable, Identifiable, Sendable, Equatable {
     /// Whether this skill has any associated files
     public var hasAssociatedFiles: Bool {
         totalFileCount > 0
+    }
+
+    public var isDiscoverable: Bool { discoverable ?? true }
+    public var isDefaultSelectedForAgents: Bool { defaultSelectedForAgents ?? true }
+    public var activationMode: SkillActivation {
+        activation ?? (isDefaultSelectedForAgents ? .selected : .onDemand)
     }
 
     // MARK: - Built-in Skills
@@ -705,6 +725,14 @@ extension Skill {
         } else {
             keywords = []
         }
+        let discoverable =
+            firstBool(frontmatter, keys: ["discoverable", "osaurus-discoverable"]) ?? true
+        let defaultSelected =
+            firstBool(frontmatter, keys: ["defaultSelectedForAgents", "osaurus-default-selected"]) ?? true
+        let activation =
+            firstString(frontmatter, keys: ["activation", "osaurus-activation"])
+            .flatMap(SkillActivation.init(rawValue:))
+            ?? (defaultSelected ? .selected : .onDemand)
 
         return Skill(
             id: id,
@@ -715,6 +743,9 @@ extension Skill {
             category: frontmatter["category"] as? String,
             keywords: keywords,
             enabled: frontmatter["enabled"] as? Bool ?? true,
+            discoverable: discoverable,
+            defaultSelectedForAgents: defaultSelected,
+            activation: activation,
             instructions: body.trimmingCharacters(in: .whitespacesAndNewlines),
             isBuiltIn: false,
             createdAt: createdAt,
@@ -743,6 +774,9 @@ extension Skill {
             yaml += "keywords: \"\(keywords.joined(separator: ", "))\"\n"
         }
         yaml += "enabled: \(enabled)\n"
+        yaml += "discoverable: \(isDiscoverable)\n"
+        yaml += "defaultSelectedForAgents: \(isDefaultSelectedForAgents)\n"
+        yaml += "activation: \"\(activationMode.rawValue)\"\n"
         if let pluginId = pluginId {
             yaml += "pluginId: \"\(escapeYamlString(pluginId))\"\n"
         }
@@ -859,6 +893,31 @@ extension Skill {
         return v
     }
 
+    private static func firstString(_ values: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = values[key] as? String, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func firstBool(_ values: [String: Any], keys: [String]) -> Bool? {
+        for key in keys {
+            if let value = values[key] as? Bool {
+                return value
+            }
+            if let value = values[key] as? String {
+                switch value.lowercased() {
+                case "true": return true
+                case "false": return false
+                default: continue
+                }
+            }
+        }
+        return nil
+    }
+
     /// Escape special characters for YAML string
     private func escapeYamlString(_ string: String) -> String {
         return
@@ -907,6 +966,9 @@ extension Skill {
                 category: skill.category,
                 keywords: skill.keywords,
                 enabled: skill.enabled,
+                discoverable: skill.isDiscoverable,
+                defaultSelectedForAgents: skill.isDefaultSelectedForAgents,
+                activation: skill.activationMode,
                 instructions: skill.instructions,
                 isBuiltIn: false,
                 createdAt: Date(),
@@ -987,6 +1049,9 @@ extension Skill {
         if !keywords.isEmpty {
             yaml += "  keywords: \"\(keywords.joined(separator: ", "))\"\n"
         }
+        yaml += "  osaurus-discoverable: \(isDiscoverable)\n"
+        yaml += "  osaurus-default-selected: \(isDefaultSelectedForAgents)\n"
+        yaml += "  osaurus-activation: \"\(activationMode.rawValue)\"\n"
 
         yaml += "---\n\n"
         yaml += instructions
@@ -1014,6 +1079,9 @@ extension Skill {
         var keywords: [String] = []
         var osaurusId: UUID?
         var enabled = true
+        var discoverable = true
+        var defaultSelected = true
+        var activation: SkillActivation = .selected
         var pluginId: String?
 
         if let metadata = frontmatter["metadata"] as? [String: Any] {
@@ -1031,6 +1099,12 @@ extension Skill {
             if let enabledValue = metadata["osaurus-enabled"] as? Bool {
                 enabled = enabledValue
             }
+            discoverable = firstBool(metadata, keys: ["osaurus-discoverable"]) ?? true
+            defaultSelected = firstBool(metadata, keys: ["osaurus-default-selected"]) ?? true
+            activation =
+                firstString(metadata, keys: ["osaurus-activation"])
+                .flatMap(SkillActivation.init(rawValue:))
+                ?? (defaultSelected ? .selected : .onDemand)
             pluginId = metadata["osaurus-plugin-id"] as? String
         }
 
@@ -1050,6 +1124,9 @@ extension Skill {
             category: category,
             keywords: keywords,
             enabled: enabled,
+            discoverable: discoverable,
+            defaultSelectedForAgents: defaultSelected,
+            activation: activation,
             instructions: body.trimmingCharacters(in: .whitespacesAndNewlines),
             isBuiltIn: false,
             createdAt: Date(),

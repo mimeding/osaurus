@@ -22,12 +22,73 @@ struct SessionPreflightCacheTests {
             initialPreflight: PreflightResult(toolSpecs: [], items: [])
         )
         #expect(state.loadedToolNames.isEmpty)
+        #expect(state.loadedSkillNames.isEmpty)
 
         state.loadedToolNames.insert("pdf_extract")
         state.loadedToolNames.insert("pdf_render")
         state.loadedToolNames.insert("pdf_extract")  // dedup
+        state.loadedSkillNames.insert("Document Data Analyst")
+        state.loadedSkillNames.insert("Document Data Analyst")
 
         #expect(state.loadedToolNames == ["pdf_extract", "pdf_render"])
+        #expect(state.loadedSkillNames == ["Document Data Analyst"])
+    }
+
+    @Test
+    func seedEnabledCapabilities_excludesOnDemandSkillsFromDefaults() async {
+        await withSessionPreflightAgent { agentId in
+            let defaultSkill = Skill(
+                name: "Default Session Skill",
+                defaultSelectedForAgents: true,
+                instructions: "Default marker"
+            )
+            let onDemandSkill = Skill(
+                name: "On Demand Session Skill",
+                defaultSelectedForAgents: false,
+                activation: .onDemand,
+                instructions: "On-demand marker"
+            )
+            let defaultNames = [defaultSkill, onDemandSkill]
+                .filter(\.isDefaultSelectedForAgents)
+                .map(\.name)
+
+            AgentManager.shared.seedEnabledCapabilitiesIfNeeded(
+                for: agentId,
+                defaultToolNames: [],
+                defaultSkillNames: defaultNames
+            )
+
+            let seeded = AgentManager.shared.agent(for: agentId)?.manualSkillNames ?? []
+            #expect(seeded.contains(defaultSkill.name))
+            #expect(seeded.contains(onDemandSkill.name) == false)
+        }
+    }
+
+    @Test
+    func composeChatContext_includesLoadedSkillsButNotUnloadedOnDemandSkills() async {
+        await withSessionPreflightAgent { agentId in
+            let marker = "LoadedSkillMarker-\(UUID().uuidString)"
+            let skill = await SkillManager.shared.create(
+                name: "Loaded Session Skill \(UUID().uuidString.prefix(6))",
+                description: "Loaded only when requested",
+                category: "test",
+                instructions: marker
+            )
+
+            let withoutLoaded = await SystemPromptComposer.composeChatContext(
+                agentId: agentId,
+                executionMode: .none
+            )
+            #expect(withoutLoaded.prompt.contains(marker) == false)
+
+            let withLoaded = await SystemPromptComposer.composeChatContext(
+                agentId: agentId,
+                executionMode: .none,
+                additionalSkillNames: [skill.name]
+            )
+            #expect(withLoaded.prompt.contains(marker))
+            _ = await SkillManager.shared.delete(id: skill.id)
+        }
     }
 
     @Test

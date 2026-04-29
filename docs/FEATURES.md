@@ -368,7 +368,7 @@ See [INFERENCE_RUNTIME.md](./INFERENCE_RUNTIME.md) for the full runtime architec
 **Features:**
 
 - **Custom System Prompts** — Define unique instructions for each agent
-- **Automated Capabilities** — Tools, skills, and methods are automatically selected via RAG search based on the task
+- **Lightweight Capabilities** — Tool preflight keeps schemas focused, while methods and skills stay discoverable for on-demand loading
 - **Visual Themes** — Assign a custom theme that activates with the agent
 - **Generation Settings** — Configure default model, temperature, and max tokens
 - **Import/Export** — Share agents as JSON files for backup or sharing
@@ -765,20 +765,25 @@ See [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md) for the full reference.
 - **Reference Files** — Attach text files loaded into skill context
 - **Asset Files** — Support files for skills
 - **Categories** — Organize skills by type
-- **Automated Selection** — Skills are automatically selected via RAG-based preflight search
+- **Lightweight Activation** — Skills can be selected per agent or loaded on demand without adding prompt weight at startup
+- **First-Party Skill Pack** — High-fidelity portable skills in `skills/first-party`, importable through `.claude-plugin/marketplace.json`
 
 **Skill Properties:**
 
-| Property       | Description                        |
-| -------------- | ---------------------------------- |
-| `name`         | Display name (required)            |
-| `description`  | Brief description                  |
-| `instructions` | Full AI instructions (markdown)    |
-| `category`     | Optional category for organization |
-| `version`      | Skill version                      |
-| `author`       | Skill author                       |
-| `references/`  | Text files loaded into context     |
-| `assets/`      | Supporting files                   |
+| Property                    | Description                                           |
+| --------------------------- | ----------------------------------------------------- |
+| `name`                      | Display name (required)                               |
+| `description`               | Brief description                                     |
+| `instructions`              | Full AI instructions (markdown)                       |
+| `category`                  | Optional category for organization                    |
+| `keywords`                  | Search terms folded into skill retrieval              |
+| `osaurus-discoverable`      | Whether `capabilities_search` can surface the skill   |
+| `osaurus-default-selected`  | Whether new agent capability sets include the skill   |
+| `osaurus-activation`        | Activation policy, usually `on-demand` for large packs |
+| `version`                   | Skill version                                         |
+| `author`                    | Skill author                                          |
+| `references/`               | Text files loaded into context                        |
+| `assets/`                   | Supporting files                                      |
 
 **Storage:** `~/.osaurus/skills/{skill-name}/SKILL.md`
 
@@ -838,9 +843,9 @@ Each time a method is used, a `MethodEvent` is recorded (`loaded`, `succeeded`, 
 
 ### Context Management
 
-**Purpose:** Automatically select and inject relevant capabilities (methods, tools, and skills) into each agent session via RAG search.
+**Purpose:** Keep prompts lean while selecting relevant tools before a turn and exposing methods/skills for on-demand loading.
 
-Context management replaces manual per-agent tool and skill configuration with a fully automated system. Before each agent loop, a preflight RAG search runs across all indexed methods, tools, and skills, injecting relevant context and tool definitions based on the user's query.
+Context management keeps the chat prompt lean while letting agents discover more capability as needed. Before each agent loop, preflight search ranks dynamic tools for the active request. Methods and discoverable skills remain available through `capabilities_search` / `capabilities_load`, and selected or session-loaded skills are appended to the system prompt.
 
 **Components:**
 
@@ -852,17 +857,17 @@ Context management replaces manual per-agent tool and skill configuration with a
 
 **Preflight Search Modes:**
 
-| Mode        | Methods | Tools | Skills | Use Case                              |
-| ----------- | ------- | ----- | ------ | ------------------------------------- |
-| `off`       | 0       | 0     | 0      | Disable automatic selection           |
-| `narrow`    | 1       | 2     | 1      | Minimal context, fastest responses    |
-| `balanced`  | 3       | 5     | 2      | Default — good coverage, moderate cost|
-| `wide`      | 5       | 8     | 4      | Maximum coverage, larger prompts      |
+| Mode        | Tools | Use Case                              |
+| ----------- | ----- | ------------------------------------- |
+| `off`       | 0     | Disable automatic tool selection      |
+| `narrow`    | 2     | Minimal context, fastest responses    |
+| `balanced`  | 5     | Default tool coverage                 |
+| `wide`      | 15    | Larger tool surface for complex tasks |
 
 The preflight search produces a `PreflightResult` containing:
 
-- **Tool specs** — Tool definitions merged into the active tool set (direct matches + tools cascaded from matched methods)
-- **Context snippet** — Markdown-formatted method bodies and skill instructions injected into the system prompt
+- **Tool specs** — Tool definitions merged into the active tool set
+- **Companions** — Compact hints for related plugin tools or plugin skills the model can load on demand
 
 **Runtime Capability Tools:**
 
@@ -871,9 +876,9 @@ For on-demand discovery during a session, agents can use:
 | Tool                  | Description                                                       |
 | --------------------- | ----------------------------------------------------------------- |
 | `capabilities_search` | Search methods, tools, and skills across all indexes in parallel  |
-| `capabilities_load`   | Load a capability by ID into the active session (hot-loads tools) |
+| `capabilities_load`   | Load a capability by ID into the active session                   |
 
-When `capabilities_load` is called, new tool specs are queued in a `CapabilityLoadBuffer` and drained into the active tool set after each invocation, allowing the agent to dynamically expand its capabilities mid-session.
+When `capabilities_load` is called, new tool specs are queued in a `CapabilityLoadBuffer` and drained into the active tool set after each invocation. Loaded skill names are stored on `SessionToolStateStore.loadedSkillNames`, so follow-up turns keep the instructions without selecting the skill globally for the agent.
 
 **Search Infrastructure:**
 

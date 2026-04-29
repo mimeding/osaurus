@@ -496,8 +496,19 @@ final class PluginHostContext: @unchecked Sendable {
         }
         // Skills inject in BOTH modes — see the matching block in
         // `SystemPromptComposer.compose` for the full rationale.
+        let loadedSkillNames: Set<String>
+        if let sid = enriched.request.session_id,
+            let state = await SessionToolStateStore.shared.get(sid)
+        {
+            loadedSkillNames = state.loadedSkillNames
+        } else {
+            loadedSkillNames = []
+        }
         if !agentToolsOff,
-            let section = await SkillManager.shared.enabledSkillPromptSection(for: resolvedAgentId)
+            let section = await SkillManager.shared.enabledSkillPromptSection(
+                for: resolvedAgentId,
+                additionalSkillNames: loadedSkillNames
+            )
         {
             SystemPromptComposer.appendSystemContent(section, into: &enriched.request.messages)
         }
@@ -663,6 +674,19 @@ final class PluginHostContext: @unchecked Sendable {
         Task {
             guard await SessionToolStateStore.shared.get(sessionId) != nil else { return }
             await SessionToolStateStore.shared.appendLoadedTools(
+                sessionId,
+                names: names,
+                fallbackPreflight: .empty,
+                fallbackAlwaysLoadedNames: nil
+            )
+        }
+    }
+
+    private static func recordSessionLoadedSkills(sessionId: String, names: [String]) {
+        guard !names.isEmpty else { return }
+        Task {
+            guard await SessionToolStateStore.shared.get(sessionId) != nil else { return }
+            await SessionToolStateStore.shared.appendLoadedSkills(
                 sessionId,
                 names: names,
                 fallbackPreflight: .empty,
@@ -854,6 +878,7 @@ final class PluginHostContext: @unchecked Sendable {
 
         case "capabilities_load":
             let newTools = await CapabilityLoadBuffer.shared.drain()
+            let newSkillNames = await CapabilityLoadBuffer.shared.drainSkillNames()
             let existing = Set((toolSpecs ?? []).map { $0.function.name })
             let additions = newTools.filter { !existing.contains($0.function.name) }
             if !additions.isEmpty {
@@ -867,6 +892,9 @@ final class PluginHostContext: @unchecked Sendable {
                         names: additions.map { $0.function.name }
                     )
                 }
+            }
+            if !newSkillNames.isEmpty, let sid = prep.enriched.request.session_id {
+                recordSessionLoadedSkills(sessionId: sid, names: newSkillNames)
             }
             return (result, nil)
 

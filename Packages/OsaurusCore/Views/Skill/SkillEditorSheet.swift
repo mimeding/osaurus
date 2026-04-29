@@ -42,6 +42,11 @@ struct SkillEditorSheet: View {
         return nil
     }
 
+    private var existingSkill: Skill? {
+        if case .edit(let skill) = mode { return skill }
+        return nil
+    }
+
     private var existingCreatedAt: Date? {
         if case .edit(let skill) = mode { return skill.createdAt }
         return nil
@@ -465,7 +470,11 @@ struct SkillEditorSheet: View {
             version: version.trimmingCharacters(in: .whitespacesAndNewlines),
             author: author.isEmpty ? nil : author.trimmingCharacters(in: .whitespacesAndNewlines),
             category: category.isEmpty ? nil : category.trimmingCharacters(in: .whitespacesAndNewlines),
+            keywords: existingSkill?.keywords ?? [],
             enabled: enabled,
+            discoverable: existingSkill?.isDiscoverable ?? true,
+            defaultSelectedForAgents: existingSkill?.isDefaultSelectedForAgents ?? true,
+            activation: existingSkill?.activationMode ?? .selected,
             instructions: trimmedInstructions,
             isBuiltIn: false,
             createdAt: existingCreatedAt ?? Date(),

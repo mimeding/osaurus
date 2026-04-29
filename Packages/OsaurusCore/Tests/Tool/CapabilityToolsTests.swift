@@ -37,6 +37,19 @@ struct CapabilityLoadBufferTests {
         #expect(empty.isEmpty)
     }
 
+    @Test func drainReturnsAndClearsPendingSkillNames() async {
+        let buffer = CapabilityLoadBuffer()
+
+        await buffer.addSkillName("Document Data Analyst")
+        await buffer.addSkillName("Research Citation Analyst")
+
+        let drained = await buffer.drainSkillNames()
+        #expect(drained == ["Document Data Analyst", "Research Citation Analyst"])
+
+        let empty = await buffer.drainSkillNames()
+        #expect(empty.isEmpty)
+    }
+
     @Test func drainOnEmptyBufferReturnsEmpty() async {
         let buffer = CapabilityLoadBuffer()
         let result = await buffer.drain()
@@ -153,5 +166,26 @@ struct CapabilitiesLoadToolTests {
 
         let buffered = await CapabilityLoadBuffer.shared.drain()
         #expect(buffered.contains(where: { $0.function.name == "capabilities_search" }))
+    }
+
+    @Test func skillLoadBuffersSkillName() async throws {
+        try await SandboxTestLock.shared.run {
+            let suffix = UUID().uuidString.prefix(6).lowercased()
+            let skill = await SkillManager.shared.create(
+                name: "Buffered Skill \(suffix)",
+                description: "A buffered skill",
+                instructions: "Buffered skill instructions"
+            )
+
+            let tool = CapabilitiesLoadTool()
+            let result = try await tool.execute(
+                argumentsJSON: "{\"ids\": [\"skill/\(skill.name)\"]}"
+            )
+
+            #expect(result.lowercased().contains("## skill: \(skill.name.lowercased())"))
+            let buffered = await CapabilityLoadBuffer.shared.drainSkillNames()
+            #expect(buffered.map { $0.lowercased() }.contains(skill.name.lowercased()))
+            _ = await SkillManager.shared.delete(id: skill.id)
+        }
     }
 }

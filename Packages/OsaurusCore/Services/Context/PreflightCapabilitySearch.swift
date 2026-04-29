@@ -148,6 +148,7 @@ struct PreflightDiagnostic: Sendable {
 struct SessionToolState: Sendable {
     var initialPreflight: PreflightResult
     var loadedToolNames: Set<String>
+    var loadedSkillNames: Set<String>
     /// Snapshot of always-loaded tool names from the FIRST compose of this
     /// session. On subsequent composes the resolver intersects the live
     /// always-loaded set against this snapshot so a tool that registers
@@ -169,11 +170,13 @@ struct SessionToolState: Sendable {
     init(
         initialPreflight: PreflightResult,
         loadedToolNames: Set<String> = [],
+        loadedSkillNames: Set<String> = [],
         initialAlwaysLoadedNames: Set<String>? = nil,
         sessionFingerprint: String? = nil
     ) {
         self.initialPreflight = initialPreflight
         self.loadedToolNames = loadedToolNames
+        self.loadedSkillNames = loadedSkillNames
         self.initialAlwaysLoadedNames = initialAlwaysLoadedNames
         self.sessionFingerprint = sessionFingerprint
     }

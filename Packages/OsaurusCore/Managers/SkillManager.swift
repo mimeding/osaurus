@@ -144,7 +144,11 @@ public final class SkillManager {
                 version: skill.version,
                 author: skill.author,
                 category: skill.category,
+                keywords: skill.keywords,
                 enabled: enabled,
+                discoverable: skill.isDiscoverable,
+                defaultSelectedForAgents: skill.isDefaultSelectedForAgents,
+                activation: skill.activationMode,
                 instructions: skill.instructions,
                 isBuiltIn: true,
                 createdAt: skill.createdAt,
@@ -180,6 +184,11 @@ public final class SkillManager {
             version: skill.version,
             author: skill.author,
             category: skill.category,
+            keywords: skill.keywords,
+            enabled: skill.enabled,
+            discoverable: skill.isDiscoverable,
+            defaultSelectedForAgents: skill.isDefaultSelectedForAgents,
+            activation: skill.activationMode,
             instructions: skill.instructions
         )
         await SkillStore.save(skill)
@@ -198,6 +207,11 @@ public final class SkillManager {
             version: skill.version,
             author: skill.author,
             category: skill.category,
+            keywords: skill.keywords,
+            enabled: skill.enabled,
+            discoverable: skill.isDiscoverable,
+            defaultSelectedForAgents: skill.isDefaultSelectedForAgents,
+            activation: skill.activationMode,
             instructions: skill.instructions
         )
         await SkillStore.save(skill)
@@ -218,6 +232,11 @@ public final class SkillManager {
                 version: parsedSkill.version,
                 author: parsedSkill.author,
                 category: parsedSkill.category,
+                keywords: parsedSkill.keywords,
+                enabled: parsedSkill.enabled,
+                discoverable: parsedSkill.isDiscoverable,
+                defaultSelectedForAgents: parsedSkill.isDefaultSelectedForAgents,
+                activation: parsedSkill.activationMode,
                 instructions: parsedSkill.instructions
             )
             await SkillStore.save(skill)
@@ -325,7 +344,11 @@ public final class SkillManager {
             version: skill.version,
             author: skill.author,
             category: skill.category,
+            keywords: skill.keywords,
             enabled: true,
+            discoverable: skill.isDiscoverable,
+            defaultSelectedForAgents: skill.isDefaultSelectedForAgents,
+            activation: skill.activationMode,
             instructions: skill.instructions,
             directoryName: skill.xplaceholder_agentSkillsNamex
         )
@@ -405,10 +428,13 @@ public final class SkillManager {
     /// regardless of tool selection mode. Returns nil when the agent has not been
     /// seeded yet (legacy behaviour: skills only inject in Manual via the older
     /// `manualSkillPromptSection`) or has no enabled skills.
-    public func enabledSkillPromptSection(for agentId: UUID) async -> String? {
-        guard let skillNames = AgentManager.shared.effectiveEnabledSkillNames(for: agentId),
-            !skillNames.isEmpty
-        else { return nil }
+    public func enabledSkillPromptSection(
+        for agentId: UUID,
+        additionalSkillNames: Set<String> = []
+    ) async -> String? {
+        let selectedSkillNames = AgentManager.shared.effectiveEnabledSkillNames(for: agentId) ?? []
+        let skillNames = orderedUniqueSkillNames(selectedSkillNames + additionalSkillNames.sorted())
+        guard !skillNames.isEmpty else { return nil }
         let instructions = await loadInstructions(for: skillNames)
         guard !instructions.isEmpty else { return nil }
         let sections = skillNames.compactMap { name -> String? in
@@ -416,6 +442,17 @@ public final class SkillManager {
             return "## Skill: \(name)\n\n\(body)"
         }
         return sections.joined(separator: "\n\n")
+    }
+
+    private func orderedUniqueSkillNames(_ names: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for name in names {
+            let key = name.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            result.append(name)
+        }
+        return result
     }
 
     public func loadInstructions(for skillNames: [String]) async -> [String: String] {

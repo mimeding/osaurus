@@ -1468,6 +1468,7 @@ final class ChatSession: ObservableObject {
                     toolsDisabled: chatCfg.disableTools,
                     cachedPreflight: cachedSession?.initialPreflight,
                     additionalToolNames: cachedSession?.loadedToolNames ?? [],
+                    additionalSkillNames: cachedSession?.loadedSkillNames ?? [],
                     frozenAlwaysLoadedNames: cachedSession?.initialAlwaysLoadedNames,
                     trace: ttftTrace
                 )
@@ -1865,30 +1866,46 @@ final class ChatSession: ObservableObject {
                                 // etc.) so the model sees the rejection.
                             }
 
-                            // Hot-load tools injected by capabilities_load or sandbox_plugin_register.
-                            // Skipped in manual mode — the user's explicit tool set is fixed.
-                            if !isManualTools,
-                                inv.toolName == "capabilities_load"
-                                    || inv.toolName == "sandbox_plugin_register"
+                            // Hot-load capabilities injected by capabilities_load or sandbox_plugin_register.
+                            let isCapabilityLoad = inv.toolName == "capabilities_load"
+                            if isCapabilityLoad || inv.toolName == "sandbox_plugin_register"
                             {
                                 let newTools = await CapabilityLoadBuffer.shared.drain()
-                                for tool in newTools
-                                where !toolSpecs.contains(where: { $0.function.name == tool.function.name }) {
-                                    toolSpecs.append(tool)
+                                let newSkillNames = isCapabilityLoad
+                                    ? await CapabilityLoadBuffer.shared.drainSkillNames()
+                                    : []
+
+                                if !isManualTools {
+                                    for tool in newTools
+                                    where !toolSpecs.contains(where: { $0.function.name == tool.function.name }) {
+                                        toolSpecs.append(tool)
+                                    }
                                 }
-                                // Persist names into the session's tool union
-                                // so they survive the next compose call
-                                // without re-running preflight.
+                                // Persist names into the session's capability
+                                // union so they survive the next compose call
+                                // without re-running preflight or becoming
+                                // globally selected for the agent.
                                 if let sid = sessionId {
-                                    let names = newTools.map { $0.function.name }
                                     let preflight = context.preflight
                                     let snapshot = context.alwaysLoadedNames
-                                    await SessionToolStateStore.shared.appendLoadedTools(
-                                        sessionStateKey(sid),
-                                        names: names,
-                                        fallbackPreflight: preflight,
-                                        fallbackAlwaysLoadedNames: snapshot
-                                    )
+                                    let key = sessionStateKey(sid)
+                                    let names = isManualTools ? [] : newTools.map { $0.function.name }
+                                    if !names.isEmpty {
+                                        await SessionToolStateStore.shared.appendLoadedTools(
+                                            key,
+                                            names: names,
+                                            fallbackPreflight: preflight,
+                                            fallbackAlwaysLoadedNames: snapshot
+                                        )
+                                    }
+                                    if !newSkillNames.isEmpty {
+                                        await SessionToolStateStore.shared.appendLoadedSkills(
+                                            key,
+                                            names: newSkillNames,
+                                            fallbackPreflight: preflight,
+                                            fallbackAlwaysLoadedNames: snapshot
+                                        )
+                                    }
                                 }
                             }
 

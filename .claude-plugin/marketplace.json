@@ -1,0 +1,32 @@
+{
+  "name": "Osaurus First-Party Skills",
+  "owner": {
+    "name": "Osaurus",
+    "url": "https://github.com/osaurus-ai/osaurus"
+  },
+  "metadata": {
+    "description": "High-fidelity Osaurus skills that stay discoverable and load on demand.",
+    "version": "1.0.0",
+    "repository": "https://github.com/osaurus-ai/osaurus"
+  },
+  "plugins": [
+    {
+      "name": "high-fidelity-skills",
+      "description": "Portable first-party skills for development, research, documents, automation, and reliability workflows.",
+      "source": "./skills/first-party",
+      "strict": true,
+      "skills": [
+        "./skills/first-party/osaurus-contributor",
+        "./skills/first-party/agent-loop-operator",
+        "./skills/first-party/plugin-tool-author",
+        "./skills/first-party/ci-release-debugger",
+        "./skills/first-party/performance-reliability-investigator",
+        "./skills/first-party/privacy-security-reviewer",
+        "./skills/first-party/research-citation-analyst",
+        "./skills/first-party/document-data-analyst",
+        "./skills/first-party/automation-watcher-designer",
+        "./skills/first-party/presentation-content-producer"
+      ]
+    }
+  ]
+}

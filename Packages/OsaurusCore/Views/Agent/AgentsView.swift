@@ -3390,7 +3390,11 @@ private struct AgentEditorSheet: View {
         guard !draftSeeded else { return }
         draftSeeded = true
         draftToolNames = Set(ToolRegistry.shared.listDynamicTools().map(\.name))
-        draftSkillNames = Set(SkillManager.shared.skills.map(\.name))
+        draftSkillNames = Set(
+            SkillManager.shared.skills
+                .filter(\.isDefaultSelectedForAgents)
+                .map(\.name)
+        )
     }
 
     // MARK: Form column

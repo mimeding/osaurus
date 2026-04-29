@@ -66,7 +66,7 @@ osaurus status   # Check status
 
 ## Agents
 
-Agents are the core of Osaurus. Each one gets its own prompts, memory, and visual theme -- a research assistant, a coding partner, a file organizer, whatever you need. Tools and skills are automatically selected via RAG search based on the task at hand -- no manual configuration needed. Everything else in the harness exists to make agents smarter, faster, and more capable over time.
+Agents are the core of Osaurus. Each one gets its own prompts, memory, and visual theme -- a research assistant, a coding partner, a file organizer, whatever you need. Tool preflight keeps the active schema focused, while skills stay lightweight: select them for an agent or let the agent discover and load them on demand. Everything else in the harness exists to make agents smarter, faster, and more capable over time.
 
 ### Agent Loop
 
@@ -154,7 +154,7 @@ osaurus tools dev com.acme.my-plugin     # Dev with hot reload
 
 ## More
 
-**Skills & Methods** -- Skills import reusable AI capabilities from GitHub repos or files, compatible with [Agent Skills](https://agentskills.io/). Methods are learned workflows that agents save and reuse over time. Both are automatically selected via RAG search -- no manual configuration needed. See [Skills Guide](docs/SKILLS.md).
+**Skills & Methods** -- Skills import reusable AI capabilities from GitHub repos or files, compatible with [Agent Skills](https://agentskills.io/). Methods are learned workflows that agents save and reuse over time. Both are discoverable through capability search, and larger skills can load on demand without bloating every startup prompt. See [Skills Guide](docs/SKILLS.md).
 
 **Automation** -- Schedules run recurring tasks in the background. Watchers monitor folders and trigger agents on file changes.
 

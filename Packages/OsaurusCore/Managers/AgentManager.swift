@@ -64,7 +64,9 @@ public final class AgentManager: ObservableObject {
                 guard let self else { return }
                 let liveTools = ToolRegistry.shared.listDynamicTools().map(\.name)
                 self.growEnabledToolNames(Set(liveTools))
-                let liveSkills = SkillManager.shared.skills.map(\.name)
+                let liveSkills = SkillManager.shared.skills
+                    .filter(\.isDefaultSelectedForAgents)
+                    .map(\.name)
                 self.growEnabledSkillNames(Set(liveSkills))
             }
         }

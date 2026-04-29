@@ -14,8 +14,8 @@
 
 import Foundation
 
-/// Per-session record of the initial preflight selection plus every tool the
-/// agent has loaded mid-session via `capabilities_load`. The composer uses
+/// Per-session record of the initial preflight selection plus every tool/skill
+/// the agent has loaded mid-session via `capabilities_load`. The composer uses
 /// this to skip the LLM-based preflight call after turn 1 and to keep the
 /// rendered system prompt + `<tools>` block byte-stable across turns
 /// (required for KV-cache reuse).
@@ -105,6 +105,26 @@ actor SessionToolStateStore {
                 initialAlwaysLoadedNames: fallbackAlwaysLoadedNames
             )
         for name in names { entry.loadedToolNames.insert(name) }
+        states[sessionId] = entry
+    }
+
+    /// Append skill names loaded mid-session via `capabilities_load`.
+    /// Loaded skills are prompt instructions, not tool specs, but they need
+    /// the same session persistence so follow-up turns keep the capability
+    /// without selecting it globally for the agent.
+    func appendLoadedSkills(
+        _ sessionId: String,
+        names: [String],
+        fallbackPreflight: PreflightResult,
+        fallbackAlwaysLoadedNames: Set<String>?
+    ) {
+        var entry =
+            states[sessionId]
+            ?? SessionToolState(
+                initialPreflight: fallbackPreflight,
+                initialAlwaysLoadedNames: fallbackAlwaysLoadedNames
+            )
+        for name in names { entry.loadedSkillNames.insert(name) }
         states[sessionId] = entry
     }
 

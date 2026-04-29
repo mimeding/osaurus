@@ -40,6 +40,8 @@ Import skills from any GitHub repository that includes a skills marketplace:
 
 Osaurus looks for `.claude-plugin/marketplace.json` in the repository to discover available skills.
 
+Skill packs are portable by design: a repository can contain only `.claude-plugin/marketplace.json` plus skill directories, with no Osaurus app code. First-party high-fidelity skills in this repo follow that same layout under `skills/first-party/` so they can be maintained here or split into a dedicated skills repository later.
+
 ### From Files
 
 Import skills from local files:
@@ -159,6 +161,8 @@ Skills are stored as directories:
         └── template.md
 ```
 
+For reusable packs, keep each skill directory self-contained and list it in the repository's `.claude-plugin/marketplace.json`.
+
 ---
 
 ## Reference Files
@@ -180,55 +184,62 @@ Add context files that are automatically loaded when the skill is active:
 
 ---
 
-## Automated Capability Selection
+## Lightweight Capability Selection
 
-Osaurus uses a RAG-based system to automatically select and inject relevant skills into each conversation. No manual configuration is needed -- the right skills are loaded based on what you're asking about.
+Osaurus keeps startup prompts small. Tool preflight can select a relevant tool subset before a chat turn, but skill instructions are not automatically injected just because a skill exists. A skill reaches the system prompt only when it is selected for the agent or loaded on demand in the active session.
 
-### How It Works
+### Lifecycle
 
-Before each agent loop, a **preflight capability search** runs across all indexed skills (as well as methods and tools). The search uses hybrid BM25 + vector matching to find capabilities relevant to your query, then injects matching skill instructions directly into the system prompt.
+| State | Meaning |
+|-------|---------|
+| **Installed** | The skill exists on disk, in a plugin, or in a marketplace repository. |
+| **Discoverable** | The skill is indexed for `capabilities_search`. |
+| **Selected** | The user or agent configuration injects the skill at chat start. |
+| **Loaded** | `capabilities_load` adds the skill to the current session for follow-up turns. |
 
-### Search Modes
+High-fidelity first-party skills use this metadata by default:
 
-You can control how aggressively the system searches for capabilities:
+```yaml
+metadata:
+  osaurus-discoverable: true
+  osaurus-default-selected: false
+  osaurus-activation: "on-demand"
+```
 
-| Mode        | Skills Loaded | Description                               |
-| ----------- | ------------- | ----------------------------------------- |
-| `off`       | 0             | Disable automatic selection               |
-| `narrow`    | 1             | Minimal context, fastest responses        |
-| `balanced`  | 2             | Default — good coverage, moderate cost    |
-| `wide`      | 4             | Maximum coverage, larger prompts          |
+That means they are searchable and loadable, but they do not add prompt weight until the agent needs them.
 
 ### Runtime Discovery
 
-During a conversation, the AI can also discover and load additional capabilities on demand:
+During a conversation, the AI can discover and load additional capabilities on demand:
 
-1. **`capabilities_search`** — Searches all indexed methods, tools, and skills in parallel
-2. **`capabilities_load`** — Loads a specific capability into the active session
+1. **`capabilities_search`** searches indexed methods, tools, and discoverable skills.
+2. **`capabilities_load`** loads specific IDs returned by search.
 
-This means the AI starts with automatically selected skills and can dynamically expand its capabilities as the conversation evolves.
+Loaded tools are added to the callable schema for the session. Loaded skills are appended to the session instructions on later turns without becoming globally selected for the agent.
 
-### Why This Matters
+### Search Modes
 
-- **Zero configuration** — Skills are selected based on relevance, not manual toggles
-- **Better focus** — Only relevant skills are loaded, keeping context lean
-- **Adaptive** — The AI can discover additional skills mid-conversation if the topic shifts
-- **Works with Methods** — Learned workflows (methods) are searched alongside skills, so the AI benefits from past experience
+Preflight search modes control automatic tool selection:
+
+| Mode        | Tools Loaded | Description                               |
+| ----------- | ------------ | ----------------------------------------- |
+| `off`       | 0            | Disable preflight selection               |
+| `narrow`    | Up to 2      | Minimal tool injection                    |
+| `balanced`  | Up to 5      | Default tool coverage                     |
+| `wide`      | Up to 15     | Larger tool surface for complex tasks     |
+
+Skills remain available through selected agent configuration and on-demand capability loading.
 
 ---
 
 ## Agent Integration
 
-Skills are available to all agents automatically. The RAG-based preflight search selects relevant skills for each query regardless of which agent is active.
+Skills are available to agents in two lightweight ways:
 
-**How it works with agents:**
+- Selected skills are injected at chat start for that agent.
+- Discoverable skills can be found with `capabilities_search` and loaded into the current session with `capabilities_load`.
 
-- Each agent's system prompt guides its behavior and specialization
-- When you send a message, the preflight search finds skills relevant to your query
-- Matching skill instructions are injected into the agent's context
-- The agent can discover additional skills at runtime via `capabilities_search`
-
-No per-agent skill configuration is needed. The system automatically matches the right skills to the right tasks.
+New high-fidelity skills can opt out of default agent selection with `osaurus-default-selected: false`. They still appear in search and can be loaded when the task calls for them.
 
 ---
 
@@ -237,9 +248,10 @@ No per-agent skill configuration is needed. The system automatically matches the
 ### Skills not appearing in chat
 
 - Verify the skill is enabled (toggle is on)
-- Check that the skill's description clearly describes its purpose (the RAG search uses this)
+- Check whether the skill is selected for the agent, or ask the agent to use `capabilities_search`
+- Check that the skill's description and keywords clearly describe its purpose
 - Start a new chat session
-- Try setting a wider search mode in chat configuration
+- For tools, try setting a wider preflight search mode in chat configuration
 
 ### GitHub import fails
 

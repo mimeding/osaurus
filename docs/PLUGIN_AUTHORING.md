@@ -924,7 +924,7 @@ const res = await fetch(`${window.__osaurus.baseUrl}/api/widgets`);
 
 ### Plugin Skills (SKILL.md)
 
-Plugins can bundle a `SKILL.md` file that provides AI-specific guidance for using the plugin's tools. When a plugin includes a skill, Osaurus automatically loads it and makes it available to the AI during conversations. This is the recommended way to teach the AI how to use your plugin effectively.
+Plugins can bundle a `SKILL.md` file that provides AI-specific guidance for using the plugin's tools. When a plugin includes a skill, Osaurus registers and indexes it so users or agents can select it up front or load it on demand during a conversation. This is the recommended way to teach the AI how to use your plugin effectively without adding prompt weight to every chat.
 
 Skills follow the [Agent Skills](https://agentskills.io/specification) specification — a markdown file with YAML frontmatter.
 
@@ -956,8 +956,11 @@ Detailed instructions for the AI...
 | `description`      | string | Yes      | Tells the AI when this skill applies. Max 1024 characters.                            |
 | `metadata.author`  | string | No       | Skill author name.                                                                    |
 | `metadata.version` | string | No       | Skill version (e.g., `"1.0.0"`).                                                      |
+| `metadata.osaurus-discoverable` | bool | No | Whether `capabilities_search` can surface the skill. Defaults to `true`.              |
+| `metadata.osaurus-default-selected` | bool | No | Whether new agent capability sets include the skill. Defaults to `true` for compatibility. |
+| `metadata.osaurus-activation` | string | No | Activation policy, usually `"on-demand"` for large guidance packs.                    |
 
-The body after the frontmatter contains the full instructions in markdown. This is what the AI sees when the skill is active.
+The body after the frontmatter contains the full instructions in markdown. This is what the AI sees when the skill is selected for the agent or loaded into the current session.
 
 **Packaging:**
 
@@ -970,7 +973,8 @@ When using `osaurus tools dev`, only the root-level `SKILL.md` file is copied. F
 1. When the plugin is installed, `SKILL.md` files are extracted to `<plugin-install-dir>/skills/`.
 2. When the plugin loads, Osaurus parses each skill and registers it with the skill manager.
 3. Plugin skills appear in the Skills UI with a "From: _plugin-name_" badge and are **read-only** — users cannot edit or delete them, but they can enable or disable them.
-4. When the plugin is uninstalled, its skills are automatically unregistered and removed.
+4. Discoverable plugin skills can be found with `capabilities_search` and loaded into the active session with `capabilities_load`; selected skills still inject at chat start.
+5. When the plugin is uninstalled, its skills are automatically unregistered and removed.
 
 **Best Practices:**
 
@@ -980,6 +984,7 @@ When using `osaurus tools dev`, only the root-level `SKILL.md` file is copied. F
 - **List limitations.** If elements can't be modified after creation or slides can't be reordered, say so up front — this prevents the AI from attempting unsupported operations.
 - **Add tool-specific tips.** Note quirks like "hex colors must omit the `#` prefix" or "the `layout` parameter is metadata only and does not auto-generate content."
 - **Keep it focused.** The skill is loaded into the AI's context window. Be thorough but concise — avoid repeating what the tool schemas already convey.
+- **Prefer on-demand for large packs.** Set `metadata.osaurus-default-selected: false` and `metadata.osaurus-activation: "on-demand"` when the guidance should be discoverable but not always injected.
 
 **Example:**
 
