@@ -1,0 +1,39 @@
+---
+description: PR readiness requires attached, green GitHub checks
+globs: "**/*"
+alwaysApply: true
+---
+
+# Clean PR Rule
+
+Do not create, mark ready, or recommend merging an Osaurus PR unless GitHub
+checks are attached and green.
+
+Before opening or updating a PR:
+
+- Work from the clean checkout at `/Users/mmeding/Documents/Claude/Projects/osaurus-exec`.
+- Keep `/Users/mmeding/Documents/Claude/Projects/osaurus` read-only.
+- Run the smallest useful local verification for the files touched.
+- Push only after the working tree is clean.
+
+After opening or updating a PR:
+
+- Confirm GitHub Actions attached checks to the PR.
+- Wait for the required checks to finish: `test-core`, `test-cli`,
+  `swiftlint`, `shellcheck`, and `pr-clean-gate`.
+- Run `scripts/ci/check-pr-clean.sh osaurus-ai/osaurus <PR number>`.
+- Keep the PR draft or blocked if checks are missing, pending, cancelled, or
+  failing.
+
+If GitHub shows zero checks:
+
+- Do not treat local tests as sufficient for merge.
+- Rebase, push, or close/reopen the PR to trigger Actions if you own the branch.
+- If the branch belongs to an external fork and this account cannot update it,
+  leave a PR comment and require the author or a maintainer with branch access
+  to trigger CI.
+
+If a shared CI failure blocks many PRs:
+
+- Fix the shared CI problem first in a dedicated PR.
+- Do not debug unrelated feature code until the shared blocker is green.
