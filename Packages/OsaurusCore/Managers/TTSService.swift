@@ -45,6 +45,8 @@ public final class TTSService: ObservableObject {
     private var playbackTask: Task<Void, Never>?
     private var initTask: Task<Void, Never>?
 
+    private static let pocketTtsLanguage: PocketTtsLanguage = .english
+
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private let sourceFormat: AVAudioFormat = {
@@ -121,6 +123,7 @@ public final class TTSService: ObservableObject {
                 // Route through the downloader explicitly so we get progress callbacks.
                 // When models are already cached this returns nearly instantly.
                 _ = try await PocketTtsResourceDownloader.ensureModels(
+                    language: Self.pocketTtsLanguage,
                     directory: nil,
                     progressHandler: { progress in
                         Task { @MainActor in
@@ -137,7 +140,7 @@ public final class TTSService: ObservableObject {
                     }
                 )
 
-                let mgr = PocketTtsManager(defaultVoice: voice)
+                let mgr = PocketTtsManager(defaultVoice: voice, language: Self.pocketTtsLanguage)
                 try await mgr.initialize()
                 await MainActor.run {
                     guard let self else { return }
@@ -177,6 +180,7 @@ public final class TTSService: ObservableObject {
             .appendingPathComponent("fluidaudio", isDirectory: true)
             .appendingPathComponent("Models", isDirectory: true)
             .appendingPathComponent("pocket-tts", isDirectory: true)
+            .appendingPathComponent(Self.pocketTtsLanguage.repoSubdirectory, isDirectory: true)
         let required = ModelNames.PocketTTS.requiredModels
         let fm = FileManager.default
         return required.allSatisfy { fm.fileExists(atPath: repoDir.appendingPathComponent($0).path) }
