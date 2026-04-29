@@ -46,48 +46,50 @@ struct ChatViewSandboxTests {
 
     @Test
     func estimatedContextBreakdown_includesSandboxPromptAndToolsWhenEnabled() async {
-        await SandboxTestLock.shared.run {
-            let manager = AgentManager.shared
-            let originalActiveAgentId = manager.activeAgentId
-            let inactiveAgent = Agent(
-                name: "Chat Estimate Off",
-                agentAddress: "test-chat-estimate-off"
-            )
-            let sandboxAgent = Agent(
-                name: "Chat Estimate On",
-                agentAddress: "test-chat-estimate-on",
-                autonomousExec: AutonomousExecConfig(enabled: true)
-            )
-            manager.add(inactiveAgent)
-            manager.add(sandboxAgent)
+        await StoragePathsTestLock.shared.run {
+            await SandboxTestLock.shared.run {
+                let manager = AgentManager.shared
+                let originalActiveAgentId = manager.activeAgentId
+                let inactiveAgent = Agent(
+                    name: "Chat Estimate Off",
+                    agentAddress: "test-chat-estimate-off"
+                )
+                let sandboxAgent = Agent(
+                    name: "Chat Estimate On",
+                    agentAddress: "test-chat-estimate-on",
+                    autonomousExec: AutonomousExecConfig(enabled: true)
+                )
+                manager.add(inactiveAgent)
+                manager.add(sandboxAgent)
 
-            let inactiveSession = ChatSession()
-            inactiveSession.agentId = inactiveAgent.id
-            let sandboxSession = ChatSession()
-            sandboxSession.agentId = sandboxAgent.id
+                let inactiveSession = ChatSession()
+                inactiveSession.agentId = inactiveAgent.id
+                let sandboxSession = ChatSession()
+                sandboxSession.agentId = sandboxAgent.id
 
-            BuiltinSandboxTools.register(
-                agentId: sandboxAgent.id.uuidString,
-                agentName: sandboxAgent.name,
-                config: AutonomousExecConfig(enabled: true)
-            )
+                BuiltinSandboxTools.register(
+                    agentId: sandboxAgent.id.uuidString,
+                    agentName: sandboxAgent.name,
+                    config: AutonomousExecConfig(enabled: true)
+                )
 
-            let inactiveBreakdown = inactiveSession.estimatedContextBreakdown
-            let sandboxBreakdown = sandboxSession.estimatedContextBreakdown
+                let inactiveBreakdown = inactiveSession.estimatedContextBreakdown
+                let sandboxBreakdown = sandboxSession.estimatedContextBreakdown
 
-            let inactiveContextTokens = inactiveBreakdown.context.reduce(0) { $0 + $1.tokens }
-            let sandboxContextTokens = sandboxBreakdown.context.reduce(0) { $0 + $1.tokens }
-            #expect(sandboxContextTokens > inactiveContextTokens)
+                let inactiveContextTokens = inactiveBreakdown.context.reduce(0) { $0 + $1.tokens }
+                let sandboxContextTokens = sandboxBreakdown.context.reduce(0) { $0 + $1.tokens }
+                #expect(sandboxContextTokens > inactiveContextTokens)
 
-            let sandboxToolTokens = sandboxBreakdown.context.first { $0.id == "tools" }?.tokens ?? 0
-            let inactiveToolTokens = inactiveBreakdown.context.first { $0.id == "tools" }?.tokens ?? 0
-            #expect(sandboxToolTokens > inactiveToolTokens)
-            #expect(sandboxToolTokens >= ToolRegistry.shared.estimatedTokens(for: "sandbox_exec"))
+                let sandboxToolTokens = sandboxBreakdown.context.first { $0.id == "tools" }?.tokens ?? 0
+                let inactiveToolTokens = inactiveBreakdown.context.first { $0.id == "tools" }?.tokens ?? 0
+                #expect(sandboxToolTokens > inactiveToolTokens)
+                #expect(sandboxToolTokens >= ToolRegistry.shared.estimatedTokens(for: "sandbox_exec"))
 
-            ToolRegistry.shared.unregisterAllSandboxTools()
-            manager.setActiveAgent(originalActiveAgentId)
-            _ = await manager.delete(id: inactiveAgent.id)
-            _ = await manager.delete(id: sandboxAgent.id)
+                ToolRegistry.shared.unregisterAllSandboxTools()
+                manager.setActiveAgent(originalActiveAgentId)
+                _ = await manager.delete(id: inactiveAgent.id)
+                _ = await manager.delete(id: sandboxAgent.id)
+            }
         }
     }
 
@@ -128,50 +130,52 @@ struct ChatViewSandboxTests {
 
     @Test
     func prepareChatExecutionMode_usesSessionAgentInsteadOfActiveAgent() async {
-        await SandboxTestLock.shared.run {
-            let manager = AgentManager.shared
-            let registrar = SandboxToolRegistrar.shared
-            let originalActiveAgentId = manager.activeAgentId
-            let originalStatus = SandboxManager.State.shared.status
-            let originalProvisionOverride = registrar.provisionAgentOverride
+        await StoragePathsTestLock.shared.run {
+            await SandboxTestLock.shared.run {
+                let manager = AgentManager.shared
+                let registrar = SandboxToolRegistrar.shared
+                let originalActiveAgentId = manager.activeAgentId
+                let originalStatus = SandboxManager.State.shared.status
+                let originalProvisionOverride = registrar.provisionAgentOverride
 
-            let inactiveAgent = Agent(
-                name: "Chat Sandbox Off",
-                agentAddress: "test-chat-sandbox-off"
-            )
-            let sandboxAgent = Agent(
-                name: "Chat Sandbox On",
-                agentAddress: "test-chat-sandbox-on",
-                autonomousExec: AutonomousExecConfig(enabled: true)
-            )
-            manager.add(inactiveAgent)
-            manager.add(sandboxAgent)
-            manager.setActiveAgent(inactiveAgent.id)
+                let inactiveAgent = Agent(
+                    name: "Chat Sandbox Off",
+                    agentAddress: "test-chat-sandbox-off"
+                )
+                let sandboxAgent = Agent(
+                    name: "Chat Sandbox On",
+                    agentAddress: "test-chat-sandbox-on",
+                    autonomousExec: AutonomousExecConfig(enabled: true)
+                )
+                manager.add(inactiveAgent)
+                manager.add(sandboxAgent)
+                manager.setActiveAgent(inactiveAgent.id)
 
-            SandboxManager.State.shared.status = .running
-            registrar.provisionAgentOverride = { _ in }
-            BuiltinSandboxTools.register(
-                agentId: sandboxAgent.id.uuidString,
-                agentName: sandboxAgent.name,
-                config: AutonomousExecConfig(enabled: true)
-            )
+                SandboxManager.State.shared.status = .running
+                registrar.provisionAgentOverride = { _ in }
+                BuiltinSandboxTools.register(
+                    agentId: sandboxAgent.id.uuidString,
+                    agentName: sandboxAgent.name,
+                    config: AutonomousExecConfig(enabled: true)
+                )
 
-            let session = ChatSession()
-            let inactiveMode = await session.prepareChatExecutionMode(agentId: inactiveAgent.id)
-            let sandboxMode = await session.prepareChatExecutionMode(agentId: sandboxAgent.id)
+                let session = ChatSession()
+                let inactiveMode = await session.prepareChatExecutionMode(agentId: inactiveAgent.id)
+                let sandboxMode = await session.prepareChatExecutionMode(agentId: sandboxAgent.id)
 
-            #expect(inactiveMode.usesSandboxTools == false)
-            #expect(sandboxMode.usesSandboxTools)
+                #expect(inactiveMode.usesSandboxTools == false)
+                #expect(sandboxMode.usesSandboxTools)
 
-            let specs = ToolRegistry.shared.alwaysLoadedSpecs(mode: sandboxMode)
-            #expect(specs.contains(where: { $0.function.name == "sandbox_exec" }))
+                let specs = ToolRegistry.shared.alwaysLoadedSpecs(mode: sandboxMode)
+                #expect(specs.contains(where: { $0.function.name == "sandbox_exec" }))
 
-            ToolRegistry.shared.unregisterAllSandboxTools()
-            SandboxManager.State.shared.status = originalStatus
-            registrar.provisionAgentOverride = originalProvisionOverride
-            manager.setActiveAgent(originalActiveAgentId)
-            _ = await manager.delete(id: inactiveAgent.id)
-            _ = await manager.delete(id: sandboxAgent.id)
+                ToolRegistry.shared.unregisterAllSandboxTools()
+                SandboxManager.State.shared.status = originalStatus
+                registrar.provisionAgentOverride = originalProvisionOverride
+                manager.setActiveAgent(originalActiveAgentId)
+                _ = await manager.delete(id: inactiveAgent.id)
+                _ = await manager.delete(id: sandboxAgent.id)
+            }
         }
     }
 
