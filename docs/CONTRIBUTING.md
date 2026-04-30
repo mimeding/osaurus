@@ -18,16 +18,16 @@ Requirements:
 
 - macOS 15.5+
 - Apple Silicon (M1 or newer)
-- Xcode 16.4+
+- A Swift 6.2-capable Xcode toolchain. CI currently pins Xcode 26.4.1.
 
 Build and run:
 
-1. Open `osaurus.xcworkspace` in Xcode 16.4+
+1. Open `osaurus.xcworkspace` in Xcode with the same Swift toolchain family used by CI
 2. Select the `osaurus` target and press Run
 3. In the app UI, choose a port (default `1337`), then Start
 4. Download a model from the Model Manager to generate text locally
 
-Project layout and API overview are in `README.md`. For a complete feature inventory, see [FEATURES.md](FEATURES.md).
+Project layout and API overview are in `README.md`. For a complete feature inventory, see [FEATURES.md](FEATURES.md). For prioritized roadmap work, see [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 
 ## Architecture guide
 
@@ -112,6 +112,7 @@ The core library (`Packages/OsaurusCore/`) follows a layered architecture. Each 
 - Write clear, focused commits; prefer Conventional Commits where practical
 - Open a pull request early for feedback if helpful
 - Keep PRs small and focused; describe user-facing changes and test steps
+- Use [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) to choose priority when a change spans multiple workstreams
 
 ### Code style
 
@@ -139,7 +140,34 @@ gitignored and not used by CI.
 ### Testing
 
 - Add or update tests in `Packages/OsaurusCore/Tests/` where reasonable
-- Ensure the project builds and tests pass in Xcode before submitting
+- Run focused tests for the package you changed before submitting
+- Use `make ci-test` when you need local parity with the CI `test-core` job
+- Keep model, sandbox, network, and other external-infrastructure tests opt-in through environment variables
+
+Recommended local checks:
+
+| Change type | Command |
+| ----------- | ------- |
+| Formatting | `swift-format lint --strict --recursive Packages App` |
+| Core logic | `swift test --package-path Packages/OsaurusCore` |
+| CI parity for core tests | `make ci-test` |
+| CLI changes | `swift test --package-path Packages/OsaurusCLI --parallel` |
+| Plugin repository changes | `swift test --package-path Packages/OsaurusRepository` |
+| Behavior/eval tuning | `make evals` or `make evals-report` |
+| Shell scripts | `find scripts -name '*.sh' -print0 \| xargs -0 shellcheck --severity=warning` |
+
+`Packages/OsaurusEvals` is intentionally off the normal CI path because it can burn model tokens and depend on local setup. Add eval cases for behavior that depends on model or provider output, but do not make them unconditional CI gates without an explicit maintainer decision.
+
+### Definition of done
+
+A contribution is ready for review when:
+
+- The change follows the layer rules above
+- Tests or evals cover the behavior, or the PR explains why coverage is not reasonable
+- Docs, fixtures, and examples are updated for public API, tool, storage, plugin, or file format changes
+- Security-sensitive changes include redaction, permission, and user-visible failure-mode thinking
+- UI changes include screenshots or recordings when visual behavior changes
+- The PR test plan lists the exact local commands or manual checks performed
 
 ### Commit and PR guidelines
 
@@ -160,6 +188,7 @@ Good documentation is just as important as good code. Here's how to contribute t
 | -------------------------------------------------------------- | ----------------------------------------------------------------- |
 | [README.md](../README.md)                                      | Project overview, quick start, feature highlights                 |
 | [FEATURES.md](FEATURES.md)                                     | **Source of truth** — feature inventory and architecture          |
+| [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)                     | Prioritized roadmap, workstreams, and definition of done          |
 | [REMOTE_PROVIDERS.md](REMOTE_PROVIDERS.md)                     | Remote provider setup and configuration                           |
 | [REMOTE_MCP_PROVIDERS.md](REMOTE_MCP_PROVIDERS.md)             | Remote MCP provider setup                                         |
 | [DEVELOPER_TOOLS.md](DEVELOPER_TOOLS.md)                       | Insights and Server Explorer guide                                |

@@ -222,7 +222,7 @@ cd osaurus
 open osaurus.xcworkspace
 ```
 
-Build and run the `osaurus` target. Requires Xcode 16+ and macOS 15.5+.
+Build and run the `osaurus` target. Requires macOS 15.5+ and a Swift 6.2-capable Xcode toolchain. CI currently pins Xcode 26.4.1.
 
 ### Git Hooks (lefthook)
 
@@ -267,7 +267,7 @@ See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for the architecture guide and layer
 
 Osaurus is actively developed and we welcome contributions: bug fixes, new plugins, documentation, UI/UX improvements, and testing.
 
-Check out [Good First Issues](https://github.com/osaurus-ai/osaurus/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22), read the [Contributing Guide](CONTRIBUTING.md), or join [Discord](https://discord.gg/osaurus). See [docs/FEATURES.md](docs/FEATURES.md) for the full feature inventory.
+Check out [Good First Issues](https://github.com/osaurus-ai/osaurus/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22), read the [Contributing Guide](docs/CONTRIBUTING.md), or join [Discord](https://discord.gg/osaurus). See [docs/FEATURES.md](docs/FEATURES.md) for the full feature inventory and [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md) for the forward roadmap.
 
 ## Community
 

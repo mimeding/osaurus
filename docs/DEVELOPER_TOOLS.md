@@ -255,9 +255,20 @@ The Server Explorer requires the server to be running. If endpoints show as disa
 
 How CI runs the Osaurus test suite, and the hooks that exist to debug it when it goes sideways.
 
+### Jobs
+
+The CI workflow is pinned to the runner and Xcode version declared in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
+
+| Job | Purpose | Current Timeout |
+| --- | --- | --- |
+| `test-core` | `xcodebuild test` for `OsaurusCoreTests` through `osaurus.xcworkspace` | 45 minutes |
+| `test-cli` | `swift test --package-path Packages/OsaurusCLI --parallel` | 10 minutes |
+| `swiftlint` | SwiftLint over the repo | 10 minutes |
+| `shellcheck` | ShellCheck for scripts | 10 minutes |
+
 ### Reproduce CI locally
 
-The Makefile target `make ci-test` runs the exact `xcodebuild` flags CI uses, piped through `xcbeautify`, and writes a result bundle:
+The Makefile target `make ci-test` runs the same core `xcodebuild` path CI uses, pipes output through `xcbeautify`, and writes a result bundle:
 
 ```bash
 brew install xcbeautify    # one-time
@@ -265,62 +276,58 @@ make ci-test
 open build/Tests.xcresult  # full Xcode Test Navigator UI
 ```
 
-If a test fails on CI but you can't reproduce it on your machine, download the `test-core-xcresult-*` artifact attached to the failed CI run and open it the same way.
+Use narrower package tests while iterating, then use `make ci-test` before a risky PR or when chasing a CI-only failure.
 
 ### Long-running and integration tests
 
-Tests that require external infrastructure (Apple Containerization, real GPU, network, etc.) must:
+Tests that require external infrastructure (Apple Containerization, real GPU, network, model downloads, provider credentials, etc.) must:
 
-1. **Be opt-in via an environment variable** — never run unconditionally in CI.
-2. **Use Swift Testing's `.disabled(if:)` trait** at the suite level so they're reported as `Disabled` (not silently passing). Pattern:
+1. **Be opt-in via an environment variable** - never run unconditionally in CI.
+2. **Use Swift Testing's `.disabled(if:)` trait** at the suite level so they are reported as `Disabled` rather than silently passing. Pattern:
 
    ```swift
    private let isEnabled =
        ProcessInfo.processInfo.environment["OSAURUS_RUN_FOO_TESTS"] == "1"
 
    @Suite(.disabled(if: !isEnabled, "Set OSAURUS_RUN_FOO_TESTS=1 to run"))
-   struct FooIntegrationTests { … }
+   struct FooIntegrationTests { ... }
    ```
 
-3. **Keep individual test bodies under ~250ms of `Task.sleep`** and prefer event-driven waits (continuations, `AsyncStream`) for everything else.
+3. **Keep individual test bodies under ~250ms of `Task.sleep`** and prefer event-driven waits such as continuations or `AsyncStream`.
 
 Currently env-gated:
 
-| Env var                                  | Suite                                                                                    | Notes                                            |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `OSAURUS_RUN_SANDBOX_INTEGRATION_TESTS=1` | [`SandboxIntegrationTests`](../Packages/OsaurusCore/Tests/Sandbox/SandboxIntegrationTests.swift) | Boots a Linux VM; runs `pip`/`npm`/`go` workloads. |
+| Env var | Suite | Notes |
+| --- | --- | --- |
+| `OSAURUS_RUN_SANDBOX_INTEGRATION_TESTS=1` | [`SandboxIntegrationTests`](../Packages/OsaurusCore/Tests/Sandbox/SandboxIntegrationTests.swift) | Boots a Linux VM and runs package-manager workloads. |
 
 ### CI cache controls
 
-The `test-core` job caches `~/Library/Developer/Xcode/DerivedData` keyed on Swift sources, manifests, resources, the pinned Xcode version, and a manual `CACHE_SALT`. Two recovery levers when you suspect a bad cache:
+The `test-core` job caches SPM packages and `~/Library/Developer/Xcode/DerivedData`. DerivedData is keyed on Swift sources, manifests, resources, C headers/sources, the pinned Xcode version, and `CACHE_SALT`.
 
-1. **One-shot cold build**: trigger CI manually via the **Run workflow** button on the [CI workflow](../.github/workflows/ci.yml) page and check `clear_cache`. Skips the restore for that one run.
-2. **Permanent bust**: bump `CACHE_SALT` (currently `v1`) at the top of `.github/workflows/ci.yml` to `v2` and merge. Every cache key invalidates immediately.
+Two recovery levers exist when you suspect a bad cache:
 
-The cache only **saves** on `main` pushes — PRs read from it but never overwrite, so a half-baked branch can't poison everyone.
+1. **One-shot cold build**: trigger CI manually via the **Run workflow** button and check `clear_cache`. CI still restores the cache first so the save key is available, then wipes restored DerivedData before building. The SPM source cache is preserved.
+2. **Permanent bust**: bump `CACHE_SALT` at the top of `.github/workflows/ci.yml` and merge. Every DerivedData and SPM cache key invalidates immediately.
+
+DerivedData cache saves only on successful `main` runs. PRs can read caches but cannot overwrite them.
 
 ### Where the logs live
 
-The full xcodebuild output is collapsed into expandable groups by `xcbeautify`. On a failure CI also publishes:
+The full `xcodebuild` output is grouped by `xcbeautify`. On failure or cancellation CI also publishes:
 
-- A short failure summary (failed tests + assertion messages) at the top of the GitHub Actions run page.
-- The raw `Tests.xcresult` bundle as a downloadable artifact (`test-core-xcresult-N`, 7 days retention).
+- A GitHub step summary that distinguishes build failure, launch hang, zero-test-result hang, and ordinary failed test cases.
+- The raw `Tests.xcresult` bundle as a downloadable artifact named `test-core-xcresult-N`, retained for 7 days.
 
-A passing run produces ~1–2k log lines instead of the historical ~30k, and individual tests that hang are killed in ~2 min by `-test-timeouts-enabled YES` (default 60s, max 120s per test). The whole `test-core` job is also capped at 15 minutes via `timeout-minutes`.
+Per-test timeouts are enabled with a 60-second default allowance and 120-second maximum allowance. This surfaces hung test names before the job wall-timeout whenever the test bundle launches far enough to report them.
 
 ### Deferred follow-up
 
-Test wall-time is now bounded by the build-from-scratch cost of the full `OsaurusCore` package. The biggest remaining lever is splitting `OsaurusCore` into focused SPM targets (`OsaurusFoundation`, `OsaurusInference`, `OsaurusVoice`, `OsaurusUpdater`, `OsaurusSandbox`, `OsaurusUI`) so a Foundation-only PR doesn't rebuild MLX / FluidAudio / Sparkle / VecturaKit. File-coupling counts that justify the split:
+Test wall-time is bounded by the build-from-scratch cost of the full `OsaurusCore` package. The biggest remaining lever is splitting `OsaurusCore` into focused targets so a foundation-only PR does not rebuild MLX, FluidAudio, Sparkle, VecturaKit, Containerization, SQLCipher, and SwiftUI-adjacent code.
 
-- MLX/MLXLLM/MLXVLM/MLXLMCommon/Tokenizers: ~10 files, all in `Services/ModelRuntime*`, `Managers/Model/ModelManager.swift`, `Models/Configuration/VLMDetection.swift`, `Utils/StreamingDeltaProcessor.swift`, `Views/Chat/ChatView.swift`.
-- `FluidAudio`: 2 files (`Managers/SpeechService.swift`, `Managers/Model/SpeechModelManager.swift`).
-- `Sparkle`: 1 file (`Services/UpdaterService.swift`).
-- `AAInfographics`: 1 file (`Views/Chat/NativeChartView.swift`).
-- `VecturaKit`: 7 files in `Services/{Memory,Method,Skill,Tool}/*`.
-- `Containerization`: 1 file (`Services/Sandbox/SandboxManager.swift`).
-- `P256K`, `Highlightr`, `SwiftMath`: 1 file each.
+The first split should isolate pure models, schemas, utility code, and low-dependency tests. One known boundary leak to clean before that split: `Models/Configuration/VLMDetection.swift` imports `MLXVLM` from the otherwise pure `Models/` tree.
 
-Yet **64 of 70 test files use `@testable import OsaurusCore`**, so even tiny tests rebuild the heavy graph today. The one boundary leak that needs cleaning before the split: `Models/Configuration/VLMDetection.swift` imports `MLXVLM` from the otherwise-pure `Models/` tree.
+See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for the prioritized architecture workstream.
 
 ---
 
