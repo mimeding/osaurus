@@ -8,7 +8,7 @@ CONFIG := Release
 PROJECT := App/osaurus.xcodeproj
 DERIVED := build/DerivedData
 
-.PHONY: help cli app install-cli serve status test ci-test clean bench-setup bench-ingest bench-ingest-chunks bench-run bench evals evals-verbose evals-report evals-all evals-all-verbose evals-all-report
+.PHONY: help cli app install-cli serve status test ci-test compat-openai clean bench-setup bench-ingest bench-ingest-chunks bench-run bench evals evals-verbose evals-report evals-all evals-all-verbose evals-all-report
 
 help:
 	@echo "Targets:"
@@ -30,6 +30,7 @@ help:
 	@echo "  evals-all-report    Same as 'evals-all' but writes per-suite JSON to EVALS_OUT_DIR (build/evals/)"
 	@echo "  test           Run OsaurusCore package tests via 'swift test'"
 	@echo "  ci-test        Reproduce the CI test-core job locally (xcodebuild + xcbeautify)"
+	@echo "  compat-openai  Run OpenAI Chat Completions compatibility checks against HOST/MODEL"
 	@echo "  clean          Remove DerivedData build output"
 
 cli:
@@ -93,6 +94,10 @@ ci-test:
 		| xcbeautify --renderer terminal
 	@echo ""
 	@echo "Done. Inspect failures with: open build/Tests.xcresult"
+
+compat-openai:
+	@echo "Running OpenAI compatibility checks (HOST=$(HOST), MODEL=$(MODEL))..."
+	./scripts/openai_compat_report.sh
 
 ## ── LOCOMO Benchmark ──────────────────────────────────────────────
 

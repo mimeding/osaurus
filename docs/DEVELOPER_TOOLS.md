@@ -267,6 +267,16 @@ open build/Tests.xcresult  # full Xcode Test Navigator UI
 
 If a test fails on CI but you can't reproduce it on your machine, download the `test-core-xcresult-*` artifact attached to the failed CI run and open it the same way.
 
+### API compatibility reports
+
+Use the OpenAI compatibility report when changing request encoding, response writers, streaming, tool calls, or request validation:
+
+```bash
+make compat-openai HOST=http://localhost:1337 MODEL=foundation
+```
+
+The script writes a Markdown summary to `results/openai_compat_report.md` and detailed request/response artifacts under `results/openai_compat/`. Set `OUT_DIR=build/compat/openai` if you want scratch artifacts outside tracked result paths.
+
 ### Long-running and integration tests
 
 Tests that require external infrastructure (Apple Containerization, real GPU, network, etc.) must:
