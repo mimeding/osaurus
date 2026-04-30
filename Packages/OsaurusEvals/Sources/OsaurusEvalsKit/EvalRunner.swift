@@ -27,16 +27,14 @@ public enum EvalRunner {
         model: ModelSelection,
         filter: String? = nil
     ) async -> EvalReport {
-        // The CLI is its own process — it has to scan + dlopen every
-        // installed plugin manually before preflight can see plugin
-        // tools (the host app does this in AppDelegate). Without it
-        // every `requirePlugins` case skips with "missing plugins" no
-        // matter what's actually installed on disk.
-        await PreflightEvaluator.loadInstalledPlugins()
-
         let modelLabel = ModelOverride.describe(model)
         let startedAt = isoNow()
         var rows: [EvalCaseReport] = []
+        let runnableCases = suite.cases.filter { testCase in
+            guard let filter else { return true }
+            return testCase.id.contains(filter)
+        }
+        let needsPreflightRuntime = runnableCases.contains { $0.domain == "preflight" }
 
         // Surface decode failures up-front as `errored` rows so a
         // contributor with a typo sees the file name in the report
@@ -54,9 +52,22 @@ public enum EvalRunner {
             )
         }
 
-        await ModelOverride.withSelection(model) {
-            for testCase in suite.cases {
-                if let filter, !testCase.id.contains(filter) { continue }
+        if needsPreflightRuntime {
+            // The CLI is its own process — it has to scan + dlopen every
+            // installed plugin manually before preflight can see plugin
+            // tools (the host app does this in AppDelegate). Without it
+            // every `requirePlugins` case skips with "missing plugins" no
+            // matter what's actually installed on disk.
+            await PreflightEvaluator.loadInstalledPlugins()
+
+            await ModelOverride.withSelection(model) {
+                for testCase in runnableCases {
+                    let row = await runOne(testCase, modelId: modelLabel)
+                    rows.append(row)
+                }
+            }
+        } else {
+            for testCase in runnableCases {
                 let row = await runOne(testCase, modelId: modelLabel)
                 rows.append(row)
             }
@@ -85,6 +96,8 @@ public enum EvalRunner {
             return runArgumentCoercionCase(testCase, modelId: modelId)
         case "request_validation":
             return runRequestValidationCase(testCase, modelId: modelId)
+        case "agent_loop":
+            return runAgentLoopCase(testCase, modelId: modelId)
         case "tools", "streaming", "contract":
             // Scaffolded domains — runner implementation lives in a
             // follow-up so cases can be authored against the format
@@ -592,6 +605,159 @@ public enum EvalRunner {
                 notes.append("expected reason to contain '\(needle)'")
             }
         }
+        return .terminal(
+            id: testCase.id,
+            label: label,
+            domain: testCase.domain,
+            outcome: passed ? .passed : .failed,
+            notes: notes,
+            modelId: modelId
+        )
+    }
+
+    // MARK: - Agent loop domain
+
+    /// Pure-data evaluator for `domain == "agent_loop"`. These cases
+    /// avoid model calls and pin the helper contracts that the chat UI
+    /// relies on when intercepting `todo`, `complete`, and `clarify`.
+    private static func runAgentLoopCase(_ testCase: EvalCase, modelId: String) -> EvalCaseReport {
+        let label = testCase.label ?? testCase.id
+        guard let exp = testCase.expect.agentLoop else {
+            return Self.errored(testCase, label: label, modelId: modelId, note: "missing `expect.agentLoop`")
+        }
+
+        switch exp.op {
+        case .todoParse:
+            return runAgentLoopTodoParse(testCase, label: label, modelId: modelId, exp: exp)
+        case .completeValidate:
+            return runAgentLoopCompleteValidate(testCase, label: label, modelId: modelId, exp: exp)
+        case .clarifyParse:
+            return runAgentLoopClarifyParse(testCase, label: label, modelId: modelId, exp: exp)
+        }
+    }
+
+    private static func runAgentLoopTodoParse(
+        _ testCase: EvalCase,
+        label: String,
+        modelId: String,
+        exp: EvalCase.AgentLoopExpectations
+    ) -> EvalCaseReport {
+        guard let markdown = exp.markdown else {
+            return Self.errored(testCase, label: label, modelId: modelId, note: "todoParse needs `markdown`")
+        }
+
+        let todo = AgentTodo.parse(markdown)
+        var notes: [String] = []
+        var passed = true
+
+        if let total = exp.expectTotal, todo.totalCount != total {
+            passed = false
+            notes.append("total mismatch: expected \(total), got \(todo.totalCount)")
+        }
+        if let done = exp.expectDone, todo.doneCount != done {
+            passed = false
+            notes.append("done mismatch: expected \(done), got \(todo.doneCount)")
+        }
+        if let expectedItems = exp.expectItems {
+            let actualItems = todo.items.map(\.text)
+            if actualItems != expectedItems {
+                passed = false
+                notes.append("items mismatch: expected \(expectedItems), got \(actualItems)")
+            }
+        }
+        if notes.isEmpty {
+            notes.append("parsed \(todo.doneCount)/\(todo.totalCount) complete")
+        }
+
+        return .terminal(
+            id: testCase.id,
+            label: label,
+            domain: testCase.domain,
+            outcome: passed ? .passed : .failed,
+            notes: notes,
+            modelId: modelId
+        )
+    }
+
+    private static func runAgentLoopCompleteValidate(
+        _ testCase: EvalCase,
+        label: String,
+        modelId: String,
+        exp: EvalCase.AgentLoopExpectations
+    ) -> EvalCaseReport {
+        guard let summary = exp.summary else {
+            return Self.errored(testCase, label: label, modelId: modelId, note: "completeValidate needs `summary`")
+        }
+
+        let reason = CompleteTool.validate(summary: summary)
+        let accepted = (reason == nil)
+        let expectedAccept = exp.expectAccept ?? true
+        var notes: [String] = []
+        var passed = (accepted == expectedAccept)
+
+        if accepted {
+            notes.append("accepted")
+        } else {
+            notes.append("rejected: \(reason ?? "(unknown)")")
+        }
+
+        if let needle = exp.expectReasonContains {
+            if let reason, reason.contains(needle) {
+                notes.append("reason contains '\(needle)'")
+            } else {
+                passed = false
+                notes.append("expected rejection reason to contain '\(needle)'")
+            }
+        }
+
+        return .terminal(
+            id: testCase.id,
+            label: label,
+            domain: testCase.domain,
+            outcome: passed ? .passed : .failed,
+            notes: notes,
+            modelId: modelId
+        )
+    }
+
+    private static func runAgentLoopClarifyParse(
+        _ testCase: EvalCase,
+        label: String,
+        modelId: String,
+        exp: EvalCase.AgentLoopExpectations
+    ) -> EvalCaseReport {
+        guard let argumentsJSON = exp.argumentsJSON else {
+            return Self.errored(testCase, label: label, modelId: modelId, note: "clarifyParse needs `argumentsJSON`")
+        }
+        guard let payload = ClarifyTool.parse(argumentsJSON: argumentsJSON) else {
+            return .terminal(
+                id: testCase.id,
+                label: label,
+                domain: testCase.domain,
+                outcome: .failed,
+                notes: ["ClarifyTool.parse returned nil"],
+                modelId: modelId
+            )
+        }
+
+        var notes: [String] = []
+        var passed = true
+        if let expected = exp.expectQuestion, payload.question != expected {
+            passed = false
+            notes.append("question mismatch: expected '\(expected)', got '\(payload.question)'")
+        }
+        if let expected = exp.expectOptions, payload.options != expected {
+            passed = false
+            notes.append("options mismatch: expected \(expected), got \(payload.options)")
+        }
+        if let expected = exp.expectAllowMultiple, payload.allowMultiple != expected {
+            passed = false
+            notes.append("allowMultiple mismatch: expected \(expected), got \(payload.allowMultiple)")
+        }
+        if notes.isEmpty {
+            notes.append("clarify payload parsed")
+        }
+
         return .terminal(
             id: testCase.id,
             label: label,

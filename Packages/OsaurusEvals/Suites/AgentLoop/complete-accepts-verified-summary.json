@@ -1,0 +1,14 @@
+{
+  "id": "agent_loop.complete.accepts-verified-summary",
+  "domain": "agent_loop",
+  "label": "agent loop • complete accepts verified summary",
+  "query": "validate a useful completion summary",
+  "fixtures": {},
+  "expect": {
+    "agentLoop": {
+      "op": "completeValidate",
+      "summary": "Added the compatibility report target and verified it with bash -n plus shellcheck.",
+      "expectAccept": true
+    }
+  }
+}

@@ -96,6 +96,7 @@ public struct EvalCase: Sendable, Codable, Identifiable {
         public let prefixHash: PrefixHashExpectations?
         public let argumentCoercion: ArgumentCoercionExpectations?
         public let requestValidation: RequestValidationExpectations?
+        public let agentLoop: AgentLoopExpectations?
 
         public init(
             tools: ToolExpectations? = nil,
@@ -105,7 +106,8 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             streamingHint: StreamingHintExpectations? = nil,
             prefixHash: PrefixHashExpectations? = nil,
             argumentCoercion: ArgumentCoercionExpectations? = nil,
-            requestValidation: RequestValidationExpectations? = nil
+            requestValidation: RequestValidationExpectations? = nil,
+            agentLoop: AgentLoopExpectations? = nil
         ) {
             self.tools = tools
             self.companions = companions
@@ -115,6 +117,7 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             self.prefixHash = prefixHash
             self.argumentCoercion = argumentCoercion
             self.requestValidation = requestValidation
+            self.agentLoop = agentLoop
         }
     }
 
@@ -304,6 +307,61 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             self.responseFormatType = responseFormatType
             self.expectAccept = expectAccept
             self.expectReasonContains = expectReasonContains
+        }
+    }
+
+    /// Expectation for `domain == "agent_loop"` cases. Keeps the
+    /// smoke suite model-free by driving the pure helpers behind the
+    /// chat agent-loop tools:
+    ///   - `todoParse`: markdown checklist -> `AgentTodo` counters.
+    ///   - `completeValidate`: summary -> accept/reject decision.
+    ///   - `clarifyParse`: JSON arguments -> `ClarifyPayload`.
+    public struct AgentLoopExpectations: Sendable, Codable {
+        public enum Operation: String, Sendable, Codable {
+            case todoParse
+            case completeValidate
+            case clarifyParse
+        }
+
+        public let op: Operation
+        public let markdown: String?
+        public let argumentsJSON: String?
+        public let summary: String?
+        public let expectTotal: Int?
+        public let expectDone: Int?
+        public let expectItems: [String]?
+        public let expectAccept: Bool?
+        public let expectReasonContains: String?
+        public let expectQuestion: String?
+        public let expectOptions: [String]?
+        public let expectAllowMultiple: Bool?
+
+        public init(
+            op: Operation,
+            markdown: String? = nil,
+            argumentsJSON: String? = nil,
+            summary: String? = nil,
+            expectTotal: Int? = nil,
+            expectDone: Int? = nil,
+            expectItems: [String]? = nil,
+            expectAccept: Bool? = nil,
+            expectReasonContains: String? = nil,
+            expectQuestion: String? = nil,
+            expectOptions: [String]? = nil,
+            expectAllowMultiple: Bool? = nil
+        ) {
+            self.op = op
+            self.markdown = markdown
+            self.argumentsJSON = argumentsJSON
+            self.summary = summary
+            self.expectTotal = expectTotal
+            self.expectDone = expectDone
+            self.expectItems = expectItems
+            self.expectAccept = expectAccept
+            self.expectReasonContains = expectReasonContains
+            self.expectQuestion = expectQuestion
+            self.expectOptions = expectOptions
+            self.expectAllowMultiple = expectAllowMultiple
         }
     }
 

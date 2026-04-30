@@ -1,0 +1,16 @@
+{
+  "id": "agent_loop.clarify.options-dedupe",
+  "domain": "agent_loop",
+  "label": "agent loop • clarify option normalization",
+  "query": "parse a clarify call with duplicate options",
+  "fixtures": {},
+  "expect": {
+    "agentLoop": {
+      "op": "clarifyParse",
+      "argumentsJSON": "{\"question\":\"Use Postgres or SQLite?\",\"options\":[\" Postgres \",\"SQLite\",\"sqlite\",\"\"],\"allowMultiple\":true}",
+      "expectQuestion": "Use Postgres or SQLite?",
+      "expectOptions": ["Postgres", "SQLite"],
+      "expectAllowMultiple": true
+    }
+  }
+}

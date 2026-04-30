@@ -1,6 +1,6 @@
 # OsaurusEvals
 
-Catalog-driven behaviour / integration tests for Osaurus that hit a real model (Foundation, MLX, remote provider).
+Catalog-driven behaviour / integration tests for Osaurus. Some suites hit a real model (Foundation, MLX, remote provider); pure-data suites pin helper contracts without model calls.
 
 These evals are deliberately **off the CI path**. They burn LLM tokens, depend on local plugin installs, and exist to help us tune capabilities and triage new models — not to gate every commit.
 
@@ -15,7 +15,7 @@ Packages/OsaurusEvals/
     OsaurusEvalsCLI/    — `osaurus-evals` executable
   Suites/
     Preflight/          — preflight pick + companion teaser cases
-    AgentLoop/          — placeholder for future agent-loop cases
+    AgentLoop/          — model-free todo / complete / clarify contract cases
     ...
 ```
 
@@ -84,7 +84,7 @@ Minimal example:
 Field reference:
 
 - `id` — unique slug; surfaced in reports for diffing across runs.
-- `domain` — selects the runner code path. Today only `preflight` is supported.
+- `domain` — selects the runner code path. Model-backed `preflight` cases run capability selection; pure-data domains such as `agent_loop`, `schema`, `tool_envelope`, `streaming_hint`, `prefix_hash`, `argument_coercion`, and `request_validation` avoid model calls.
 - `label` — optional human label; falls back to `id`.
 - `query` — the user message preflight runs against.
 - `fixtures.preflightMode` — `off` / `narrow` / `balanced` / `wide`. Default `balanced`.
@@ -106,6 +106,20 @@ A case with empty `expect: {}` is a valid smoke test — it records what preflig
 1. Add `Suites/<NewDomain>/` with a few JSON cases.
 2. In `Sources/OsaurusEvalsKit/EvalRunner.swift`, add a `case "<newdomain>":` arm to `runOne(...)`. Keep domain runners as separate top-level functions; merging them into one branch gets messy fast.
 
+## Agent loop smoke cases
+
+`Suites/AgentLoop/` is deliberately model-free. It pins the pure helper contracts used by the chat-layer agent loop intercepts:
+
+- `todoParse` checks markdown checklist parsing via `AgentTodo.parse`.
+- `completeValidate` checks placeholder/length validation via `CompleteTool.validate`.
+- `clarifyParse` checks option normalization and payload parsing via `ClarifyTool.parse`.
+
+Run it without a live server:
+
+```bash
+make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/AgentLoop
+```
+
 ## CI isolation
 
 This package is a **separate Swift package**. CI / Xcode builds run `swift build` and `swift test` from `Packages/OsaurusCore`, never from here. Even if someone does `swift test` from inside `Packages/OsaurusEvals`, no test target exists yet — runner unit tests should be added with a `OSAURUS_EVALS_ENABLED=1` env-var gate so they never burn tokens unintentionally.
@@ -115,4 +129,4 @@ This package is a **separate Swift package**. CI / Xcode builds run `swift build
 - `osaurus-evals diff baseline.json current.json` — regression check against a stored baseline.
 - Per-model scoreboards under `reports/<model>/<date>.json`.
 - Auto-run on new model release (CI workflow listening for HF releases).
-- Domain growth: `Suites/AgentLoop/`, `Suites/ToolCalling/`, `Suites/SkillInjection/`.
+- Domain growth: `Suites/ToolCalling/`, `Suites/SkillInjection/`.

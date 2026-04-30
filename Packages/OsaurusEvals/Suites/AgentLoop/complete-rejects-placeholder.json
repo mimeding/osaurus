@@ -1,0 +1,15 @@
+{
+  "id": "agent_loop.complete.rejects-placeholder",
+  "domain": "agent_loop",
+  "label": "agent loop • complete rejects placeholder",
+  "query": "reject placeholder completion summary",
+  "fixtures": {},
+  "expect": {
+    "agentLoop": {
+      "op": "completeValidate",
+      "summary": "done",
+      "expectAccept": false,
+      "expectReasonContains": "too short"
+    }
+  }
+}

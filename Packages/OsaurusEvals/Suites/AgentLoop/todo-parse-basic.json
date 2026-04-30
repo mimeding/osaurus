@@ -1,0 +1,16 @@
+{
+  "id": "agent_loop.todo.parse-basic",
+  "domain": "agent_loop",
+  "label": "agent loop • todo parses checklist",
+  "query": "parse a todo checklist",
+  "fixtures": {},
+  "expect": {
+    "agentLoop": {
+      "op": "todoParse",
+      "markdown": "Plan:\n- [x] Read the docs\n- [ ] Add coverage\n  - [ ] Run the suite\nnot a task",
+      "expectTotal": 3,
+      "expectDone": 1,
+      "expectItems": ["Read the docs", "Add coverage", "Run the suite"]
+    }
+  }
+}
