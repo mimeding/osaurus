@@ -457,11 +457,29 @@ public final class SkillManager {
 
     public func loadInstructions(for skillNames: [String]) async -> [String: String] {
         var result: [String: String] = [:]
+        var unresolvedNames: [String] = []
         for name in skillNames {
-            if let skill = skill(named: name), skill.enabled {
-                result[name] = await buildFullInstructions(for: skill)
+            if let skill = skill(named: name) {
+                if skill.enabled {
+                    result[name] = await buildFullInstructions(for: skill)
+                }
+            } else {
+                unresolvedNames.append(name)
             }
         }
+
+        if !unresolvedNames.isEmpty {
+            // Skills can be installed or created outside the in-memory
+            // catalog's current snapshot. On-demand loads should resolve
+            // those fresh disk entries without requiring an app restart.
+            await refresh()
+            for name in unresolvedNames {
+                if let skill = skill(named: name), skill.enabled {
+                    result[name] = await buildFullInstructions(for: skill)
+                }
+            }
+        }
+
         return result
     }
 
