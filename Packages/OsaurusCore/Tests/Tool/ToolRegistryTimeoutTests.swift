@@ -48,7 +48,7 @@ struct ToolRegistryTimeoutTests {
 
         func execute(argumentsJSON: String) async throws -> String {
             await withCheckedContinuation { continuation in
-                DispatchQueue.global().asyncAfter(deadline: .now() + 1.2) {
+                DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
                     continuation.resume()
                 }
             }
@@ -118,7 +118,10 @@ struct ToolRegistryTimeoutTests {
         let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         #expect(parsed?["kind"] as? String == "timeout")
         #expect(parsed?["tool"] as? String == tool.name)
-        #expect(elapsed < 1.0, "took \(elapsed)s — timeout waited for the blocked body")
+        // The body ignores cancellation and finishes after 5s. Keeping
+        // this below 4s proves the timeout path returned without draining
+        // the blocked body while leaving room for busy CI runners.
+        #expect(elapsed < 4.0, "took \(elapsed)s — timeout waited for the blocked body")
     }
 
     @Test

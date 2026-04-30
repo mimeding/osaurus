@@ -5,14 +5,15 @@
 //  Central registry for chat tools. Provides OpenAI tool specs and execution by name.
 //
 
-import Foundation
 import Combine
+import Dispatch
+import Foundation
 
 private final class ToolBodyTimeoutRaceState: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<String, Never>?
     private var bodyTask: Task<Void, Never>?
-    private var timeoutTask: Task<Void, Never>?
+    private var timeoutTimer: DispatchSourceTimer?
     private var cancelBodyWhenSet = false
     private var cancelTimeoutWhenSet = false
 
@@ -20,16 +21,25 @@ private final class ToolBodyTimeoutRaceState: @unchecked Sendable {
         self.continuation = continuation
     }
 
-    func setTasks(body: Task<Void, Never>, timeout: Task<Void, Never>) {
+    func setBodyTask(_ body: Task<Void, Never>) {
         lock.lock()
         bodyTask = body
-        timeoutTask = timeout
         let shouldCancelBody = cancelBodyWhenSet
-        let shouldCancelTimeout = cancelTimeoutWhenSet
         lock.unlock()
 
         if shouldCancelBody { body.cancel() }
-        if shouldCancelTimeout { timeout.cancel() }
+    }
+
+    func setTimeoutTimer(_ timeout: DispatchSourceTimer) {
+        lock.lock()
+        timeoutTimer = timeout
+        let shouldCancelTimeout = cancelTimeoutWhenSet
+        lock.unlock()
+
+        if shouldCancelTimeout {
+            timeout.setEventHandler {}
+            timeout.cancel()
+        }
     }
 
     func finish(with result: String, cancelBody: Bool, cancelTimeout: Bool) {
@@ -41,16 +51,19 @@ private final class ToolBodyTimeoutRaceState: @unchecked Sendable {
         self.continuation = nil
 
         let bodyToCancel = cancelBody ? bodyTask : nil
-        let timeoutToCancel = cancelTimeout ? timeoutTask : nil
+        let timeoutToCancel = timeoutTimer
         if cancelBody, bodyTask == nil {
             cancelBodyWhenSet = true
         }
-        if cancelTimeout, timeoutTask == nil {
+        if cancelTimeout, timeoutTimer == nil {
             cancelTimeoutWhenSet = true
         }
+        bodyTask = nil
+        timeoutTimer = nil
         lock.unlock()
 
         bodyToCancel?.cancel()
+        timeoutToCancel?.setEventHandler {}
         timeoutToCancel?.cancel()
         continuation.resume(returning: result)
     }
@@ -461,6 +474,15 @@ final class ToolRegistry: ObservableObject {
         )
         return await withCheckedContinuation { continuation in
             let race = ToolBodyTimeoutRaceState(continuation: continuation)
+            let timeoutTimer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+            let nanos = Int((max(0, timeoutSeconds) * 1_000_000_000).rounded(.up))
+            timeoutTimer.schedule(deadline: .now() + .nanoseconds(nanos))
+            timeoutTimer.setEventHandler {
+                race.finish(with: timeoutEnvelope, cancelBody: true, cancelTimeout: false)
+            }
+            race.setTimeoutTimer(timeoutTimer)
+            timeoutTimer.resume()
+
             let bodyTask = Task {
                 do {
                     let result = try await tool.execute(argumentsJSON: argumentsJSON)
@@ -468,7 +490,7 @@ final class ToolRegistry: ObservableObject {
                 } catch is CancellationError {
                     // A cooperative loser should not overwrite the timeout
                     // envelope. If cancellation happened before the timeout
-                    // fired, the timeout task remains responsible for the
+                    // fired, the timeout timer remains responsible for the
                     // structured result.
                     return
                 } catch {
@@ -476,16 +498,7 @@ final class ToolRegistry: ObservableObject {
                     race.finish(with: result, cancelBody: false, cancelTimeout: true)
                 }
             }
-            let timeoutTask = Task {
-                let nanos = UInt64(max(0, timeoutSeconds) * 1_000_000_000)
-                do {
-                    try await Task.sleep(nanoseconds: nanos)
-                } catch {
-                    return
-                }
-                race.finish(with: timeoutEnvelope, cancelBody: true, cancelTimeout: false)
-            }
-            race.setTasks(body: bodyTask, timeout: timeoutTask)
+            race.setBodyTask(bodyTask)
         }
     }
 
