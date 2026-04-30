@@ -20,7 +20,7 @@ If UI updated, add before/after.
 
 ## Checklist
 
-- [ ] I have read `CONTRIBUTING.md`
+- [ ] I have read `docs/CONTRIBUTING.md`
 - [ ] I added/updated tests where reasonable
 - [ ] I updated docs/README as needed
-- [ ] I verified build on macOS with Xcode 16.4+
+- [ ] I verified build on macOS with a Swift 6.2-capable Xcode toolchain

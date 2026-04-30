@@ -6,12 +6,26 @@ alwaysApply: false
 
 # Building OsaurusCore
 
-The xcode workspace has pre-existing build failures in external dependencies (`mlx-swift-lm`, `IkigaJSON`). Never use `xcodebuild` to verify changes — it will always fail on those deps and waste tokens.
+Use focused package tests while iterating, and use CI-parity `xcodebuild` only when you need to reproduce the GitHub Actions `test-core` job.
 
-Instead, compile only the OsaurusCore package sources (no linking) to verify your changes:
+Fast local checks from the repository root:
 
 ```bash
-cd /Users/tpae/dev/osaurus/Packages/OsaurusCore && swift build 2>&1 | grep -E "error:" | grep -v "IkigaJSON"
+swift test --package-path Packages/OsaurusCore
+swift test --package-path Packages/OsaurusCLI --parallel
+swift-format lint --strict --recursive Packages App
 ```
 
-If the filtered output is empty, your code compiles cleanly.
+CI-parity check from the repository root:
+
+```bash
+make ci-test
+```
+
+If you only need a compile smoke test for core sources, this is acceptable:
+
+```bash
+swift build --package-path Packages/OsaurusCore
+```
+
+Do not hardcode local absolute paths in docs or scripts. Use repo-root-relative commands unless a tool explicitly requires an absolute path.

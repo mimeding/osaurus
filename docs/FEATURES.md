@@ -1115,6 +1115,7 @@ Eight settings total, down from v1's 18. The per-section budget knobs, MMR tunin
 | -------------------------------------------------------------- | ------------------------------------------------- |
 | [README.md](../README.md)                                      | Project overview, quick start, feature highlights |
 | [FEATURES.md](FEATURES.md)                                     | Feature inventory and architecture (this file)    |
+| [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)                     | Prioritized roadmap and development plan          |
 | [WATCHERS.md](WATCHERS.md)                                     | Watchers and folder monitoring guide              |
 | [AGENT_LOOP.md](AGENT_LOOP.md)                                 | Agent loop, folder context, and `todo`/`complete`/`clarify` |
 | [REMOTE_PROVIDERS.md](REMOTE_PROVIDERS.md)                     | Remote provider setup and configuration           |
