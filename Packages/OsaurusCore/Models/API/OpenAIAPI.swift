@@ -249,6 +249,9 @@ struct ChatMessage: Codable, Sendable {
     let tool_calls: [ToolCall]?
     /// Required for role=="tool" messages to associate with a prior tool call
     let tool_call_id: String?
+    /// Provider-specific reasoning text that some thinking APIs require on
+    /// follow-up requests after an assistant tool-call turn.
+    let reasoning_content: String?
 
     /// Extract image URLs from content parts (supports both data URLs and http URLs)
     var imageUrls: [String] {
@@ -306,6 +309,7 @@ extension ChatMessage {
         case content
         case tool_calls
         case tool_call_id
+        case reasoning_content
     }
 
     public init(from decoder: Decoder) throws {
@@ -313,6 +317,7 @@ extension ChatMessage {
         self.role = try container.decode(String.self, forKey: .role)
         self.tool_calls = try? container.decode([ToolCall].self, forKey: .tool_calls)
         self.tool_call_id = try? container.decode(String.self, forKey: .tool_call_id)
+        self.reasoning_content = try? container.decode(String.self, forKey: .reasoning_content)
 
         if let stringContent = try? container.decode(String.self, forKey: .content) {
             self.content = stringContent
@@ -357,6 +362,7 @@ extension ChatMessage {
         // Note: content is intentionally omitted when nil (e.g., assistant messages with tool_calls)
         try container.encodeIfPresent(tool_calls, forKey: .tool_calls)
         try container.encodeIfPresent(tool_call_id, forKey: .tool_call_id)
+        try container.encodeIfPresent(reasoning_content, forKey: .reasoning_content)
     }
 }
 
@@ -367,15 +373,23 @@ extension ChatMessage {
         self.contentParts = nil
         self.tool_calls = nil
         self.tool_call_id = nil
+        self.reasoning_content = nil
     }
 
     /// Initialize with optional tool calls and tool call id
-    init(role: String, content: String?, tool_calls: [ToolCall]?, tool_call_id: String?) {
+    init(
+        role: String,
+        content: String?,
+        tool_calls: [ToolCall]?,
+        tool_call_id: String?,
+        reasoning_content: String? = nil
+    ) {
         self.role = role
         self.content = content
         self.contentParts = nil
         self.tool_calls = tool_calls
         self.tool_call_id = tool_call_id
+        self.reasoning_content = reasoning_content
     }
 
     /// Initialize with multimodal content (text and images)
@@ -399,6 +413,7 @@ extension ChatMessage {
         self.content = text.isEmpty ? nil : text
         self.tool_calls = nil
         self.tool_call_id = nil
+        self.reasoning_content = nil
     }
 
     /// Multimodal init covering image + audio + video. Used by the
@@ -824,13 +839,12 @@ public enum JSONValue: Codable, Sendable, Equatable {
 
 extension JSONValue {
     /// Convert JSONValue to Sendable-compatible value for Jinja chat templates.
-    /// Null values are dropped from dictionaries because Jinja's `Value(any:)` cannot
-    /// handle `NSNull` and throws a runtime error. JSON Schema treats a missing key
-    /// the same as `null`, so this is semantically lossless for tool specs.
-    var sendableValue: any Sendable {
+    /// Null values are dropped because Jinja's `Value(any:)` cannot handle
+    /// null/optional placeholders inside erased Swift containers.
+    var sendableValue: (any Sendable)? {
         switch self {
         case .null:
-            return NSNull()
+            return nil
         case .bool(let b):
             return b
         case .number(let n):
@@ -838,12 +852,13 @@ extension JSONValue {
         case .string(let s):
             return s
         case .array(let arr):
-            return arr.map { $0.sendableValue }
+            return arr.compactMap { $0.sendableValue }
         case .object(let obj):
             var dict: [String: any Sendable] = [:]
             for (k, v) in obj {
-                if case .null = v { continue }
-                dict[k] = v.sendableValue
+                if let converted = v.sendableValue {
+                    dict[k] = converted
+                }
             }
             return dict
         }
@@ -881,8 +896,8 @@ extension ToolFunction {
         if let description {
             fn["description"] = description
         }
-        if let parameters {
-            fn["parameters"] = parameters.sendableValue
+        if let parameters, let converted = parameters.sendableValue {
+            fn["parameters"] = converted
         }
         return fn
     }

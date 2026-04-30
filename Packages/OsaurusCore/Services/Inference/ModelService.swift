@@ -77,12 +77,22 @@ struct ServiceToolInvocation: Error, Sendable {
     let toolCallId: String?
     /// Optional thought signature for Gemini thinking-mode models (e.g. Gemini 2.5)
     let geminiThoughtSignature: String?
+    /// Provider reasoning text that must be echoed on assistant tool-call
+    /// messages for APIs such as DeepSeek thinking mode.
+    let reasoningContent: String?
 
-    init(toolName: String, jsonArguments: String, toolCallId: String? = nil, geminiThoughtSignature: String? = nil) {
+    init(
+        toolName: String,
+        jsonArguments: String,
+        toolCallId: String? = nil,
+        geminiThoughtSignature: String? = nil,
+        reasoningContent: String? = nil
+    ) {
         self.toolName = toolName
         self.jsonArguments = jsonArguments
         self.toolCallId = toolCallId
         self.geminiThoughtSignature = geminiThoughtSignature
+        self.reasoningContent = reasoningContent
     }
 }
 

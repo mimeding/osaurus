@@ -218,7 +218,7 @@ public actor RemoteProviderService: ToolCapableService {
             configuredProviderType: provider.providerType,
             request: request
         )
-        let (content, _) = try parseResponse(data, providerType: responseProviderType)
+        let (content, _, _) = try parseResponse(data, providerType: responseProviderType)
         return content ?? ""
     }
 
@@ -307,7 +307,7 @@ public actor RemoteProviderService: ToolCapableService {
             configuredProviderType: provider.providerType,
             request: request
         )
-        let (content, toolCalls) = try parseResponse(data, providerType: responseProviderType)
+        let (content, toolCalls, reasoningContent) = try parseResponse(data, providerType: responseProviderType)
 
         // Check for tool calls
         if let toolCalls = toolCalls, let firstCall = toolCalls.first {
@@ -315,7 +315,8 @@ public actor RemoteProviderService: ToolCapableService {
                 toolName: firstCall.function.name,
                 jsonArguments: firstCall.function.arguments,
                 toolCallId: firstCall.id,
-                geminiThoughtSignature: firstCall.geminiThoughtSignature
+                geminiThoughtSignature: firstCall.geminiThoughtSignature,
+                reasoningContent: reasoningContent
             )
         }
 
@@ -653,6 +654,9 @@ public actor RemoteProviderService: ToolCapableService {
         /// Yielded text content. Only used when `trackContent` is `true`
         /// (streamWithTools, for the inline tool-call detection fallback).
         var accumulatedContent: String = ""
+        /// Reasoning content streamed before a tool call. DeepSeek requires
+        /// callers to echo this on the assistant tool-call message.
+        var accumulatedReasoningContent: String = ""
 
         let stopSequences: [String]
         let trackContent: Bool
@@ -692,9 +696,13 @@ public actor RemoteProviderService: ToolCapableService {
     /// a successful call to lock into history.
     static func resolveAccumulatedToolCall(
         from accumulated: [Int: StreamingState.ToolSlot],
+        reasoningContent: String,
         finishMarker: String
     ) -> AccumulatedToolCallResult {
-        guard let (invocation, wasRepaired) = makeToolInvocation(from: accumulated) else {
+        guard let (invocation, wasRepaired) = makeToolInvocation(
+            from: accumulated,
+            reasoningContent: reasoningContent
+        ) else {
             return .none
         }
         if wasRepaired {
@@ -865,6 +873,7 @@ public actor RemoteProviderService: ToolCapableService {
             if finishReason == "STOP" || finishReason == "MAX_TOKENS" {
                 switch resolveAccumulatedToolCall(
                     from: state.accumulatedToolCalls,
+                    reasoningContent: state.accumulatedReasoningContent,
                     finishMarker: "gemini=\(finishReason)"
                 ) {
                 case .none: return .finishNormal
@@ -931,6 +940,7 @@ public actor RemoteProviderService: ToolCapableService {
         case "message_stop":
             switch resolveAccumulatedToolCall(
                 from: state.accumulatedToolCalls,
+                reasoningContent: state.accumulatedReasoningContent,
                 finishMarker: "anthropic message_stop"
             ) {
             case .none: return .finishNormal
@@ -1026,6 +1036,7 @@ public actor RemoteProviderService: ToolCapableService {
             state.lastFinishReason = "completed"
             switch resolveAccumulatedToolCall(
                 from: state.accumulatedToolCalls,
+                reasoningContent: state.accumulatedReasoningContent,
                 finishMarker: "response.completed"
             ) {
             case .none: return .finishNormal
@@ -1081,10 +1092,10 @@ public actor RemoteProviderService: ToolCapableService {
         // (DeepSeek, Qwen, Together, vLLM). Forwarded as a sentinel so the
         // SSE layer routes it onto `reasoning_content` and ChatView places
         // it in the Think panel — without ever emitting `<think>` literals.
-        if state.accumulatedToolCalls.isEmpty,
-            let reasoning = chunk.choices.first?.delta.reasoning_content,
-            !reasoning.isEmpty
-        {
+        if let reasoning = chunk.choices.first?.delta.reasoning_content,
+            !reasoning.isEmpty {
+            state.accumulatedReasoningContent += reasoning
+            guard state.accumulatedToolCalls.isEmpty else { return .continue }
             yield(StreamingReasoningHint.encode(reasoning))
         }
 
@@ -1104,6 +1115,7 @@ public actor RemoteProviderService: ToolCapableService {
             state.lastFinishReason = finishReason
             switch resolveAccumulatedToolCall(
                 from: state.accumulatedToolCalls,
+                reasoningContent: state.accumulatedReasoningContent,
                 finishMarker: "finish_reason=\(finishReason)"
             ) {
             case .none: break
@@ -1127,6 +1139,7 @@ public actor RemoteProviderService: ToolCapableService {
     ) {
         switch resolveAccumulatedToolCall(
             from: state.accumulatedToolCalls,
+            reasoningContent: state.accumulatedReasoningContent,
             finishMarker: finishMarker
         ) {
         case .ready(let invocation):
@@ -1343,7 +1356,8 @@ public actor RemoteProviderService: ToolCapableService {
     /// malformed and had to be structurally closed — strong signal that the stream
     /// was truncated mid-argument, especially when no `finish_reason` was ever seen.
     private static func makeToolInvocation(
-        from accumulated: [Int: (id: String?, name: String?, args: String, thoughtSignature: String?)]
+        from accumulated: [Int: (id: String?, name: String?, args: String, thoughtSignature: String?)],
+        reasoningContent: String = ""
     ) -> (invocation: ServiceToolInvocation, wasRepaired: Bool)? {
         guard let first = accumulated.min(by: { $0.key < $1.key }),
             let name = first.value.name
@@ -1355,7 +1369,8 @@ public actor RemoteProviderService: ToolCapableService {
                 toolName: name,
                 jsonArguments: validated.json,
                 toolCallId: first.value.id,
-                geminiThoughtSignature: first.value.thoughtSignature
+                geminiThoughtSignature: first.value.thoughtSignature,
+                reasoningContent: reasoningContent.isEmpty ? nil : reasoningContent
             ),
             validated.wasRepaired
         )
@@ -1863,7 +1878,7 @@ public actor RemoteProviderService: ToolCapableService {
     private func parseResponse(
         _ data: Data,
         providerType: RemoteProviderType
-    ) throws -> (content: String?, toolCalls: [ToolCall]?) {
+    ) throws -> (content: String?, toolCalls: [ToolCall]?, reasoningContent: String?) {
         switch providerType {
         case .anthropic:
             let response = try JSONDecoder().decode(AnthropicMessagesResponse.self, from: data)
@@ -1887,13 +1902,14 @@ public actor RemoteProviderService: ToolCapableService {
                 }
             }
 
-            return (textContent.isEmpty ? nil : textContent, toolCalls.isEmpty ? nil : toolCalls)
+            return (textContent.isEmpty ? nil : textContent, toolCalls.isEmpty ? nil : toolCalls, nil)
 
         case .openaiLegacy, .azureOpenAI:
             let response = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
-            let content = response.choices.first?.message.content
-            let toolCalls = response.choices.first?.message.tool_calls
-            return (content, toolCalls)
+            let message = response.choices.first?.message
+            let content = message?.content
+            let toolCalls = message?.tool_calls
+            return (content, toolCalls, message?.reasoning_content)
 
         case .openResponses, .openAICodex:
             let response = try JSONDecoder().decode(OpenResponsesResponse.self, from: data)
@@ -1925,7 +1941,7 @@ public actor RemoteProviderService: ToolCapableService {
                 }
             }
 
-            return (textContent.isEmpty ? nil : textContent, toolCalls.isEmpty ? nil : toolCalls)
+            return (textContent.isEmpty ? nil : textContent, toolCalls.isEmpty ? nil : toolCalls, nil)
 
         case .gemini:
             let response = try JSONDecoder().decode(GeminiGenerateContentResponse.self, from: data)
@@ -1959,13 +1975,13 @@ public actor RemoteProviderService: ToolCapableService {
                 }
             }
 
-            return (textContent.isEmpty ? nil : textContent, toolCalls.isEmpty ? nil : toolCalls)
+            return (textContent.isEmpty ? nil : textContent, toolCalls.isEmpty ? nil : toolCalls, nil)
 
         case .osaurus:
             // Native Osaurus agent returns OpenAI-compatible responses
             let response = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
             let content = response.choices.first?.message.content
-            return (content, nil)
+            return (content, nil, nil)
         }
     }
 

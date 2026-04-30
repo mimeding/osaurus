@@ -434,6 +434,40 @@ public enum OsaurusPaths {
         return total
     }
 
+    /// Finder-style free capacity for the volume containing `url`.
+    /// Modern APFS reports purgeable/important-usage capacity through URL
+    /// resource keys; legacy filesystem attributes can return zero for some
+    /// sandboxed container paths.
+    public static func volumeFreeBytes(containing url: URL) -> Int64? {
+        if let values = try? url.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ),
+            let capacity = values.volumeAvailableCapacityForImportantUsage
+        {
+            return capacity
+        }
+        if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: url.path),
+            let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value
+        {
+            return free
+        }
+        return nil
+    }
+
+    public static func volumeTotalBytes(containing url: URL) -> Int64? {
+        if let values = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey]),
+            let capacity = values.volumeTotalCapacity
+        {
+            return Int64(capacity)
+        }
+        if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: url.path),
+            let total = (attrs[.systemSize] as? NSNumber)?.int64Value
+        {
+            return total
+        }
+        return nil
+    }
+
     // MARK: - Migration
 
     /// Recursively copy the contents of `src` into `dest` (never deletes from `src`).

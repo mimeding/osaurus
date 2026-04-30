@@ -72,6 +72,11 @@ enum ChatSessionStore {
             print("[ChatSessionStore] Failed to open chat-history database: \(error)")
             return
         }
+        #if DEBUG
+            if RuntimeEnvironment.isUnderTests, OsaurusPaths.overrideRoot == nil {
+                return
+            }
+        #endif
         LegacySessionImporter.runIfNeeded()
     }
 }

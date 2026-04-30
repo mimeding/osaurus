@@ -177,7 +177,8 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
             role: "assistant",
             content: nil,
             tool_calls: toolCalls,
-            tool_call_id: nil
+            tool_call_id: nil,
+            reasoning_content: invocations.compactMap(\.reasoningContent).first
         )
         let choice = ChatChoice(index: 0, message: assistant, finish_reason: "tool_calls")
         let usage = Usage(prompt_tokens: inputTokens, completion_tokens: 0, total_tokens: inputTokens)

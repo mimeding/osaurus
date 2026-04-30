@@ -43,4 +43,32 @@ struct ToolSerializationStabilityTests {
         let bData = try JSONSerialization.data(withJSONObject: b, options: [.sortedKeys])
         #expect(aData == bData)
     }
+
+    @Test
+    func toTokenizerToolSpec_dropsNullsBeforeJinjaConversion() throws {
+        let tool = Tool(
+            type: "function",
+            function: ToolFunction(
+                name: "schema_probe",
+                description: nil,
+                parameters: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "value": .object([
+                            "type": .array([.string("string"), .null]),
+                            "description": .null,
+                        ])
+                    ]),
+                ])
+            )
+        )
+
+        let spec = tool.toTokenizerToolSpec()
+        let data = try JSONSerialization.data(withJSONObject: spec, options: [.sortedKeys])
+        let json = String(decoding: data, as: UTF8.self)
+
+        #expect(!json.contains("null"))
+        #expect(json.contains("\"type\":[\"string\"]"))
+        #expect(!json.contains("description"))
+    }
 }

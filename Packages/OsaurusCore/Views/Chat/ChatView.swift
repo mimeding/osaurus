@@ -1390,7 +1390,8 @@ final class ChatSession: ObservableObject {
                             role: "assistant",
                             content: content,
                             tool_calls: t.toolCalls,
-                            tool_call_id: nil
+                            tool_call_id: nil,
+                            reasoning_content: t.thinkingIsEmpty ? nil : t.thinking
                         )
                     case .tool:
                         return ChatMessage(
@@ -1594,6 +1595,9 @@ final class ChatSession: ObservableObject {
                             function: ToolCallFunction(name: inv.toolName, arguments: inv.jsonArguments),
                             geminiThoughtSignature: inv.geminiThoughtSignature
                         )
+                        if let reasoning = inv.reasoningContent {
+                            assistantTurn.thinking = reasoning
+                        }
                         assistantTurn.pendingToolName = nil
                         assistantTurn.clearPendingToolArgs()
                         if assistantTurn.toolCalls == nil { assistantTurn.toolCalls = [] }
