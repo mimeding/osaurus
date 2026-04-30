@@ -8,6 +8,7 @@
 //  hanging the agent loop indefinitely.
 //
 
+import Dispatch
 import Foundation
 import Testing
 
@@ -36,21 +37,21 @@ struct ToolRegistryTimeoutTests {
         }
     }
 
-    /// Tool body that ignores cooperative Swift cancellation. This mirrors
-    /// process / blocking I/O classes where returning a timeout envelope must
-    /// not wait for the losing branch to drain.
+    /// Tool body that ignores cooperative Swift cancellation without burning a
+    /// Swift concurrency executor thread. This mirrors process / blocking I/O
+    /// classes where returning a timeout envelope must not wait for the losing
+    /// branch to drain.
     private struct BlockingSleepTool: OsaurusTool {
         let name: String = "test_blocking_sleep"
-        let description: String = "Test fixture: blocks the thread longer than the timeout."
+        let description: String = "Test fixture: completes later than the timeout."
         let parameters: JSONValue? = .object(["type": .string("object")])
 
         func execute(argumentsJSON: String) async throws -> String {
-            let deadline = Date().timeIntervalSinceReferenceDate + 1.2
-            var spin = 0
-            while Date().timeIntervalSinceReferenceDate < deadline {
-                spin &+= 1
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().asyncAfter(deadline: .now() + 1.2) {
+                    continuation.resume()
+                }
             }
-            _ = spin
             return ToolEnvelope.success(tool: name, text: "did not time out")
         }
     }
