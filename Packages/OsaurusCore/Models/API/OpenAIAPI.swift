@@ -846,13 +846,12 @@ public enum JSONValue: Codable, Sendable, Equatable {
 
 extension JSONValue {
     /// Convert JSONValue to Sendable-compatible value for Jinja chat templates.
-    /// Null values are dropped from dictionaries because Jinja's `Value(any:)` cannot
-    /// handle `NSNull` and throws a runtime error. JSON Schema treats a missing key
-    /// the same as `null`, so this is semantically lossless for tool specs.
-    var sendableValue: any Sendable {
+    /// Null values are dropped because Jinja's `Value(any:)` cannot handle
+    /// null/optional placeholders inside erased Swift containers.
+    var sendableValue: (any Sendable)? {
         switch self {
         case .null:
-            return NSNull()
+            return nil
         case .bool(let b):
             return b
         case .number(let n):
@@ -860,12 +859,13 @@ extension JSONValue {
         case .string(let s):
             return s
         case .array(let arr):
-            return arr.map { $0.sendableValue }
+            return arr.compactMap { $0.sendableValue }
         case .object(let obj):
             var dict: [String: any Sendable] = [:]
             for (k, v) in obj {
-                if case .null = v { continue }
-                dict[k] = v.sendableValue
+                if let converted = v.sendableValue {
+                    dict[k] = converted
+                }
             }
             return dict
         }
@@ -903,8 +903,8 @@ extension ToolFunction {
         if let description {
             fn["description"] = description
         }
-        if let parameters {
-            fn["parameters"] = parameters.sendableValue
+        if let parameters, let converted = parameters.sendableValue {
+            fn["parameters"] = converted
         }
         return fn
     }

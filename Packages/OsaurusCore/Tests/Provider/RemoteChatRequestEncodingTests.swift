@@ -60,6 +60,42 @@ struct RemoteChatRequestEncodingTests {
         #expect(payload["max_completion_tokens"] == nil)
     }
 
+    @Test func encode_assistantToolCall_preservesReasoningContent() throws {
+        let call = ToolCall(
+            id: "call_123",
+            type: "function",
+            function: ToolCallFunction(name: "search", arguments: "{\"q\":\"DeepSeek\"}")
+        )
+        let assistant = ChatMessage(
+            role: "assistant",
+            content: nil,
+            tool_calls: [call],
+            tool_call_id: nil,
+            reasoning_content: "I should search first."
+        )
+        let request = RemoteChatRequest(
+            model: "deepseek-v4-pro",
+            messages: [assistant],
+            temperature: 0.7,
+            max_completion_tokens: 512,
+            stream: false,
+            top_p: nil,
+            frequency_penalty: nil,
+            presence_penalty: nil,
+            stop: nil,
+            tools: nil,
+            tool_choice: nil,
+            reasoning_effort: nil,
+            reasoning: nil,
+            modelOptions: [:],
+            veniceParameters: nil
+        )
+
+        let payload = try Self.encodeAsDictionary(request)
+        let messages = try #require(payload["messages"] as? [[String: Any]])
+        #expect(messages.first?["reasoning_content"] as? String == "I should search first.")
+    }
+
     @Test func openResponsesRequest_defaultSingleUserMessage_usesTextShorthand() throws {
         let request = Self.makeRequest(model: "gpt-5.2", maxTokens: 1024)
         let responsesRequest = request.toOpenResponsesRequest()

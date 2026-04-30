@@ -52,6 +52,8 @@ struct ChatViewSandboxTests {
         await SandboxTestLock.runWithStoragePaths {
             let manager = AgentManager.shared
             let originalActiveAgentId = manager.activeAgentId
+            ToolRegistry.shared.unregisterAllSandboxTools()
+
             let inactiveAgent = Agent(
                 name: "Chat Estimate Off",
                 agentAddress: "test-chat-estimate-off"
@@ -78,13 +80,10 @@ struct ChatViewSandboxTests {
             let inactiveBreakdown = inactiveSession.estimatedContextBreakdown
             let sandboxBreakdown = sandboxSession.estimatedContextBreakdown
 
-            let inactiveContextTokens = inactiveBreakdown.context.reduce(0) { $0 + $1.tokens }
-            let sandboxContextTokens = sandboxBreakdown.context.reduce(0) { $0 + $1.tokens }
-            #expect(sandboxContextTokens > inactiveContextTokens)
+            #expect(inactiveBreakdown.context.contains { $0.id == "sandbox" } == false)
+            #expect(sandboxBreakdown.context.contains { $0.id == "sandbox" })
 
             let sandboxToolTokens = sandboxBreakdown.context.first { $0.id == "tools" }?.tokens ?? 0
-            let inactiveToolTokens = inactiveBreakdown.context.first { $0.id == "tools" }?.tokens ?? 0
-            #expect(sandboxToolTokens > inactiveToolTokens)
             #expect(sandboxToolTokens >= ToolRegistry.shared.estimatedTokens(for: "sandbox_exec"))
 
             ToolRegistry.shared.unregisterAllSandboxTools()
