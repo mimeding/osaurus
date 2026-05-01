@@ -112,6 +112,28 @@ struct RemoteChatRequestEncodingTests {
         #expect(payload["input"] is [[String: Any]])
     }
 
+    @Test func openResponsesRequest_decodesOpenAIStyleMessageItemWithoutType() throws {
+        let data = #"""
+            {
+              "model": "foundation",
+              "input": [
+                {
+                  "role": "user",
+                  "content": "Hello!"
+                }
+              ],
+              "stream": false
+            }
+            """#.data(using: .utf8)!
+
+        let request = try JSONDecoder().decode(OpenResponsesRequest.self, from: data)
+        let chatRequest = request.toChatCompletionRequest()
+
+        #expect(chatRequest.messages.count == 1)
+        #expect(chatRequest.messages[0].role == "user")
+        #expect(chatRequest.messages[0].content == "Hello!")
+    }
+
     @Test func codexRequest_removesMaxOutputTokens() throws {
         let request = Self.makeRequest(model: "gpt-5.2", maxTokens: 1024)
         let payload = try Self.decodeAsDictionary(request.toCodexOpenResponsesRequest().toCodexOAuthPayloadData())

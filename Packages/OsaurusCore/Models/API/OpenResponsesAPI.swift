@@ -91,7 +91,7 @@ public enum OpenResponsesInputItem: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let type = try container.decode(String.self, forKey: .type)
+        let type = try container.decodeIfPresent(String.self, forKey: .type) ?? "message"
 
         switch type {
         case "message":
@@ -131,6 +131,19 @@ public struct OpenResponsesMessageItem: Codable, Sendable {
         self.type = "message"
         self.role = role
         self.content = content
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case role
+        case content
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.type = try container.decodeIfPresent(String.self, forKey: .type) ?? "message"
+        self.role = try container.decode(String.self, forKey: .role)
+        self.content = try container.decode(OpenResponsesMessageContent.self, forKey: .content)
     }
 }
 
