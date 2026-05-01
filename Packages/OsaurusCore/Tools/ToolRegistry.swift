@@ -9,6 +9,11 @@ import Combine
 import Dispatch
 import Foundation
 
+private let toolRegistryTimeoutQueue = DispatchQueue(
+    label: "ai.osaurus.tool-registry.timeout",
+    qos: .userInitiated
+)
+
 private final class ToolBodyTimeoutRaceState: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<String, Never>?
@@ -474,7 +479,7 @@ final class ToolRegistry: ObservableObject {
         )
         return await withCheckedContinuation { continuation in
             let race = ToolBodyTimeoutRaceState(continuation: continuation)
-            let timeoutTimer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+            let timeoutTimer = DispatchSource.makeTimerSource(queue: toolRegistryTimeoutQueue)
             let nanos = Int((max(0, timeoutSeconds) * 1_000_000_000).rounded(.up))
             timeoutTimer.schedule(deadline: .now() + .nanoseconds(nanos))
             timeoutTimer.setEventHandler {
