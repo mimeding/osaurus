@@ -114,27 +114,6 @@ The core library (`Packages/OsaurusCore/`) follows a layered architecture. Each 
 - Keep PRs small and focused; describe user-facing changes and test steps
 - Use [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) to choose priority when a change spans multiple workstreams
 
-### Clean PR rule
-
-A PR is not ready to merge until GitHub Actions are attached and green. Local
-verification is required, but it is not a replacement for repository CI.
-
-Before asking for review or merge:
-
-1. Run the smallest useful local verification for the files touched.
-2. Push the branch and confirm GitHub Actions attached checks to the PR.
-3. Wait for `test-core`, `test-cli`, `swiftlint`, `shellcheck`, and
-   `pr-clean-gate` to finish.
-4. Run:
-
-   ```bash
-   scripts/ci/check-pr-clean.sh osaurus-ai/osaurus <PR number>
-   ```
-
-Keep the PR as draft or explicitly blocked if any check is missing, pending,
-cancelled, or failing. A PR with zero attached checks is unverified; rebase,
-push, or close/reopen it so Actions run before review continues.
-
 ### Code style
 
 - Follow standard Swift naming and clarity guidelines
