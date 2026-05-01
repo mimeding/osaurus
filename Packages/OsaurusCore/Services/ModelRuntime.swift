@@ -687,8 +687,12 @@ public actor ModelRuntime {
         var accumulated = ""
         var pendingTools: [ServiceToolInvocation] = []
         let augmented = ModelRuntime.applyJSONMode(messages, jsonMode: parameters.jsonMode)
+        let templateMessages = ModelRuntime.applyLocalTemplateCompatibility(
+            augmented,
+            modelName: modelName
+        )
         let events = try await generateEventStream(
-            chatBuilder: { ModelRuntime.mapOpenAIChatToMLX(augmented) },
+            chatBuilder: { ModelRuntime.mapOpenAIChatToMLX(templateMessages) },
             parameters: parameters,
             stopSequences: stopSequences,
             tools: tools,
@@ -731,8 +735,12 @@ public actor ModelRuntime {
         modelName: String
     ) async throws -> AsyncThrowingStream<String, Error> {
         let augmented = ModelRuntime.applyJSONMode(messages, jsonMode: parameters.jsonMode)
+        let templateMessages = ModelRuntime.applyLocalTemplateCompatibility(
+            augmented,
+            modelName: modelName
+        )
         let events = try await generateEventStream(
-            chatBuilder: { ModelRuntime.mapOpenAIChatToMLX(augmented) },
+            chatBuilder: { ModelRuntime.mapOpenAIChatToMLX(templateMessages) },
             parameters: parameters,
             stopSequences: stopSequences,
             tools: tools,
@@ -932,6 +940,96 @@ public actor ModelRuntime {
             )
         }
         return out
+    }
+
+    /// Local chat-template compatibility shims.
+    ///
+    /// Gemma-family MLX templates have had uneven `system` role handling
+    /// across shipped variants. For those local models only, mirror the
+    /// system instructions into the first user turn and remove the standalone
+    /// system role so the model sees the same instructions even when the
+    /// template ignores `role == system`.
+    nonisolated static func applyLocalTemplateCompatibility(
+        _ messages: [ChatMessage],
+        modelName: String
+    ) -> [ChatMessage] {
+        guard ModelFamilyGuidance.family(for: modelName) == .googleGemma else {
+            return messages
+        }
+
+        let systemText = messages
+            .compactMap { message -> String? in
+                guard message.role == "system",
+                    let content = message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    !content.isEmpty
+                else { return nil }
+                return content
+            }
+            .joined(separator: "\n\n")
+        guard !systemText.isEmpty else { return messages }
+
+        let systemPreamble = """
+            System instructions:
+            \(systemText)
+            """
+        var adapted = messages.filter { $0.role != "system" }
+        guard let firstUserIndex = adapted.firstIndex(where: { $0.role == "user" }) else {
+            adapted.insert(ChatMessage(role: "user", content: systemPreamble), at: 0)
+            return adapted
+        }
+
+        let user = adapted[firstUserIndex]
+        let mergedContent = mergeSystemPreamble(systemPreamble, withUserContent: user.content)
+        let mergedParts = prependSystemPreamble(
+            systemPreamble,
+            mergedContent: mergedContent,
+            to: user.contentParts
+        )
+        adapted[firstUserIndex] = ChatMessage(
+            role: user.role,
+            content: mergedContent,
+            contentParts: mergedParts,
+            tool_calls: user.tool_calls,
+            tool_call_id: user.tool_call_id
+        )
+        return adapted
+    }
+
+    private nonisolated static func mergeSystemPreamble(
+        _ preamble: String,
+        withUserContent content: String?
+    ) -> String {
+        guard let content,
+            !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return preamble
+        }
+
+        return """
+            \(preamble)
+
+            User message:
+            \(content)
+            """
+    }
+
+    private nonisolated static func prependSystemPreamble(
+        _ preamble: String,
+        mergedContent: String,
+        to contentParts: [MessageContentPart]?
+    ) -> [MessageContentPart]? {
+        guard var parts = contentParts else { return nil }
+        guard !parts.isEmpty else { return [.text(preamble)] }
+
+        for index in parts.indices {
+            if case .text = parts[index] {
+                parts[index] = .text(mergedContent)
+                return parts
+            }
+        }
+
+        parts.insert(.text(preamble), at: 0)
+        return parts
     }
 
     /// Map OpenAI-format chat messages to MLX `Chat.Message`s.
