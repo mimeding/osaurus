@@ -265,11 +265,10 @@ final class CapabilitiesLoadTool: OsaurusTool, @unchecked Sendable {
             }
 
             if !method.skillsUsed.isEmpty {
-                let skills: [(String, String)] = await MainActor.run {
-                    method.skillsUsed.compactMap { name in
-                        guard let skill = SkillManager.shared.skill(named: name), skill.enabled else { return nil }
-                        return (name, skill.instructions)
-                    }
+                var skills: [(String, String)] = []
+                for name in method.skillsUsed {
+                    guard let skill = await resolveSkill(named: name), skill.enabled else { continue }
+                    skills.append((name, skill.instructions))
                 }
                 for (name, instructions) in skills {
                     await CapabilityLoadBuffer.shared.addSkillName(name)
@@ -282,6 +281,17 @@ final class CapabilitiesLoadTool: OsaurusTool, @unchecked Sendable {
             return output
         } catch {
             return "Error loading method '\(methodId)': \(error.localizedDescription)\n"
+        }
+    }
+
+    private func resolveSkill(named skillName: String) async -> Skill? {
+        if let skill = await MainActor.run(body: { SkillManager.shared.skill(named: skillName) }) {
+            return skill
+        }
+
+        await SkillManager.shared.refresh()
+        return await MainActor.run {
+            SkillManager.shared.skill(named: skillName)
         }
     }
 
@@ -306,9 +316,7 @@ final class CapabilitiesLoadTool: OsaurusTool, @unchecked Sendable {
     }
 
     private func loadSkill(_ skillName: String) async -> String {
-        let skill = await MainActor.run {
-            SkillManager.shared.skill(named: skillName)
-        }
+        let skill = await resolveSkill(named: skillName)
         guard let skill = skill else {
             return "Error: Skill '\(skillName)' not found.\n"
         }

@@ -169,13 +169,14 @@ struct CapabilitiesLoadToolTests {
     }
 
     @Test func skillLoadBuffersSkillName() async throws {
-        try await SandboxTestLock.shared.run {
+        try await SandboxTestLock.runWithStoragePaths {
             let suffix = UUID().uuidString.prefix(6).lowercased()
             let skill = await SkillManager.shared.create(
                 name: "Buffered Skill \(suffix)",
                 description: "A buffered skill",
                 instructions: "Buffered skill instructions"
             )
+            _ = await CapabilityLoadBuffer.shared.drainSkillNames()
 
             let tool = CapabilitiesLoadTool()
             let result = try await tool.execute(
