@@ -465,6 +465,7 @@ extension ChatMessage {
         self.content = text.isEmpty ? nil : text
         self.tool_calls = nil
         self.tool_call_id = nil
+        self.reasoning_content = nil
     }
 }
 
