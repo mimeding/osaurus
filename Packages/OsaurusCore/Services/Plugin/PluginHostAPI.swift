@@ -10,6 +10,9 @@
 import Foundation
 import os
 
+// swift-format owns multiline brace placement in wrapped conditions.
+// swiftlint:disable opening_brace
+
 extension Notification.Name {
     static let pluginConfigDidChange = Notification.Name("PluginConfigDidChange")
 }
@@ -23,7 +26,7 @@ final class PluginHostContext: @unchecked Sendable {
 
     // MARK: - Context Registry (thread-safe)
 
-    private nonisolated(unsafe) static var contexts: [String: PluginHostContext] = [:]
+    nonisolated(unsafe) private static var contexts: [String: PluginHostContext] = [:]
     private static let contextsLock = NSLock()
 
     static func getContext(for pluginId: String) -> PluginHostContext? {
@@ -1625,10 +1628,16 @@ final class PluginHostContext: @unchecked Sendable {
         }
 
         let fileURL = URL(fileURLWithPath: path).standardizedFileURL
-        let allowedPrefix = OsaurusPaths.artifactsDir().standardizedFileURL.path + "/"
+        let allowedPrefixes = [
+            OsaurusPaths.artifactsDir().standardizedFileURL.path + "/",
+            OsaurusPaths.attachmentsDir().standardizedFileURL.path + "/",
+        ]
 
-        guard fileURL.path.hasPrefix(allowedPrefix) else {
-            return Self.jsonString(["error": "access_denied", "message": "File read restricted to artifact paths"])
+        guard allowedPrefixes.contains(where: { fileURL.path.hasPrefix($0) }) else {
+            return Self.jsonString([
+                "error": "access_denied",
+                "message": "File read restricted to artifact and attachment paths",
+            ])
         }
 
         let fm = FileManager.default
@@ -2007,7 +2016,7 @@ extension PluginHostContext {
     /// Serialize a dictionary to a JSON string. Falls back to "{}" on encoding failure.
     static func jsonString(_ dict: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: dict, options: []) else { return "{}" }
-        return String(decoding: data, as: UTF8.self)
+        return String(bytes: data, encoding: .utf8) ?? "{}"
     }
 
     /// Parse a JSON string back into a dictionary.
@@ -2048,7 +2057,7 @@ extension PluginHostContext {
     /// have TLS set. Protected by `fallbackLock` to avoid data races under
     /// concurrent execution. TLS (option 1) is the authoritative mechanism.
     private static let fallbackLock = NSLock()
-    private nonisolated(unsafe) static var _lastDispatchedPluginId: String?
+    nonisolated(unsafe) private static var _lastDispatchedPluginId: String?
 
     private static var lastDispatchedPluginId: String? {
         get { fallbackLock.withLock { _lastDispatchedPluginId } }
@@ -2460,3 +2469,5 @@ extension PluginHostContext {
         return makeCString(result)
     }
 }
+
+// swiftlint:enable opening_brace

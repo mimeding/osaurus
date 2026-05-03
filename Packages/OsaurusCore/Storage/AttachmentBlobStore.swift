@@ -202,7 +202,7 @@ public enum AttachmentBlobStore {
                 return attachment
             }
 
-        case .imageRef, .documentRef, .audioRef, .videoRef:
+        case .file, .imageRef, .documentRef, .audioRef, .videoRef:
             return attachment
         }
     }

@@ -14,6 +14,7 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
     public enum Kind: Codable, Sendable, Equatable {
         case image(Data)
         case document(filename: String, content: String, fileSize: Int)
+        case file(filename: String, mimeType: String, fileSize: Int, hostPath: String, extractedPreview: String?)
 
         /// Audio bytes + format hint (e.g. "wav", "mp3", "m4a", "flac",
         /// "ogg"). Format flows into `MessageContentPart.audioInput.format`
@@ -47,7 +48,8 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         case videoRef(hash: String, byteCount: Int, filename: String?)
 
         private enum CodingKeys: String, CodingKey {
-            case type, data, filename, content, fileSize, hash, byteCount, format
+            case type, data, filename, content, fileSize, hash, byteCount, mimeType, hostPath, extractedPreview
+            case format
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -61,6 +63,13 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
                 try container.encode(filename, forKey: .filename)
                 try container.encode(content, forKey: .content)
                 try container.encode(fileSize, forKey: .fileSize)
+            case .file(let filename, let mimeType, let fileSize, let hostPath, let extractedPreview):
+                try container.encode("file", forKey: .type)
+                try container.encode(filename, forKey: .filename)
+                try container.encode(mimeType, forKey: .mimeType)
+                try container.encode(fileSize, forKey: .fileSize)
+                try container.encode(hostPath, forKey: .hostPath)
+                try container.encodeIfPresent(extractedPreview, forKey: .extractedPreview)
             case .audio(let data, let format, let filename):
                 try container.encode("audio", forKey: .type)
                 try container.encode(data, forKey: .data)
@@ -105,6 +114,19 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
                 let content = try container.decode(String.self, forKey: .content)
                 let fileSize = try container.decode(Int.self, forKey: .fileSize)
                 self = .document(filename: filename, content: content, fileSize: fileSize)
+            case "file":
+                let filename = try container.decode(String.self, forKey: .filename)
+                let mimeType = try container.decode(String.self, forKey: .mimeType)
+                let fileSize = try container.decode(Int.self, forKey: .fileSize)
+                let hostPath = try container.decode(String.self, forKey: .hostPath)
+                let extractedPreview = try container.decodeIfPresent(String.self, forKey: .extractedPreview)
+                self = .file(
+                    filename: filename,
+                    mimeType: mimeType,
+                    fileSize: fileSize,
+                    hostPath: hostPath,
+                    extractedPreview: extractedPreview
+                )
             case "audio":
                 let data = try container.decode(Data.self, forKey: .data)
                 let format = try container.decode(String.self, forKey: .format)
@@ -159,6 +181,26 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         Attachment(kind: .document(filename: filename, content: content, fileSize: fileSize))
     }
 
+    public static func file(
+        id: UUID = UUID(),
+        filename: String,
+        mimeType: String,
+        fileSize: Int,
+        hostPath: String,
+        extractedPreview: String? = nil
+    ) -> Attachment {
+        Attachment(
+            id: id,
+            kind: .file(
+                filename: filename,
+                mimeType: mimeType,
+                fileSize: fileSize,
+                hostPath: hostPath,
+                extractedPreview: extractedPreview
+            )
+        )
+    }
+
     public static func audio(_ data: Data, format: String, filename: String? = nil) -> Attachment {
         Attachment(kind: .audio(data, format: format, filename: filename))
     }
@@ -178,9 +220,14 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
 
     public var isDocument: Bool {
         switch kind {
-        case .document, .documentRef: return true
+        case .document, .documentRef, .file: return true
         default: return false
         }
+    }
+
+    public var isPreservedFile: Bool {
+        if case .file = kind { return true }
+        return false
     }
 
     public var isAudio: Bool {
@@ -208,7 +255,7 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
 
     public var filename: String? {
         switch kind {
-        case .document(let name, _, _), .documentRef(let name, _, _):
+        case .document(let name, _, _), .documentRef(let name, _, _), .file(let name, _, _, _, _):
             return name
         case .audio(_, _, let name), .audioRef(_, _, _, let name),
             .video(_, let name), .videoRef(_, _, let name):
@@ -237,7 +284,47 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         return nil
     }
 
-    /// Resolves the attachment to its raw image bytes — inline or
+    public var extractedPreview: String? {
+        if case .file(_, _, _, _, let preview) = kind { return preview }
+        return nil
+    }
+
+    public var mimeType: String? {
+        switch kind {
+        case .file(_, let mimeType, _, _, _): return mimeType
+        case .document(let filename, _, _), .documentRef(let filename, _, _):
+            return SharedArtifact.mimeType(from: filename)
+        case .image, .imageRef: return "image/png"
+        case .audio(_, let format, let filename), .audioRef(_, _, let format, let filename):
+            if let filename {
+                return SharedArtifact.mimeType(from: filename)
+            }
+            return SharedArtifact.mimeType(from: "audio.\(format)")
+        case .video(_, let filename), .videoRef(_, _, let filename):
+            if let filename {
+                return SharedArtifact.mimeType(from: filename)
+            }
+            return "video/mp4"
+        }
+    }
+
+    public var hostPath: String? {
+        if case .file(_, _, _, let hostPath, _) = kind { return hostPath }
+        return nil
+    }
+
+    public var inputFile: ChatInputFile? {
+        guard case .file(let filename, let mimeType, let fileSize, let hostPath, _) = kind else { return nil }
+        return ChatInputFile(
+            id: id.uuidString,
+            filename: filename,
+            mimeType: mimeType,
+            fileSize: fileSize,
+            hostPath: hostPath
+        )
+    }
+
+    /// Resolves the attachment to its raw image bytes, inline or
     /// hydrated from the blob store. Returns `nil` for non-image kinds
     /// or read failures.
     public func loadImageData() -> Data? {
@@ -289,15 +376,17 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         }
     }
 
-    /// Resolves the attachment to its document content text — inline or
-    /// hydrated from the blob store. Returns `nil` for non-document
-    /// kinds or read failures.
+    /// Resolves the attachment to its document preview/content text,
+    /// inline or hydrated from the blob store. Preserved files return
+    /// their extracted preview only; tools use `inputFile` for bytes.
     public func loadDocumentContent() -> String? {
         switch kind {
         case .document(_, let content, _):
             return content
         case .documentRef(_, let hash, _):
             return (try? AttachmentBlobStore.read(hash)).flatMap { String(data: $0, encoding: .utf8) }
+        case .file(_, _, _, _, let preview):
+            return preview
         default:
             return nil
         }
@@ -306,18 +395,23 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
     // MARK: - Display Helpers
 
     public var fileSizeFormatted: String? {
+        let size: Int?
         switch kind {
-        case .document(_, _, let size), .documentRef(_, _, let size):
-            return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        case .document(_, _, let value), .documentRef(_, _, let value), .file(_, _, let value, _, _):
+            size = value
         case .audio(let data, _, _):
-            return ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+            size = data.count
         case .video(let data, _):
-            return ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+            size = data.count
         case .audioRef(_, let byteCount, _, _), .videoRef(_, let byteCount, _):
-            return ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+            size = byteCount
         default:
-            return nil
+            size = nil
         }
+        if let size {
+            return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        }
+        return nil
     }
 
     public var fileExtension: String? {
@@ -331,6 +425,7 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
         guard let ext = fileExtension else { return "photo" }
         switch ext {
         case "pdf": return "doc.richtext"
+        case "ppt", "pptx", "ppsx", "potx": return "rectangle.on.rectangle.angled"
         case "docx", "doc": return "doc.text"
         case "md", "markdown": return "text.document"
         case "csv": return "tablecells"
@@ -362,6 +457,9 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
             return max(1, content.count / 4)
         case .documentRef(_, _, let fileSize):
             return max(1, fileSize / 4)
+        case .file(let filename, let mimeType, _, _, let preview):
+            let manifestCharacters = filename.count + mimeType.count + 80
+            return max(1, (manifestCharacters + (preview?.count ?? 0)) / 4)
         case .audio(let data, _, _):
             // ~50 acoustic tokens/sec @ 16kHz mono → ~1 token / 640 bytes
             return max(1, data.count / 640)
@@ -401,7 +499,7 @@ extension Array where Element == Attachment {
     }
 
     /// Resolve every image attachment (inline + spilled) into its raw
-    /// bytes. Performs blocking disk reads for spilled blobs — call
+    /// bytes. Performs blocking disk reads for spilled blobs; call
     /// off the main thread for chats with many attachments.
     public func loadImages() -> [Data] {
         compactMap { $0.loadImageData() }
@@ -409,6 +507,14 @@ extension Array where Element == Attachment {
 
     public var documents: [Attachment] {
         filter(\.isDocument)
+    }
+
+    public var preservedFiles: [Attachment] {
+        filter(\.isPreservedFile)
+    }
+
+    public var inputFiles: [ChatInputFile] {
+        compactMap(\.inputFile)
     }
 
     public var audios: [Attachment] {

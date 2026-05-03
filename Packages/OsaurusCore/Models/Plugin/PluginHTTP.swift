@@ -117,6 +117,11 @@ enum MIMEType {
         case "map": return "application/json"
         case "txt": return "text/plain; charset=utf-8"
         case "xml": return "application/xml"
+        case "pdf": return "application/pdf"
+        case "ppt": return "application/vnd.ms-powerpoint"
+        case "pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        case "ppsx": return "application/vnd.openxmlformats-officedocument.presentationml.slideshow"
+        case "potx": return "application/vnd.openxmlformats-officedocument.presentationml.template"
         case "wasm": return "application/wasm"
         default: return "application/octet-stream"
         }

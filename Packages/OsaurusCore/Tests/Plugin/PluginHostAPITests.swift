@@ -140,6 +140,50 @@ struct PluginHostJSONTests {
     }
 }
 
+// MARK: - File Read
+
+@Suite(.serialized)
+struct PluginHostFileReadTests {
+
+    @Test func fileReadAllowsPreservedAttachmentPaths() throws {
+        let fm = FileManager.default
+        let attachmentDir = OsaurusPaths.attachmentDir(
+            attachmentId: "test-file-read-\(UUID().uuidString)"
+        )
+        try fm.createDirectory(at: attachmentDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: attachmentDir) }
+
+        let fileURL = attachmentDir.appendingPathComponent("source.pdf")
+        let bytes = Data([0x25, 0x50, 0x44, 0x46])
+        try bytes.write(to: fileURL)
+
+        let ctx = try PluginHostContext(pluginId: "test.file-read.\(UUID().uuidString)")
+        let response = ctx.fileRead(requestJSON: #"{"path":"\#(fileURL.path)"}"#)
+        let json = try #require(JSONSerialization.jsonObject(with: Data(response.utf8)) as? [String: Any])
+
+        #expect(json["error"] == nil)
+        #expect(json["size"] as? Int == bytes.count)
+        #expect(json["mime_type"] as? String == "application/pdf")
+        #expect(json["data"] as? String == bytes.base64EncodedString())
+    }
+
+    @Test func fileReadRejectsOutsideAttachmentAndArtifactPaths() throws {
+        let fm = FileManager.default
+        let fileURL = fm.temporaryDirectory.appendingPathComponent(
+            "osaurus-plugin-file-read-denied-\(UUID().uuidString).pdf",
+            isDirectory: false
+        )
+        try Data([0x25, 0x50, 0x44, 0x46]).write(to: fileURL)
+        defer { try? fm.removeItem(at: fileURL) }
+
+        let ctx = try PluginHostContext(pluginId: "test.file-read.\(UUID().uuidString)")
+        let response = ctx.fileRead(requestJSON: #"{"path":"\#(fileURL.path)"}"#)
+        let json = try #require(JSONSerialization.jsonObject(with: Data(response.utf8)) as? [String: Any])
+
+        #expect(json["error"] as? String == "access_denied")
+    }
+}
+
 // MARK: - DispatchRequest Model
 
 struct DispatchRequestTests {

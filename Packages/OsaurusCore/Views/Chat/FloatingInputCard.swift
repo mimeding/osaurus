@@ -10,6 +10,9 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
+// swift-format owns multiline brace placement in wrapped conditions.
+// swiftlint:disable opening_brace
+
 struct FloatingInputCard: View {
     @Binding var text: String
     @Binding var selectedModel: String?
@@ -31,16 +34,16 @@ struct FloatingInputCard: View {
     /// Trigger to focus the input field (increment to focus)
     var focusTrigger: Int = 0
     /// Current agent ID (used for agent-specific settings)
-    var agentId: UUID? = nil
+    var agentId: UUID?
     /// Window ID for targeted VAD notifications
-    var windowId: UUID? = nil
+    var windowId: UUID?
     /// Compact mode (sidebar open) - hides secondary chip content
     var isCompact: Bool = false
     /// Callback to clear the current chat session (triggered by /clear command).
-    var onClearChat: (() -> Void)? = nil
+    var onClearChat: (() -> Void)?
     /// Callback when the user selects a skill slash command. Passes the skill UUID so the
     /// caller can inject that skill's instructions as one-off context for the next send.
-    var onSkillSelected: ((UUID) -> Void)? = nil
+    var onSkillSelected: ((UUID) -> Void)?
     /// Binding to the session's pending one-off skill. Non-nil shows a dismissable skill chip.
     @Binding var pendingSkillId: UUID?
 
@@ -144,7 +147,7 @@ struct FloatingInputCard: View {
     @State private var contextHoverTask: Task<Void, Never>?
     @State private var isSandboxHovered = false
     @State private var sandboxPulseAmount: CGFloat = 1.0
-    @State private var sandboxPulseTask: Task<Void, Never>? = nil
+    @State private var sandboxPulseTask: Task<Void, Never>?
     @State private var isClipboardHovered = false
     @State private var clipboardPulseAmount: CGFloat = 0.0
     @State private var clipboardPulseOpacity: Double = 0.0
@@ -168,7 +171,7 @@ struct FloatingInputCard: View {
     /// Tracks confirmed transcription length to detect actual changes (for silence timeout)
     @State private var lastConfirmedLength: Int = 0
 
-    @State private var pauseTimerCancellable: AnyCancellable? = nil
+    @State private var pauseTimerCancellable: AnyCancellable?
 
     // TextEditor should grow up to ~6 lines before scrolling
     private var inputFontSize: CGFloat { CGFloat(theme.bodySize) }
@@ -329,6 +332,7 @@ struct FloatingInputCard: View {
     }
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = ChatPerfTrace.shared.count("body.FloatingInputCard")
         mainContent
             .onAppear {
@@ -563,7 +567,7 @@ struct FloatingInputCard: View {
 // MARK: - Voice Debug Helpers
 
 /// Standalone log helper so VoiceDebugObservers can call it without a card reference.
-fileprivate func voiceDebugLog(
+private func voiceDebugLog(
     trigger: String,
     enabled: Bool,
     micPermission: Bool,
@@ -1058,7 +1062,7 @@ extension FloatingInputCard {
                                 }
                             )
                         }
-                    case .document, .documentRef:
+                    case .document, .documentRef, .file:
                         DocumentChip(attachment: attachment) {
                             withAnimation(theme.springAnimation()) {
                                 _ = pendingAttachments.remove(at: index)
@@ -2324,7 +2328,7 @@ extension FloatingInputCard {
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 handled = true
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, error in
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
                     guard let data = item as? Data,
                         let url = URL(dataRepresentation: data, relativeTo: nil)
                     else { return }
@@ -3484,7 +3488,6 @@ private struct StopButton: View {
 
 // MARK: - Resume Button
 
-/// Polished resume button with accent color
 // MARK: - Preview
 
 #if DEBUG
@@ -3537,3 +3540,5 @@ private struct StopButton: View {
         }
     }
 #endif
+
+// swiftlint:enable opening_brace

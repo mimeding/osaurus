@@ -218,6 +218,15 @@ struct MIMETypeTests {
         #expect(MIMEType.forExtension("wasm") == "application/wasm")
     }
 
+    @Test func officeDocumentTypes() {
+        #expect(MIMEType.forExtension("pdf") == "application/pdf")
+        #expect(MIMEType.forExtension("ppt") == "application/vnd.ms-powerpoint")
+        #expect(
+            MIMEType.forExtension("pptx")
+                == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
+    }
+
     @Test func unknownType() {
         #expect(MIMEType.forExtension("xyz") == "application/octet-stream")
         #expect(MIMEType.forExtension("") == "application/octet-stream")
@@ -227,6 +236,47 @@ struct MIMETypeTests {
         #expect(MIMEType.forExtension("HTML") == "text/html; charset=utf-8")
         #expect(MIMEType.forExtension("CSS") == "text/css; charset=utf-8")
         #expect(MIMEType.forExtension("JS") == "application/javascript; charset=utf-8")
+    }
+}
+
+// MARK: - External Tool Context Injection
+
+struct ExternalToolContextInjectionTests {
+
+    @Test func injectsAttachmentContextWithoutFolderContext() throws {
+        let inputFile = ChatInputFile(
+            id: "file-1",
+            filename: "deck.pptx",
+            mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            fileSize: 123,
+            hostPath: "/tmp/deck.pptx"
+        )
+
+        let payload = ExternalTool.injectRuntimeContext(into: #"{"path":"x"}"#, rootPath: nil, inputFiles: [inputFile])
+        let json = try #require(JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+        let context = try #require(json["_context"] as? [String: Any])
+        let attachments = try #require(context["attachments"] as? [[String: Any]])
+        let first = try #require(attachments.first)
+
+        #expect(first["id"] as? String == "file-1")
+        #expect(first["filename"] as? String == "deck.pptx")
+        #expect(first["mime_type"] as? String == inputFile.mimeType)
+        #expect(first["file_size"] as? Int == 123)
+        #expect(first["host_path"] as? String == "/tmp/deck.pptx")
+    }
+
+    @Test func mergesFolderAndExistingContext() throws {
+        let root = URL(fileURLWithPath: "/tmp/work")
+        let payload = ExternalTool.injectRuntimeContext(
+            into: #"{"_context":{"request_id":"abc"},"value":1}"#,
+            rootPath: root,
+            inputFiles: []
+        )
+        let json = try #require(JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+        let context = try #require(json["_context"] as? [String: Any])
+
+        #expect(context["request_id"] as? String == "abc")
+        #expect(context["working_directory"] as? String == "/tmp/work")
     }
 }
 

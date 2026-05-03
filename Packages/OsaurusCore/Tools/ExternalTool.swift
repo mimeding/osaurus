@@ -44,7 +44,7 @@ final class ExternalTool: OsaurusTool, PermissionedTool, @unchecked Sendable {
     func execute(argumentsJSON: String) async throws -> String {
         let agentId = ChatExecutionContext.currentAgentId
         let payloadWithSecrets = injectSecrets(into: argumentsJSON, agentId: agentId)
-        let payloadWithContext = injectFolderContext(into: payloadWithSecrets)
+        let payloadWithContext = injectExecutionContext(into: payloadWithSecrets)
         return try await plugin.invoke(type: "tool", id: toolId, payload: payloadWithContext, agentId: agentId)
     }
 
@@ -77,13 +77,21 @@ final class ExternalTool: OsaurusTool, PermissionedTool, @unchecked Sendable {
         return modifiedPayload
     }
 
-    /// Injects folder context into the tool payload under the `_context` key
+    /// Injects runtime context into the tool payload under the `_context` key
     /// - Parameter payload: Original JSON payload
-    /// - Returns: Payload with folder context injected, or original payload if no folder context active
-    private func injectFolderContext(into payload: String) -> String {
+    /// - Returns: Payload with runtime context injected, or original payload if no context is active
+    private func injectExecutionContext(into payload: String) -> String {
         // Read from the thread-safe cache to avoid hopping to MainActor,
         // which can deadlock when the main thread is busy with SwiftUI layout.
-        guard let rootPath = FolderContextService.cachedRootPath else { return payload }
+        Self.injectRuntimeContext(
+            into: payload,
+            rootPath: FolderContextService.cachedRootPath,
+            inputFiles: ChatExecutionContext.currentInputFiles
+        )
+    }
+
+    static func injectRuntimeContext(into payload: String, rootPath: URL?, inputFiles: [ChatInputFile]) -> String {
+        guard rootPath != nil || !inputFiles.isEmpty else { return payload }
 
         // Parse the original payload
         guard let payloadData = payload.data(using: .utf8),
@@ -93,10 +101,14 @@ final class ExternalTool: OsaurusTool, PermissionedTool, @unchecked Sendable {
             return payload
         }
 
-        // Add context under the `_context` key
-        payloadDict["_context"] = [
-            "working_directory": rootPath.path
-        ]
+        var context = payloadDict["_context"] as? [String: Any] ?? [:]
+        if let rootPath {
+            context["working_directory"] = rootPath.path
+        }
+        if !inputFiles.isEmpty {
+            context["attachments"] = inputFiles.map(\.toolPayload)
+        }
+        payloadDict["_context"] = context
 
         // Re-serialize to JSON
         guard let modifiedData = try? JSONSerialization.data(withJSONObject: payloadDict),

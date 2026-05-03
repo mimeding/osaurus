@@ -8,12 +8,15 @@
 
 import Foundation
 
+// swift-format owns multiline brace placement in wrapped conditions.
+// swiftlint:disable opening_brace
+
 /// Centralized path management for all Osaurus app data.
 /// All stores and services should use this module for path resolution.
 public enum OsaurusPaths {
     /// Optional root directory override for tests
     /// Note: nonisolated(unsafe) since this is only set during test setup before any concurrent access
-    public nonisolated(unsafe) static var overrideRoot: URL?
+    nonisolated(unsafe) public static var overrideRoot: URL?
 
     // MARK: - Root Directory
 
@@ -229,6 +232,11 @@ public enum OsaurusPaths {
         root().appendingPathComponent("artifacts", isDirectory: true)
     }
 
+    /// Preserved input attachments directory
+    public static func attachments() -> URL {
+        root().appendingPathComponent("attachments", isDirectory: true)
+    }
+
     /// Work data directory
     public static func workData() -> URL {
         root().appendingPathComponent("work", isDirectory: true)
@@ -311,6 +319,17 @@ public enum OsaurusPaths {
     /// Root directory for all shared artifacts: `~/.osaurus/artifacts/`
     public static func artifactsDir() -> URL {
         root().appendingPathComponent("artifacts", isDirectory: true)
+    }
+
+    /// Root directory for preserved chat input attachments:
+    /// `~/.osaurus/attachments/`
+    public static func attachmentsDir() -> URL {
+        root().appendingPathComponent("attachments", isDirectory: true)
+    }
+
+    /// Per-attachment directory: `~/.osaurus/attachments/{attachmentId}/`
+    public static func attachmentDir(attachmentId: String) -> URL {
+        attachmentsDir().appendingPathComponent(attachmentId, isDirectory: true)
     }
 
     /// Per-context artifacts directory: `~/.osaurus/artifacts/{contextId}/`
@@ -471,3 +490,5 @@ public enum OsaurusPaths {
     }
 
 }
+
+// swiftlint:enable opening_brace

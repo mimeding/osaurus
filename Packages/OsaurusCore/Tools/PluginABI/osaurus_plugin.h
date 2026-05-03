@@ -80,11 +80,12 @@ typedef const char* (*osr_list_models_fn)(void);
 // Returns JSON with "status", "headers", "body", "body_encoding", "elapsed_ms".
 typedef const char* (*osr_http_request_fn)(const char* request_json);
 
-// File I/O — read files from allowed paths (e.g. shared artifacts).
+// File I/O — read files from allowed paths (shared artifacts and preserved
+// chat input attachments).
 // request_json has "path" (absolute file path).
 // Returns JSON with "data" (base64-encoded), "size", "mime_type",
 // or "error" + "message" on failure.
-// Restricted to artifact paths for security.
+// Restricted to artifact/attachment paths for security.
 typedef const char* (*osr_file_read_fn)(const char* request_json);
 
 // List all active tasks dispatched by the calling plugin.

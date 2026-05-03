@@ -8,6 +8,9 @@
 
 import Foundation
 
+// swift-format owns multiline brace placement in wrapped conditions.
+// swiftlint:disable opening_brace
+
 // MARK: - Artifact Context Type
 
 public enum ArtifactContextType: String, Codable, Sendable {
@@ -92,6 +95,10 @@ public struct SharedArtifact: Identifiable, Codable, Sendable, Equatable {
         case "txt": return "text/plain"
         case "csv": return "text/csv"
         case "pdf": return "application/pdf"
+        case "ppt": return "application/vnd.ms-powerpoint"
+        case "pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        case "ppsx": return "application/vnd.openxmlformats-officedocument.presentationml.slideshow"
+        case "potx": return "application/vnd.openxmlformats-officedocument.presentationml.template"
         case "zip": return "application/zip"
         case "tar": return "application/x-tar"
         case "gz": return "application/gzip"
@@ -136,11 +143,18 @@ public struct SharedArtifact: Identifiable, Codable, Sendable, Equatable {
     /// Whether this artifact is a PDF document.
     public var isPDF: Bool { mimeType == "application/pdf" }
 
+    /// Whether this artifact is a PowerPoint presentation package.
+    public var isPresentation: Bool {
+        mimeType == "application/vnd.ms-powerpoint"
+            || mimeType.hasPrefix("application/vnd.openxmlformats-officedocument.presentationml.")
+    }
+
     /// Human-readable content category label.
     public var categoryLabel: String {
         if isDirectory { return "Directory" }
         if isImage { return "Image" }
         if isPDF { return "PDF" }
+        if isPresentation { return "Presentation" }
         if isAudio { return "Audio" }
         if isVideo { return "Video" }
         if isHTML { return "Web Page" }
@@ -627,3 +641,5 @@ extension SharedArtifact {
         return prefix + inner + suffix
     }
 }
+
+// swiftlint:enable opening_brace

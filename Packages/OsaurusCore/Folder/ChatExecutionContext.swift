@@ -9,6 +9,35 @@
 
 import Foundation
 
+/// A file attachment that is available to tool/plugin execution for the
+/// current chat turn context. The original bytes live on disk, not in chat
+/// history JSON.
+public struct ChatInputFile: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let filename: String
+    public let mimeType: String
+    public let fileSize: Int
+    public let hostPath: String
+
+    public init(id: String, filename: String, mimeType: String, fileSize: Int, hostPath: String) {
+        self.id = id
+        self.filename = filename
+        self.mimeType = mimeType
+        self.fileSize = fileSize
+        self.hostPath = hostPath
+    }
+
+    var toolPayload: [String: Any] {
+        [
+            "id": id,
+            "filename": filename,
+            "mime_type": mimeType,
+            "file_size": fileSize,
+            "host_path": hostPath,
+        ]
+    }
+}
+
 /// TaskLocal storage carrying the active chat session / agent / batch ids
 /// down through tool execution. The chat engine seeds these in
 /// `ChatSession.send` (and equivalent headless paths) so any tool reading
@@ -32,4 +61,7 @@ public enum ChatExecutionContext {
     /// Specific tool invocation id. Used by `speak` so the inline card
     /// can swap its check for a spinner while its audio plays
     @TaskLocal public static var currentToolCallId: String?
+
+    /// Preserved high-fidelity file attachments visible to the current tool call.
+    @TaskLocal public static var currentInputFiles: [ChatInputFile] = []
 }

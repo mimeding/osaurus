@@ -11,6 +11,9 @@ import Foundation
 import PDFKit
 import UniformTypeIdentifiers
 
+// swift-format owns multiline brace placement in wrapped conditions.
+// swiftlint:disable opening_brace
+
 enum DocumentParser {
 
     static let maxParsedTextLength = 500_000  // ~500KB of text
@@ -57,6 +60,10 @@ enum DocumentParser {
         let ext = url.pathExtension.lowercased()
         let filename = url.lastPathComponent
 
+        if AttachmentFileStore.shouldPreserveOriginal(url: url) {
+            return [try AttachmentFileStore.store(url: url)]
+        }
+
         // PDF may fall back to image rendering if text extraction yields nothing
         if ext == "pdf" {
             return try parsePDFWithFallback(url: url, filename: filename, fileSize: fileSize)
@@ -94,6 +101,7 @@ enum DocumentParser {
     static func canParse(url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
         return isPlainText(ext: ext) || richDocumentExtensions.contains(ext)
+            || AttachmentFileStore.shouldPreserveOriginal(url: url)
     }
 
     static func isImageFile(url: URL) -> Bool {
@@ -109,6 +117,10 @@ enum DocumentParser {
             .html,
             UTType("org.openxmlformats.wordprocessingml.document") ?? .data,  // .docx
             UTType("com.microsoft.word.doc") ?? .data,  // .doc
+            UTType(filenameExtension: "ppt") ?? .data,
+            UTType(filenameExtension: "pptx") ?? .data,
+            UTType(filenameExtension: "ppsx") ?? .data,
+            UTType(filenameExtension: "potx") ?? .data,
             .commaSeparatedText,
             .json, .xml, .yaml,
             UTType("public.python-script") ?? .data,
@@ -262,3 +274,5 @@ enum DocumentParser {
         }
     }
 }
+
+// swiftlint:enable opening_brace

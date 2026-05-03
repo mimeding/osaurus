@@ -11,6 +11,9 @@ import AVFoundation
 @preconcurrency import PDFKit
 import QuartzCore
 
+// swift-format owns multiline brace placement in wrapped conditions.
+// swiftlint:disable opening_brace
+
 // MARK: - NativeArtifactCardView
 
 final class NativeArtifactCardView: NSView {
@@ -969,6 +972,7 @@ final class NativeArtifactCardView: NSView {
         if artifact.isDirectory { return "folder.fill" }
         if artifact.isImage { return "photo" }
         if artifact.isPDF { return "doc.richtext.fill" }
+        if artifact.isPresentation { return "rectangle.on.rectangle.angled" }
         if artifact.isVideo { return "film" }
         if artifact.isAudio { return "waveform" }
         if artifact.isHTML { return "globe" }
@@ -988,6 +992,7 @@ final class NativeArtifactCardView: NSView {
         }
         if artifact.isImage { return [c("8b5cf6"), c("7c3aed")] }
         if artifact.isPDF { return [c("ef4444"), c("dc2626")] }
+        if artifact.isPresentation { return [c("2563eb"), c("0f766e")] }
         if artifact.isVideo { return [c("ec4899"), c("db2777")] }
         if artifact.isAudio { return [c("f59e0b"), c("d97706")] }
         if artifact.isHTML { return [c("3b82f6"), c("2563eb")] }
@@ -1005,3 +1010,5 @@ final class NativeArtifactCardView: NSView {
         "\(theme.bodySize)|\(theme.captionSize)|\(theme.glassEnabled)|\(NSColor(theme.accentColor).description)|\(NSColor(theme.secondaryBackground).description)|\(NSColor(theme.primaryBorder).description)|\(NSColor(theme.primaryText).description)|\(NSColor(theme.tertiaryText).description)|\(NSColor(theme.tertiaryBackground).description)"
     }
 }
+
+// swiftlint:enable opening_brace

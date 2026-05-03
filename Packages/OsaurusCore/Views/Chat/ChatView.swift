@@ -11,6 +11,9 @@ import LocalAuthentication
 @preconcurrency import MLXLMCommon
 import SwiftUI
 
+// swift-format owns multiline brace placement in wrapped conditions.
+// swiftlint:disable opening_brace
+
 /// Holds the derived, streaming-mutated `[ContentBlock]` list for the chat
 /// thread. Kept as a separate `ObservableObject` so that per-token visibleBlocks
 /// updates don't fire `ChatSession.objectWillChange` — that would force
@@ -50,7 +53,7 @@ final class ChatSession: ObservableObject {
     let expandedBlocksStore = ExpandedBlocksStore()
     @Published var input: String = ""
     @Published var pendingAttachments: [Attachment] = []
-    @Published var selectedModel: String? = nil
+    @Published var selectedModel: String?
     @Published var pickerItems: [ModelPickerItem] = []
     @Published var activeModelOptions: [String: ModelOptionValue] = [:]
     @Published var hasAnyModel: Bool = false
@@ -483,15 +486,18 @@ final class ChatSession: ObservableObject {
         )
     }
 
-    /// Builds the full user message text, prepending any attached document contents wrapped in XML tags.
+    /// Builds the full user message text, prepending attached document text and a
+    /// compact manifest for high-fidelity files available to plugins.
     ///
-    /// Filenames are reduced to their basename and both the name and the body are
-    /// XML-entity-escaped so that a hostile document cannot forge a closing
-    /// `</attached_document>` tag or inject bracketed pseudo-tool markers that
-    /// would otherwise reach the model as control text.
+    /// Filenames are reduced to their basename and XML wrappers are escaped so a
+    /// hostile attachment cannot forge closing tags or pseudo-tool markers.
     static func buildUserMessageText(content: String, attachments: [Attachment]) -> String {
-        let docs = attachments.filter(\.isDocument)
-        guard !docs.isEmpty else { return content }
+        let docs = attachments.filter {
+            if case .document = $0.kind { return true }
+            return false
+        }
+        let files = attachments.filter(\.isPreservedFile)
+        guard !docs.isEmpty || !files.isEmpty else { return content }
 
         var parts: [String] = []
         for doc in docs {
@@ -499,6 +505,39 @@ final class ChatSession: ObservableObject {
                 let safeName = escapeAttachmentName(name)
                 let safeText = xmlEscape(text)
                 parts.append("<attached_document name=\"\(safeName)\">\n\(safeText)\n</attached_document>")
+            }
+        }
+
+        if !files.isEmpty {
+            let manifest = files.compactMap { attachment -> String? in
+                guard let input = attachment.inputFile else { return nil }
+                let safeName = escapeAttachmentName(input.filename)
+                return """
+                    <file id="\(xmlAttributeEscaped(input.id))" name="\(safeName)" mime_type="\(xmlAttributeEscaped(input.mimeType))" size="\(input.fileSize)" />
+                    """
+            }
+            parts.append(
+                """
+                <attached_files_available_to_tools note="Original bytes are preserved outside chat history and passed to plugins in _context.attachments. Use PDF/PPTX tools for high-fidelity work.">
+                \(manifest.joined(separator: "\n"))
+                </attached_files_available_to_tools>
+                """
+            )
+
+            for file in files {
+                guard let input = file.inputFile,
+                    let preview = file.extractedPreview,
+                    !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { continue }
+                let safeName = escapeAttachmentName(input.filename)
+                let safePreview = xmlEscape(preview)
+                parts.append(
+                    """
+                    <attached_file_preview id="\(xmlAttributeEscaped(input.id))" name="\(safeName)">
+                    \(safePreview)
+                    </attached_file_preview>
+                    """
+                )
             }
         }
 
@@ -512,7 +551,7 @@ final class ChatSession: ObservableObject {
     private static func escapeAttachmentName(_ raw: String) -> String {
         let basename = (raw as NSString).lastPathComponent
         let trimmed = basename.trimmingCharacters(in: .whitespacesAndNewlines)
-        return xmlEscape(trimmed.isEmpty ? "attachment" : trimmed)
+        return xmlAttributeEscaped(trimmed.isEmpty ? "attachment" : trimmed)
     }
 
     private static func xmlEscape(_ s: String) -> String {
@@ -521,6 +560,29 @@ final class ChatSession: ObservableObject {
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    static func availableInputFiles(from turns: [ChatTurn]) -> [ChatInputFile] {
+        var seen: Set<String> = []
+        var files: [ChatInputFile] = []
+
+        for turn in turns where turn.role == .user {
+            for input in turn.attachments.inputFiles where !seen.contains(input.id) {
+                seen.insert(input.id)
+                files.append(input)
+            }
+        }
+
+        return files
+    }
+
+    private static func xmlAttributeEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
     }
 
     /// Format token count for display (e.g., "1.2K", "15K")
@@ -1789,14 +1851,27 @@ final class ChatSession: ObservableObject {
                             // brand-new chats still get a todo store entry.
                             let sessionIdForTools =
                                 sessionId?.uuidString ?? "chatwindow-\(ObjectIdentifier(self).hashValue)"
-                            resultText = try await ChatExecutionContext.$currentAgentId.withValue(effectiveAgentId) {
-                                try await ChatExecutionContext.$currentSessionId.withValue(sessionIdForTools) {
-                                    try await ChatExecutionContext.$currentAssistantTurnId.withValue(assistantTurn.id) {
-                                        try await ChatExecutionContext.$currentToolCallId.withValue(callId) {
-                                            try await ToolRegistry.shared.execute(
-                                                name: inv.toolName,
-                                                argumentsJSON: inv.jsonArguments
-                                            )
+                            let inputFilesForTools = Self.availableInputFiles(from: turns)
+                            resultText = try await ChatExecutionContext.$currentAgentId.withValue(
+                                effectiveAgentId
+                            ) {
+                                try await ChatExecutionContext.$currentSessionId.withValue(
+                                    sessionIdForTools
+                                ) {
+                                    try await ChatExecutionContext.$currentAssistantTurnId.withValue(
+                                        assistantTurn.id
+                                    ) {
+                                        try await ChatExecutionContext.$currentToolCallId.withValue(
+                                            callId
+                                        ) {
+                                            try await ChatExecutionContext.$currentInputFiles.withValue(
+                                                inputFilesForTools
+                                            ) {
+                                                try await ToolRegistry.shared.execute(
+                                                    name: inv.toolName,
+                                                    argumentsJSON: inv.jsonArguments
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -2040,13 +2115,13 @@ struct ChatView: View {
     @State private var editText: String = ""
     @State private var userImagePreview: NSImage?
     // Bonjour agent connection
-    @State private var pendingDiscoveredAgent: DiscoveredAgent? = nil
+    @State private var pendingDiscoveredAgent: DiscoveredAgent?
     // Minimap
     @State private var activeMinimapTurnId: UUID?
     @State private var scrollToTurnId: UUID?
     @State private var scrollToTurnTrigger: Int = 0
     // What's New modal
-    @State private var pendingWhatsNew: WhatsNewRelease? = nil
+    @State private var pendingWhatsNew: WhatsNewRelease?
 
     /// Convenience accessor for the window's theme
     private var theme: ThemeProtocol { windowState.theme }
@@ -2116,6 +2191,7 @@ struct ChatView: View {
     }
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = ChatPerfTrace.shared.count("body.ChatView")
         chatModeContent
             .themedAlertScope(.chat(windowState.windowId))
@@ -2759,11 +2835,12 @@ private struct IsolatedThreadView: View {
     let onConfirmEdit: (() -> Void)?
     let onCancelEdit: (() -> Void)?
     let onUserImagePreview: ((String) -> Void)?
-    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)? = nil
-    var scrollToTurnId: UUID? = nil
+    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)?
+    var scrollToTurnId: UUID?
     var scrollToTurnTrigger: Int = 0
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = ChatPerfTrace.shared.count("body.IsolatedThreadView")
         MessageThreadView(
             blocks: store.blocks,
@@ -3030,7 +3107,7 @@ private struct PairingSheet: View {
     let onCancel: () -> Void
 
     @State private var isPairing = false
-    @State private var errorMessage: String? = nil
+    @State private var errorMessage: String?
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -3136,17 +3213,17 @@ private enum PairingClient {
         let context = LAContext()
         context.touchIDAuthenticationAllowableReuseDuration = 300
 
-        var masterKey = try MasterKey.getPrivateKey(context: context)
+        var pairingPrivateKey = try MasterKey.getPrivateKey(context: context)
         defer {
-            masterKey.withUnsafeMutableBytes { ptr in
+            pairingPrivateKey.withUnsafeMutableBytes { ptr in
                 if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
             }
         }
 
-        let connectorAddress = try PairingKey.deriveAddress(masterKey: masterKey)
+        let connectorAddress = try PairingKey.deriveAddress(masterKey: pairingPrivateKey)
         let nonce = UUID().uuidString
 
-        let signature = try PairingKey.sign(payload: Data(nonce.utf8), masterKey: masterKey)
+        let signature = try PairingKey.sign(payload: Data(nonce.utf8), masterKey: pairingPrivateKey)
         let hexSig = "0x" + signature.hexEncodedString
 
         let rawHost = agent.host ?? ""
@@ -3185,3 +3262,5 @@ private enum PairingClient {
 
 // MARK: - Shared Header Components
 // HeaderActionButton, SettingsButton, CloseButton, PinButton are now in SharedHeaderComponents.swift
+
+// swiftlint:enable opening_brace
