@@ -82,10 +82,9 @@ enum FolderToolHelpers {
     static func detectProjectType(_ url: URL) -> ProjectType {
         let fm = FileManager.default
         for projectType in ProjectType.allCases where projectType != .unknown {
-            for manifestFile in projectType.manifestFiles {
-                if fm.fileExists(atPath: url.appendingPathComponent(manifestFile).path) {
-                    return projectType
-                }
+            for manifestFile in projectType.manifestFiles
+            where fm.fileExists(atPath: url.appendingPathComponent(manifestFile).path) {
+                return projectType
             }
         }
         return .unknown
@@ -638,9 +637,7 @@ struct FileSearchTool: OsaurusTool {
                 if let pattern = filePattern {
                     let regex = pattern.replacingOccurrences(of: ".", with: "\\.")
                         .replacingOccurrences(of: "*", with: ".*")
-                    if fileURL.lastPathComponent.range(of: "^\(regex)$", options: .regularExpression)
-                        == nil
-                    {
+                    if fileURL.lastPathComponent.range(of: "^\(regex)$", options: .regularExpression) == nil {
                         continue
                     }
                 }
