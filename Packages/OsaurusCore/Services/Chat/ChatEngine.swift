@@ -7,7 +7,7 @@
 
 import Foundation
 
-actor ChatEngine: Sendable, ChatEngineProtocol {
+actor ChatEngine: ChatEngineProtocol {
     private let services: [ModelService]
     private let installedModelsProvider: @Sendable () -> [String]
 
@@ -101,20 +101,6 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
         }()
         let seedBits: UInt64? = request.seed.map { UInt64(bitPattern: Int64($0)) }
         let isJSONObject = (request.response_format?.type == "json_object")
-        let params = GenerationParameters(
-            temperature: temperature,
-            maxTokens: maxTokens,
-            topPOverride: request.top_p,
-            repetitionPenalty: repPenalty,
-            frequencyPenalty: request.frequency_penalty,
-            presencePenalty: request.presence_penalty,
-            seed: seedBits,
-            jsonMode: isJSONObject,
-            modelOptions: request.modelOptions ?? [:],
-            sessionId: request.session_id,
-            ttftTrace: trace
-        )
-
         let services = self.services
         // Fetch remote services on the MainActor so routing reflects the
         // latest connected Bonjour/remote agents per request.
@@ -128,7 +114,65 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
             services: services,
             remoteServices: remoteServices
         )
+        let capabilitySnapshot = Self.resolveCapabilitySnapshot(requestedModel: request.model, route: route)
+        trace?.set("llmCapability", capabilitySnapshot.diagnosticID)
+        trace?.set("llmProviderKind", capabilitySnapshot.providerKind.rawValue)
+        trace?.set("llmToolCallMode", capabilitySnapshot.toolCallMode.rawValue)
+        let params = GenerationParameters(
+            temperature: temperature,
+            maxTokens: maxTokens,
+            topPOverride: request.top_p,
+            repetitionPenalty: repPenalty,
+            frequencyPenalty: request.frequency_penalty,
+            presencePenalty: request.presence_penalty,
+            seed: seedBits,
+            jsonMode: isJSONObject,
+            modelOptions: request.modelOptions ?? [:],
+            sessionId: request.session_id,
+            ttftTrace: trace,
+            capabilitySnapshot: capabilitySnapshot
+        )
         return Dispatch(route: route, params: params, remoteServices: remoteServices)
+    }
+
+    private static func resolveCapabilitySnapshot(
+        requestedModel: String?,
+        route: ModelRoute
+    ) -> LLMCapabilitySnapshot {
+        switch route {
+        case .service(let service, let effectiveModel):
+            if let remote = service as? RemoteProviderService {
+                let runtimeKind: LLMRuntimeKind =
+                    remote.provider.providerType == .osaurus ? .osaurusAgent : .remote
+                return LLMCapabilityResolver.resolve(
+                    modelId: effectiveModel,
+                    providerType: remote.provider.providerType,
+                    runtimeKind: runtimeKind
+                )
+            }
+            if service is FoundationModelService {
+                return LLMCapabilityResolver.resolve(
+                    modelId: effectiveModel,
+                    runtimeKind: .foundation
+                )
+            }
+            if service is MLXService {
+                return LLMCapabilityResolver.resolve(
+                    modelId: effectiveModel,
+                    runtimeKind: .localMLX
+                )
+            }
+            return LLMCapabilityResolver.resolve(
+                modelId: effectiveModel,
+                runtimeKind: .unknown
+            )
+
+        case .none:
+            return LLMCapabilityResolver.resolve(
+                modelId: requestedModel,
+                runtimeKind: .unknown
+            )
+        }
     }
 
     private func estimateInputTokens(_ messages: [ChatMessage]) -> Int {
@@ -311,8 +355,8 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
             var outputTokenCount = 0
             var deltaCount = 0
             var finishReason: InferenceLog.FinishReason = .stop
-            var errorMsg: String? = nil
-            var toolInvocation: (name: String, args: String)? = nil
+            var errorMsg: String?
+            var toolInvocation: (name: String, args: String)?
             var lastDeltaTime = startTime
 
             print("[Osaurus][Stream] Starting stream wrapper for model: \(model)")
@@ -385,7 +429,7 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
             // Log the completed inference (only for Chat UI - HTTP requests are logged by HTTPHandler)
             if source == .chatUI {
                 let durationMs = Date().timeIntervalSince(startTime) * 1000
-                var toolCalls: [ToolCallLog]? = nil
+                var toolCalls: [ToolCallLog]?
                 if let (name, args) = toolInvocation {
                     toolCalls = [ToolCallLog(name: name, arguments: args)]
                 }

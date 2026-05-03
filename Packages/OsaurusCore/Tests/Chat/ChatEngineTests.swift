@@ -34,6 +34,78 @@ struct ChatEngineTests {
         #expect(out == "abc")
     }
 
+    @Test func streamChat_threads_capability_snapshot_to_service() async throws {
+        final class CapturingService: ModelService, @unchecked Sendable {
+            private let lock = NSLock()
+            private var captured: LLMCapabilitySnapshot?
+
+            var id: String { "capturing" }
+            func isAvailable() -> Bool { true }
+            func handles(requestedModel: String?) -> Bool { requestedModel == "gemma-capture" }
+
+            func generateOneShot(
+                messages: [ChatMessage],
+                parameters: GenerationParameters,
+                requestedModel: String?
+            ) async throws -> String {
+                capture(parameters.capabilitySnapshot)
+                return "ok"
+            }
+
+            func streamDeltas(
+                messages: [ChatMessage],
+                parameters: GenerationParameters,
+                requestedModel: String?,
+                stopSequences: [String]
+            ) async throws -> AsyncThrowingStream<String, Error> {
+                capture(parameters.capabilitySnapshot)
+                return AsyncThrowingStream { continuation in
+                    continuation.yield("ok")
+                    continuation.finish()
+                }
+            }
+
+            func snapshot() -> LLMCapabilitySnapshot? {
+                lock.lock()
+                defer { lock.unlock() }
+                return captured
+            }
+
+            private func capture(_ snapshot: LLMCapabilitySnapshot?) {
+                lock.lock()
+                captured = snapshot
+                lock.unlock()
+            }
+        }
+
+        let svc = CapturingService()
+        let engine = ChatEngine(services: [svc], installedModelsProvider: { [] })
+        let req = ChatCompletionRequest(
+            model: "gemma-capture",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            temperature: 0.5,
+            max_tokens: 16,
+            stream: true,
+            top_p: nil,
+            frequency_penalty: nil,
+            presence_penalty: nil,
+            stop: nil,
+            n: nil,
+            tools: nil,
+            tool_choice: nil,
+            session_id: nil
+        )
+
+        let stream = try await engine.streamChat(request: req)
+        for try await _ in stream {}
+
+        let snapshot = try #require(svc.snapshot())
+        #expect(snapshot.modelId == "gemma-capture")
+        #expect(snapshot.family == .googleGemma)
+        #expect(snapshot.runtimeKind == .unknown)
+        #expect(snapshot.toolCallMode == .none)
+    }
+
     @Test func completeChat_returns_choice_success() async throws {
         let svc = FakeModelService()
         let engine = ChatEngine(services: [svc], installedModelsProvider: { [] })

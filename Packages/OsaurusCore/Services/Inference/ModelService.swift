@@ -41,6 +41,9 @@ struct GenerationParameters: Sendable {
     let sessionId: String?
     /// Optional TTFT trace for diagnostic timing instrumentation.
     let ttftTrace: TTFTTrace?
+    /// Resolved model/provider capabilities for this dispatch. Adapters use
+    /// this to avoid sending options the active backend does not support.
+    let capabilitySnapshot: LLMCapabilitySnapshot?
 
     init(
         temperature: Float?,
@@ -53,7 +56,8 @@ struct GenerationParameters: Sendable {
         jsonMode: Bool = false,
         modelOptions: [String: ModelOptionValue] = [:],
         sessionId: String? = nil,
-        ttftTrace: TTFTTrace? = nil
+        ttftTrace: TTFTTrace? = nil,
+        capabilitySnapshot: LLMCapabilitySnapshot? = nil
     ) {
         self.temperature = temperature
         self.maxTokens = maxTokens
@@ -66,6 +70,7 @@ struct GenerationParameters: Sendable {
         self.modelOptions = modelOptions
         self.sessionId = sessionId
         self.ttftTrace = ttftTrace
+        self.capabilitySnapshot = capabilitySnapshot
     }
 }
 
@@ -122,7 +127,7 @@ public enum StreamingToolHint: Sendable {
         struct Payload: Encodable { let id, name, arguments, result: String }
         let json =
             (try? JSONEncoder().encode(Payload(id: callId, name: name, arguments: arguments, result: result)))
-            .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            .flatMap { String(bytes: $0, encoding: .utf8) } ?? "{}"
         return donePrefix + json
     }
 
