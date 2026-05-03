@@ -7,6 +7,9 @@
 //  database (sandboxed SQLite), dispatch, inference, models, and HTTP access.
 //
 
+// SwiftFormat owns multiline condition layout here; SwiftLint's brace rule conflicts with it.
+// swiftlint:disable opening_brace
+
 import Foundation
 import os
 
@@ -23,7 +26,7 @@ final class PluginHostContext: @unchecked Sendable {
 
     // MARK: - Context Registry (thread-safe)
 
-    private nonisolated(unsafe) static var contexts: [String: PluginHostContext] = [:]
+    nonisolated(unsafe) private static var contexts: [String: PluginHostContext] = [:]
     private static let contextsLock = NSLock()
 
     static func getContext(for pluginId: String) -> PluginHostContext? {
@@ -1746,6 +1749,8 @@ extension PluginHostContext {
     }
 }
 
+// swiftlint:enable opening_brace
+
 // MARK: - SSRF Protection
 
 extension PluginHostContext {
@@ -2035,7 +2040,7 @@ extension PluginHostContext {
     /// Serialize a dictionary to a JSON string. Falls back to "{}" on encoding failure.
     static func jsonString(_ dict: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: dict, options: []) else { return "{}" }
-        return String(decoding: data, as: UTF8.self)
+        return String(bytes: data, encoding: .utf8) ?? "{}"
     }
 
     /// Parse a JSON string back into a dictionary.
@@ -2076,7 +2081,7 @@ extension PluginHostContext {
     /// have TLS set. Protected by `fallbackLock` to avoid data races under
     /// concurrent execution. TLS (option 1) is the authoritative mechanism.
     private static let fallbackLock = NSLock()
-    private nonisolated(unsafe) static var _lastDispatchedPluginId: String?
+    nonisolated(unsafe) private static var _lastDispatchedPluginId: String?
 
     private static var lastDispatchedPluginId: String? {
         get { fallbackLock.withLock { _lastDispatchedPluginId } }

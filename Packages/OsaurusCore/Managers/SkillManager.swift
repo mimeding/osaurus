@@ -424,16 +424,20 @@ public final class SkillManager {
         return sections.joined(separator: "\n\n")
     }
 
-    /// Builds the combined skill instructions section for an agent's enabled skills,
-    /// regardless of tool selection mode. Returns nil when the agent has not been
-    /// seeded yet (legacy behaviour: skills only inject in Manual via the older
-    /// `manualSkillPromptSection`) or has no enabled skills.
+    /// Builds instructions for startup-selected skills plus skills explicitly loaded
+    /// for the active session. On-demand skills are only honored through
+    /// `additionalSkillNames`, which keeps stale "all skills" allowlists from
+    /// re-inflating the prompt at chat start.
     public func enabledSkillPromptSection(
         for agentId: UUID,
         additionalSkillNames: Set<String> = []
     ) async -> String? {
         let selectedSkillNames = AgentManager.shared.effectiveEnabledSkillNames(for: agentId) ?? []
-        let skillNames = orderedUniqueSkillNames(selectedSkillNames + additionalSkillNames.sorted())
+        let startupSkillNames = selectedSkillNames.filter { name in
+            guard let skill = skill(named: name) else { return false }
+            return skill.activationMode == .selected
+        }
+        let skillNames = orderedUniqueSkillNames(startupSkillNames + additionalSkillNames.sorted())
         guard !skillNames.isEmpty else { return nil }
         let instructions = await loadInstructions(for: skillNames)
         guard !instructions.isEmpty else { return nil }

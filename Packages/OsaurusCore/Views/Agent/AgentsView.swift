@@ -1,5 +1,8 @@
 import SwiftUI
 
+// SwiftFormat owns multiline condition layout here; SwiftLint's brace rule conflicts with it.
+// swiftlint:disable opening_brace
+
 // MARK: - Shared Helpers
 
 func agentColorFor(_ name: String) -> Color {
@@ -786,7 +789,7 @@ struct AgentDetailView: View {
     @State private var pluginInstructionsMap: [String: String] = [:]
     @State private var disableTools: Bool = false
     @State private var disableMemory: Bool = false
-    @State private var avatar: String? = nil
+    @State private var avatar: String?
     /// Drives the title-bar agent picker popover. Tapping the avatar / name in the
     /// header bar reveals the list of other custom agents so the user can jump
     /// between them without bouncing back to the Agents grid every time.
@@ -3213,7 +3216,7 @@ private struct AgentDetailSection<Content: View>: View {
 
     let title: String
     let icon: String
-    var subtitle: String? = nil
+    var subtitle: String?
     @ViewBuilder let content: () -> Content
 
     var body: some View {
@@ -3275,7 +3278,7 @@ private struct AgentEditorSheet: View {
     /// the suggested name in sync. Once the user types their own value, the
     /// name is theirs and presets stop touching it.
     @State private var nameUserEdited: Bool = false
-    @State private var selectedAvatar: String? = nil
+    @State private var selectedAvatar: String?
     @State private var systemPrompt: String = ""
     @State private var selectedModel: String?
     @State private var pickerItems: [ModelPickerItem] = []
@@ -3923,3 +3926,5 @@ private struct ThemeOptionCard: View {
 #Preview {
     AgentsView()
 }
+
+// swiftlint:enable opening_brace

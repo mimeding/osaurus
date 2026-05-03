@@ -10,6 +10,9 @@
 //  resolves whether to use compact or full prompt variants via isLocalModel.
 //
 
+// SwiftFormat owns multiline condition layout here; SwiftLint's brace rule conflicts with it.
+// swiftlint:disable opening_brace
+
 import Foundation
 
 // MARK: - SystemPromptComposer
@@ -1075,3 +1078,5 @@ public struct SystemPromptComposer: Sendable {
         mergeSystemContent(content, into: &messages, prepend: false)
     }
 }
+
+// swiftlint:enable opening_brace

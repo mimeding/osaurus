@@ -181,21 +181,30 @@ struct ContextBudgetPreviewTests {
         }
     }
 
-    // MARK: - Skills are load-on-demand only
+    // MARK: - On-demand skills stay out of startup prompts
 
-    /// Regression for the 55k-token Skills bloat: skills MUST be
-    /// discovered via `capabilities_search` and pulled in via
-    /// `capabilities_load`, never auto-injected into the system prompt
-    /// at compose time. Both compose paths must omit the `skills`
-    /// section regardless of the agent's enabled-skills allowlist.
-    @Test("compose: no `skills` section, even when the agent has skills enabled")
-    func bagOfSkills_neverInjected() async {
+    /// Regression for the 55k-token Skills bloat: skills that declare
+    /// `activation: on-demand` must be discoverable and loadable, but a
+    /// stale "all skills enabled" allowlist must not make them startup
+    /// prompt content.
+    @Test("compose: on-demand skills in the enabled allowlist stay out of startup prompts")
+    func onDemandSkillsInAllowlistAreNotInjectedAtStartup() async {
         await withAgent(toolSelectionMode: .auto) { agentId in
-            // Simulate the "all skills enabled" allowlist that the
-            // capability seeder used to write — exactly the state that
-            // produced the 55k Skills row in the original screenshot.
+            let marker = "OnDemandSkillMarker-\(UUID().uuidString)"
+            let skill = Skill(
+                name: "On Demand Preview Skill \(UUID().uuidString.prefix(6))",
+                description: "Loads only when requested",
+                enabled: true,
+                discoverable: true,
+                defaultSelectedForAgents: false,
+                activation: .onDemand,
+                instructions: marker
+            )
+            await SkillStore.save(skill)
+            await SkillManager.shared.refresh()
+
             AgentManager.shared.updateEnabledSkillNames(
-                SkillManager.shared.skills.map(\.name),
+                [skill.name],
                 for: agentId
             )
 
@@ -212,6 +221,8 @@ struct ContextBudgetPreviewTests {
 
             #expect(sectionIds(preview).contains("skills") == false)
             #expect(real.manifest.sections.map(\.id).contains("skills") == false)
+            #expect(real.prompt.contains(marker) == false)
+            _ = await SkillManager.shared.delete(id: skill.id)
         }
     }
 

@@ -146,9 +146,9 @@ public final class AgentManager: ObservableObject {
         guard MasterKey.exists() else { return }
 
         let context = OsaurusIdentityContext.biometric()
-        var masterKeyData = try MasterKey.getPrivateKey(context: context)
+        var privateKeyData = try MasterKey.getPrivateKey(context: context)
         defer {
-            masterKeyData.withUnsafeMutableBytes { ptr in
+            privateKeyData.withUnsafeMutableBytes { ptr in
                 if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
             }
         }
@@ -157,7 +157,7 @@ public final class AgentManager: ObservableObject {
         var nextIndex: UInt32 = 0
         while usedIndices.contains(nextIndex) { nextIndex += 1 }
 
-        let address = try AgentKey.deriveAddress(masterKey: masterKeyData, index: nextIndex)
+        let address = try AgentKey.deriveAddress(masterKey: privateKeyData, index: nextIndex)
 
         var updated = agent
         updated.agentIndex = nextIndex

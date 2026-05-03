@@ -6,6 +6,9 @@
 //  Directory structure: skills/{skill-name}/SKILL.md with optional references/ and assets/
 //
 
+// SwiftFormat owns multiline condition layout here; SwiftLint's brace rule conflicts with it.
+// swiftlint:disable opening_brace
+
 import Foundation
 
 public enum SkillStore {
@@ -366,3 +369,5 @@ public enum SkillStore {
         }
     }
 }
+
+// swiftlint:enable opening_brace

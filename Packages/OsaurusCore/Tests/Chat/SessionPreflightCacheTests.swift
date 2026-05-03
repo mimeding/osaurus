@@ -68,12 +68,18 @@ struct SessionPreflightCacheTests {
     func composeChatContext_includesLoadedSkillsButNotUnloadedOnDemandSkills() async {
         await withSessionPreflightAgent { agentId in
             let marker = "LoadedSkillMarker-\(UUID().uuidString)"
-            let skill = await SkillManager.shared.create(
+            let skill = Skill(
                 name: "Loaded Session Skill \(UUID().uuidString.prefix(6))",
                 description: "Loaded only when requested",
                 category: "test",
+                enabled: true,
+                discoverable: true,
+                defaultSelectedForAgents: false,
+                activation: .onDemand,
                 instructions: marker
             )
+            await SkillStore.save(skill)
+            await SkillManager.shared.refresh()
 
             let withoutLoaded = await SystemPromptComposer.composeChatContext(
                 agentId: agentId,

@@ -7,6 +7,9 @@
 //  See: https://agentskills.io/specification
 //
 
+// SwiftFormat owns multiline condition layout here; SwiftLint's brace rule conflicts with it.
+// swiftlint:disable opening_brace
+
 import Foundation
 
 /// Represents a file within a skill's references or assets directory
@@ -39,7 +42,11 @@ public struct Skill: Codable, Identifiable, Sendable, Equatable {
     public var category: String?
     public var keywords: [String]
     public var enabled: Bool
+    // Activation metadata is optional so older saved skills decode without a migration.
+    // swiftlint:disable:next discouraged_optional_boolean
     public var discoverable: Bool?
+    // Activation metadata is optional so older saved skills decode without a migration.
+    // swiftlint:disable:next discouraged_optional_boolean
     public var defaultSelectedForAgents: Bool?
     public var activation: SkillActivation?
     public var instructions: String
@@ -902,6 +909,8 @@ extension Skill {
         return nil
     }
 
+    // Missing activation booleans carry meaning; callers apply backward-compatible defaults.
+    // swiftlint:disable:next discouraged_optional_boolean
     private static func firstBool(_ values: [String: Any], keys: [String]) -> Bool? {
         for key in keys {
             if let value = values[key] as? Bool {
@@ -926,6 +935,8 @@ extension Skill {
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }
+
+// swiftlint:enable opening_brace
 
 // MARK: - Errors
 
