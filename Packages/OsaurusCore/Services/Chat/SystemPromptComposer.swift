@@ -10,6 +10,9 @@
 //  resolves whether to use compact or full prompt variants via isLocalModel.
 //
 
+// SwiftFormat owns multiline condition layout here; SwiftLint's brace rule conflicts with it.
+// swiftlint:disable opening_brace
+
 import Foundation
 
 // MARK: - SystemPromptComposer
@@ -156,13 +159,12 @@ public struct SystemPromptComposer: Sendable {
         let canCreatePlugins = autonomousConfig.map { $0.enabled && $0.pluginCreate } ?? false
         let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
 
-        // Auto-disable for small-context models (Foundation et al.).
-        // OR into the agent's flags so every downstream gate (preflight,
-        // skills, agent loop, capability nudge, model family, plugin
-        // creator, memory assembly) cascades correctly without each
-        // gate having to know about the size class itself.
+        // Small-context models can still use tools, but they should not pay
+        // the startup cost of the always-loaded baseline or its guide text.
         let (sizeClass, contextLength) = ContextSizeResolver.resolve(modelId: model)
-        let effectiveToolsOff = agentToolsOff || sizeClass.disablesTools
+        let lightweightContext = sizeClass.disablesTools
+        let effectiveToolsOff = agentToolsOff
+        let gatedPromptSectionsOff = effectiveToolsOff || lightweightContext
         let memoryOff = agentMemoryOff || sizeClass.disablesMemory
         let contextDisable = ContextDisableInfo(
             sizeClass: sizeClass,
@@ -174,6 +176,7 @@ public struct SystemPromptComposer: Sendable {
         if contextDisable != nil {
             trace?.set("contextSizeClass", String(describing: sizeClass))
         }
+        trace?.set("lightweightContext", lightweightContext ? "1" : "0")
 
         // Memory is assembled here but returned separately (see ComposedContext.memorySection).
         // We deliberately do NOT pass `query` so the cached memory snapshot
@@ -215,13 +218,15 @@ public struct SystemPromptComposer: Sendable {
             toolsDisabled: effectiveToolsOff,
             preflight: preflight,
             additionalToolNames: additionalToolNames,
-            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames
+            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
+            includeBaselineBuiltIns: !lightweightContext
         )
         trace?.mark("resolve_tools_done")
         let alwaysLoadedNames = resolveAlwaysLoadedNames(
             tools: tools,
             executionMode: executionMode,
-            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames
+            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
+            includeBaselineBuiltIns: !lightweightContext
         )
 
         // Skill suggestions: when the user's query semantically matches
@@ -233,7 +238,7 @@ public struct SystemPromptComposer: Sendable {
         // or already loaded mid-session are filtered out so the model
         // doesn't see the same name twice.
         let skillSuggestions: [SkillTeaser] = await {
-            guard toolMode == .auto, !effectiveToolsOff, !query.isEmpty,
+            guard toolMode == .auto, !gatedPromptSectionsOff, !query.isEmpty,
                 tools.contains(where: { $0.function.name == "capabilities_load" })
             else { return [] }
             let alreadySurfaced = Set(preflight.companions.compactMap(\.skill?.name))
@@ -256,7 +261,7 @@ public struct SystemPromptComposer: Sendable {
             tools: tools,
             preflight: preflight,
             skillSuggestions: skillSuggestions,
-            effectiveToolsOff: effectiveToolsOff,
+            effectiveToolsOff: gatedPromptSectionsOff,
             autonomousEnabled: autonomousEnabled,
             canCreatePlugins: canCreatePlugins,
             toolMode: toolMode,
@@ -499,12 +504,15 @@ public struct SystemPromptComposer: Sendable {
     private static func resolveAlwaysLoadedNames(
         tools: [Tool],
         executionMode: ExecutionMode,
-        frozenAlwaysLoadedNames: Set<String>?
+        frozenAlwaysLoadedNames: Set<String>?,
+        includeBaselineBuiltIns: Bool = true
     ) -> Set<String> {
         if let frozenAlwaysLoadedNames {
             return frozenAlwaysLoadedNames
         }
-        let live = ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)
+        let registry = ToolRegistry.shared
+        let live = registry.alwaysLoadedSpecs(mode: executionMode)
+            .filter { includeBaselineBuiltIns || registry.runtimeManagedToolNames.contains($0.function.name) }
             .map { $0.function.name }
         let resolved = Set(tools.map { $0.function.name })
         return Set(live)
@@ -539,7 +547,9 @@ public struct SystemPromptComposer: Sendable {
         let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
 
         let (sizeClass, contextLength) = ContextSizeResolver.resolve(modelId: model)
-        let effectiveToolsOff = agentToolsOff || sizeClass.disablesTools
+        let lightweightContext = sizeClass.disablesTools
+        let effectiveToolsOff = agentToolsOff
+        let gatedPromptSectionsOff = effectiveToolsOff || lightweightContext
         let contextDisable = ContextDisableInfo(
             sizeClass: sizeClass,
             modelId: model,
@@ -551,7 +561,8 @@ public struct SystemPromptComposer: Sendable {
         let tools = resolveTools(
             agentId: agentId,
             executionMode: executionMode,
-            toolsDisabled: effectiveToolsOff
+            toolsDisabled: effectiveToolsOff,
+            includeBaselineBuiltIns: !lightweightContext
         )
 
         appendGatedSections(
@@ -561,7 +572,7 @@ public struct SystemPromptComposer: Sendable {
             model: model,
             tools: tools,
             preflight: .empty,
-            effectiveToolsOff: effectiveToolsOff,
+            effectiveToolsOff: gatedPromptSectionsOff,
             autonomousEnabled: autonomousEnabled,
             canCreatePlugins: canCreatePlugins,
             toolMode: toolMode
@@ -570,7 +581,8 @@ public struct SystemPromptComposer: Sendable {
         let alwaysLoadedNames = resolveAlwaysLoadedNames(
             tools: tools,
             executionMode: executionMode,
-            frozenAlwaysLoadedNames: nil
+            frozenAlwaysLoadedNames: nil,
+            includeBaselineBuiltIns: !lightweightContext
         )
 
         let manifest = composer.manifest()
@@ -788,10 +800,12 @@ public struct SystemPromptComposer: Sendable {
         toolsDisabled: Bool = false,
         preflight: PreflightResult = .empty,
         additionalToolNames: Set<String> = [],
-        frozenAlwaysLoadedNames: Set<String>? = nil
+        frozenAlwaysLoadedNames: Set<String>? = nil,
+        includeBaselineBuiltIns: Bool = true
     ) -> [Tool] {
         guard !toolsDisabled else { return [] }
 
+        let registry = ToolRegistry.shared
         let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
         let isManual = toolMode == .manual
 
@@ -816,7 +830,7 @@ public struct SystemPromptComposer: Sendable {
         // Late-arriving plugin / MCP tools still need explicit
         // `capabilities_load` to appear — that path is the only sanctioned
         // way to grow the dynamic surface mid-session.
-        let liveSandboxNames = ToolRegistry.shared.builtInSandboxToolNamesSnapshot
+        let liveSandboxNames = registry.builtInSandboxToolNamesSnapshot
         let filtered: ([Tool]) -> [Tool] = { specs in
             specs.filter { spec in
                 let name = spec.function.name
@@ -833,18 +847,23 @@ public struct SystemPromptComposer: Sendable {
         // Manual mode opts out of the LLM-driven preflight only — it does
         // NOT strip the always-loaded surface (the chat layer depends on
         // the loop tools).
-        add(filtered(ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)))
+        let baselineSpecs = registry.alwaysLoadedSpecs(mode: executionMode)
+        let includedBaselineSpecs =
+            includeBaselineBuiltIns
+            ? baselineSpecs
+            : baselineSpecs.filter { registry.runtimeManagedToolNames.contains($0.function.name) }
+        add(filtered(includedBaselineSpecs))
 
         if isManual {
             if let manualNames = AgentManager.shared.effectiveManualToolNames(for: agentId) {
-                add(ToolRegistry.shared.specs(forTools: manualNames))
+                add(registry.specs(forTools: manualNames))
             }
         } else {
             add(preflight.toolSpecs)
         }
 
         if !additionalToolNames.isEmpty {
-            add(ToolRegistry.shared.specs(forTools: Array(additionalToolNames)))
+            add(registry.specs(forTools: Array(additionalToolNames)))
         }
 
         return canonicalToolOrder(Array(byName.values))
@@ -1059,3 +1078,5 @@ public struct SystemPromptComposer: Sendable {
         mergeSystemContent(content, into: &messages, prepend: false)
     }
 }
+
+// swiftlint:enable opening_brace

@@ -96,6 +96,59 @@ struct SessionPreflightCacheTests {
         }
     }
 
+    @Test("foundation context omits baseline tools by default")
+    func foundationContext_omitsBaselineToolsByDefault() async {
+        await withSessionPreflightAgent { agentId in
+
+            let ctx = await SystemPromptComposer.composeChatContext(
+                agentId: agentId,
+                executionMode: .none,
+                model: "foundation"
+            )
+
+            #expect(ctx.tools.isEmpty)
+            #expect(ctx.alwaysLoadedNames.isEmpty)
+            #expect(ctx.prompt.contains("## Agent loop") == false)
+            #expect(ctx.prompt.contains("## Discovering more tools") == false)
+        }
+    }
+
+    @Test("foundation context keeps session-loaded tools on demand")
+    func foundationContext_keepsLoadedToolsOnDemand() async {
+        await withSessionPreflightAgent { agentId in
+
+            let ctx = await SystemPromptComposer.composeChatContext(
+                agentId: agentId,
+                executionMode: .none,
+                model: "foundation",
+                additionalToolNames: ["search_memory"]
+            )
+
+            let names = Set(ctx.tools.map { $0.function.name })
+            #expect(names == ["search_memory"])
+            #expect(ctx.alwaysLoadedNames.isEmpty)
+            #expect(ctx.prompt.contains("## Agent loop") == false)
+            #expect(ctx.prompt.contains("## Discovering more tools") == false)
+        }
+    }
+
+    @Test("non-foundation context keeps baseline tools")
+    func nonFoundationContext_keepsBaselineTools() async {
+        await withSessionPreflightAgent { agentId in
+
+            let ctx = await SystemPromptComposer.composeChatContext(
+                agentId: agentId,
+                executionMode: .none,
+                model: "anthropic/claude-haiku-4-5"
+            )
+
+            let names = Set(ctx.tools.map { $0.function.name })
+            #expect(names.contains("todo"))
+            #expect(names.contains("capabilities_search"))
+            #expect(ctx.alwaysLoadedNames.contains("todo"))
+        }
+    }
+
     private func withSessionPreflightAgent(
         _ body: @MainActor @Sendable (UUID) async -> Void
     ) async {

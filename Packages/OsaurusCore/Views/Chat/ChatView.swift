@@ -5,6 +5,9 @@
 //  Created by Terence on 10/26/25.
 //
 
+// SwiftFormat owns multiline condition layout here; SwiftLint's brace rule conflicts with it.
+// swiftlint:disable opening_brace
+
 import AppKit
 import Combine
 import LocalAuthentication
@@ -50,7 +53,7 @@ final class ChatSession: ObservableObject {
     let expandedBlocksStore = ExpandedBlocksStore()
     @Published var input: String = ""
     @Published var pendingAttachments: [Attachment] = []
-    @Published var selectedModel: String? = nil
+    @Published var selectedModel: String?
     @Published var pickerItems: [ModelPickerItem] = []
     @Published var activeModelOptions: [String: ModelOptionValue] = [:]
     @Published var hasAnyModel: Bool = false
@@ -473,10 +476,14 @@ final class ChatSession: ObservableObject {
             executionMode: executionMode,
             model: selectedModel
         )
+        let memoryTokens =
+            preview.contextDisable?.disabledMemory == true
+            ? 0
+            : cachedMemoryTokens
         return .from(
             manifest: preview.manifest,
             toolTokens: preview.toolTokens,
-            memoryTokens: cachedMemoryTokens,
+            memoryTokens: memoryTokens,
             conversationTokens: conversationTokens,
             inputTokens: inputTokens,
             outputTokens: outputTokens
@@ -2040,13 +2047,13 @@ struct ChatView: View {
     @State private var editText: String = ""
     @State private var userImagePreview: NSImage?
     // Bonjour agent connection
-    @State private var pendingDiscoveredAgent: DiscoveredAgent? = nil
+    @State private var pendingDiscoveredAgent: DiscoveredAgent?
     // Minimap
     @State private var activeMinimapTurnId: UUID?
     @State private var scrollToTurnId: UUID?
     @State private var scrollToTurnTrigger: Int = 0
     // What's New modal
-    @State private var pendingWhatsNew: WhatsNewRelease? = nil
+    @State private var pendingWhatsNew: WhatsNewRelease?
 
     /// Convenience accessor for the window's theme
     private var theme: ThemeProtocol { windowState.theme }
@@ -2116,6 +2123,7 @@ struct ChatView: View {
     }
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = ChatPerfTrace.shared.count("body.ChatView")
         chatModeContent
             .themedAlertScope(.chat(windowState.windowId))
@@ -2759,11 +2767,12 @@ private struct IsolatedThreadView: View {
     let onConfirmEdit: (() -> Void)?
     let onCancelEdit: (() -> Void)?
     let onUserImagePreview: ((String) -> Void)?
-    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)? = nil
-    var scrollToTurnId: UUID? = nil
+    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)?
+    var scrollToTurnId: UUID?
     var scrollToTurnTrigger: Int = 0
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = ChatPerfTrace.shared.count("body.IsolatedThreadView")
         MessageThreadView(
             blocks: store.blocks,
@@ -3030,7 +3039,7 @@ private struct PairingSheet: View {
     let onCancel: () -> Void
 
     @State private var isPairing = false
-    @State private var errorMessage: String? = nil
+    @State private var errorMessage: String?
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -3136,17 +3145,17 @@ private enum PairingClient {
         let context = LAContext()
         context.touchIDAuthenticationAllowableReuseDuration = 300
 
-        var masterKey = try MasterKey.getPrivateKey(context: context)
+        var privateKey = try MasterKey.getPrivateKey(context: context)
         defer {
-            masterKey.withUnsafeMutableBytes { ptr in
+            privateKey.withUnsafeMutableBytes { ptr in
                 if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
             }
         }
 
-        let connectorAddress = try PairingKey.deriveAddress(masterKey: masterKey)
+        let connectorAddress = try PairingKey.deriveAddress(masterKey: privateKey)
         let nonce = UUID().uuidString
 
-        let signature = try PairingKey.sign(payload: Data(nonce.utf8), masterKey: masterKey)
+        let signature = try PairingKey.sign(payload: Data(nonce.utf8), masterKey: privateKey)
         let hexSig = "0x" + signature.hexEncodedString
 
         let rawHost = agent.host ?? ""
@@ -3185,3 +3194,5 @@ private enum PairingClient {
 
 // MARK: - Shared Header Components
 // HeaderActionButton, SettingsButton, CloseButton, PinButton are now in SharedHeaderComponents.swift
+
+// swiftlint:enable opening_brace

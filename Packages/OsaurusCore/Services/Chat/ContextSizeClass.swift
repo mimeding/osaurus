@@ -6,9 +6,8 @@
 //  prompt features that don't fit into very small windows. Apple's
 //  Foundation model has a ~4K window; even before any user message
 //  the always-loaded tool schemas push past it. The system-prompt
-//  composer reads this resolver at compose time and ORs the result
-//  into the agent's effective tools/memory disable flags so we never
-//  ship a request that's already over budget.
+//  composer reads this resolver at compose time so it can drop default
+//  prompt features before they crowd out the user's actual request.
 //
 
 import Foundation
@@ -17,12 +16,12 @@ import Foundation
 
 /// Coarse classification of a model's nominal context window. Three
 /// buckets are enough — the prompt composer only needs to decide
-/// whether to disable tools (tiny only) and/or memory (tiny + small).
+/// whether to trim baseline tools (tiny only) and/or memory (tiny + small).
 public enum ContextSizeClass: Sendable, Equatable {
     /// `<= 4096` tokens. Apple Foundation and any equally tight
-    /// future model. Tools, memory, and skill suggestions all auto
-    /// off — at this size even the always-loaded tool JSON schemas
-    /// cost more than the available budget.
+    /// future model. Memory, skill suggestions, and the default tool
+    /// baseline are off — explicit on-demand tools can still be added
+    /// when the agent or user asks for them.
     case tiny
 
     /// `<= 8192` tokens. Fits a reasonable chat schema but not
@@ -33,10 +32,9 @@ public enum ContextSizeClass: Sendable, Equatable {
     /// Larger than `8192` tokens, or unknown. No auto-overrides.
     case normal
 
-    /// Whether this class auto-disables tools (and the entire
-    /// gated-section surface that depends on tools, including
-    /// agent-loop guidance, capability discovery, skill suggestions,
-    /// and the model-family nudge).
+    /// Whether this class auto-disables the default tool baseline and
+    /// its gated prompt text. Session-loaded, manual, or preflighted
+    /// tools can still appear when they are worth the context cost.
     public var disablesTools: Bool { self == .tiny }
 
     /// Whether this class auto-disables memory injection. Memory is
@@ -132,9 +130,8 @@ public enum ContextSizeResolver {
         // duplicate the three-line check rather than spin one up just
         // to call it.
         let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.caseInsensitiveCompare("foundation") == .orderedSame
-            || trimmed.caseInsensitiveCompare("default") == .orderedSame
-        {
+        let foundationAliases = ["foundation", "default"]
+        if foundationAliases.contains(where: { trimmed.caseInsensitiveCompare($0) == .orderedSame }) {
             return (.tiny, tinyCeiling)
         }
 
