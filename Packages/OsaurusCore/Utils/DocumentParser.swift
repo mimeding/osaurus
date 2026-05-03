@@ -155,10 +155,10 @@ enum DocumentParser {
             return try String(contentsOf: url, encoding: .utf8)
         } catch {
             // Retry with latin1 for binary-ish text files
-            if let data = try? Data(contentsOf: url),
-                let str = String(data: data, encoding: .isoLatin1)
-            {
-                return str
+            if let data = try? Data(contentsOf: url) {
+                if let str = String(data: data, encoding: .isoLatin1) {
+                    return str
+                }
             }
             throw ParseError.readFailed(error.localizedDescription)
         }
@@ -197,10 +197,10 @@ enum DocumentParser {
     private static func extractPDFText(from document: PDFDocument) -> String {
         var pages: [String] = []
         for i in 0 ..< document.pageCount {
-            if let page = document.page(at: i), let text = page.string,
-                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-                pages.append(text)
+            if let page = document.page(at: i), let text = page.string {
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    pages.append(text)
+                }
             }
         }
         return pages.joined(separator: "\n\n")
