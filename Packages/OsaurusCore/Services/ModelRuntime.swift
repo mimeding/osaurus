@@ -417,7 +417,7 @@ public actor ModelRuntime {
     /// by vmlx-swift-lm's `OSAURUS-INTEGRATION.md` (Coordinator-owned KV
     /// sizing) plus osaurus's per-environment disk-path config. See the
     /// file-level comment for rationale on each knob.
-    private nonisolated static func buildCacheCoordinatorConfig(
+    nonisolated private static func buildCacheCoordinatorConfig(
         modelName: String
     ) -> CacheCoordinatorConfig {
         let diskCacheDir = OsaurusPaths.diskKVCache()
@@ -478,7 +478,7 @@ public actor ModelRuntime {
     /// Best-effort writability probe for the disk cache directory. Uses a
     /// tempfile round-trip rather than `FileManager.isWritableFile(atPath:)`
     /// so symlinks / ACLs / out-of-disk conditions are caught.
-    private nonisolated static func isDirectoryWritable(_ url: URL) -> Bool {
+    nonisolated private static func isDirectoryWritable(_ url: URL) -> Bool {
         let probe = url.appendingPathComponent(".osaurus_write_probe_\(UUID().uuidString)")
         do {
             try Data().write(to: probe)
@@ -536,15 +536,13 @@ public actor ModelRuntime {
     nonisolated static func isKnownHybridModel(name: String) -> Bool {
         let lower = name.lowercased()
         // Mamba+Attn+MoE — Nemotron-3 / Cascade-2 / Hyper.
-        if lower.contains("nemotron-3") || lower.contains("nemotron-cascade")
-            || lower.contains("nemotron_h")
-        {
+        let nemotronMarkers = ["nemotron-3", "nemotron-cascade", "nemotron_h"]
+        if nemotronMarkers.contains(where: lower.contains) {
             return true
         }
         // Qwen 3.5 / 3.6 MoE family (qwen3_5_moe model_type) covers Holo3 too.
-        if lower.contains("qwen3.5") || lower.contains("qwen3.6") || lower.contains("holo3")
-            || lower.contains("holo-3")
-        {
+        let qwenMoEMarkers = ["qwen3.5", "qwen3.6", "holo3", "holo-3"]
+        if qwenMoEMarkers.contains(where: lower.contains) {
             return true
         }
         // MiniMax M2 / M2.7 — gated SSM in some layers.
@@ -845,7 +843,7 @@ public actor ModelRuntime {
 
     /// Computes a deterministic hash from system content and tool names.
     /// Used by the HTTP API to expose a prefix_hash field in responses.
-    public nonisolated static func computePrefixHash(
+    nonisolated public static func computePrefixHash(
         systemContent: String,
         toolNames: [String]
     ) -> String {
@@ -957,7 +955,8 @@ public actor ModelRuntime {
             return messages
         }
 
-        let systemText = messages
+        let systemText =
+            messages
             .compactMap { message -> String? in
                 guard message.role == "system",
                     let content = message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -990,12 +989,13 @@ public actor ModelRuntime {
             content: mergedContent,
             contentParts: mergedParts,
             tool_calls: user.tool_calls,
-            tool_call_id: user.tool_call_id
+            tool_call_id: user.tool_call_id,
+            reasoning_content: user.reasoning_content
         )
         return adapted
     }
 
-    private nonisolated static func mergeSystemPreamble(
+    nonisolated private static func mergeSystemPreamble(
         _ preamble: String,
         withUserContent content: String?
     ) -> String {
@@ -1013,7 +1013,7 @@ public actor ModelRuntime {
             """
     }
 
-    private nonisolated static func prependSystemPreamble(
+    nonisolated private static func prependSystemPreamble(
         _ preamble: String,
         mergedContent: String,
         to contentParts: [MessageContentPart]?
@@ -1148,11 +1148,11 @@ public actor ModelRuntime {
             if urlString.hasPrefix("data:image/") {
                 if let commaIndex = urlString.firstIndex(of: ",") {
                     let base64String = String(urlString[urlString.index(after: commaIndex)...])
-                    if let imageData = Data(base64Encoded: base64String),
+                    guard
+                        let imageData = Data(base64Encoded: base64String),
                         let ciImage = CIImage(data: imageData)
-                    {
-                        sources.append(.ciImage(ciImage))
-                    }
+                    else { continue }
+                    sources.append(.ciImage(ciImage))
                 }
             } else if let url = URL(string: urlString) {
                 sources.append(.url(url))
@@ -1285,14 +1285,13 @@ public actor ModelRuntime {
             )
         else { return 0 }
         var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            if fileURL.pathExtension.lowercased() == "safetensors" {
-                if let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
-                    let size = attrs[.size] as? NSNumber
-                {
-                    total += size.int64Value
-                }
-            }
+        for case let fileURL as URL in enumerator
+        where fileURL.pathExtension.lowercased() == "safetensors" {
+            guard
+                let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
+                let size = attrs[.size] as? NSNumber
+            else { continue }
+            total += size.int64Value
         }
         return total
     }
@@ -1413,9 +1412,8 @@ public actor ModelRuntime {
         do {
             try validateJANGTQSidecarIfRequired(at: directory, name: name)
             return
-        } catch let error as NSError
-            where error.domain == "ModelRuntime" && error.code == 2
-        {
+        } catch let error as NSError {
+            guard error.domain == "ModelRuntime", error.code == 2 else { throw error }
             // Forward mismatch: stamp says mxtq, sidecar missing. Try one HF fetch.
             // Build the candidate id list: canonical `<org>/<repo>` first,
             // then — for flat-layout local ids that aren't directly mappable
@@ -1644,7 +1642,7 @@ public actor ModelRuntime {
     /// global, and so each test's override is naturally scoped to its own
     /// task tree via `withValue { ... }`.
     @TaskLocal
-    static var sidecarFetcherForTests: (@Sendable (_ url: URL, _ dest: URL) async throws -> Void)? = nil
+    static var sidecarFetcherForTests: (@Sendable (_ url: URL, _ dest: URL) async throws -> Void)?
 
     /// Pure, testable sibling of `findLocalDirectory` that takes the root
     /// explicitly. Exposed at module scope so the symlink-resolution
@@ -1667,10 +1665,10 @@ public actor ModelRuntime {
         // that discovery path already resolves symlinks per-level, so keeping
         // the two symmetric here closes the asymmetry.
         let resolved = url.resolvingSymlinksInPath()
-        let hasConfig = fm.fileExists(atPath: resolved.appendingPathComponent("config.json").path)
-        if let items = try? fm.contentsOfDirectory(at: resolved, includingPropertiesForKeys: nil),
-            hasConfig && items.contains(where: { $0.pathExtension == "safetensors" })
-        {
+        guard fm.fileExists(atPath: resolved.appendingPathComponent("config.json").path),
+            let items = try? fm.contentsOfDirectory(at: resolved, includingPropertiesForKeys: nil)
+        else { return nil }
+        if items.contains(where: { $0.pathExtension == "safetensors" }) {
             return resolved
         }
         return nil
