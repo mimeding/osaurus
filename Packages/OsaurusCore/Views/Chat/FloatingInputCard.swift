@@ -31,16 +31,16 @@ struct FloatingInputCard: View {
     /// Trigger to focus the input field (increment to focus)
     var focusTrigger: Int = 0
     /// Current agent ID (used for agent-specific settings)
-    var agentId: UUID? = nil
+    var agentId: UUID?
     /// Window ID for targeted VAD notifications
-    var windowId: UUID? = nil
+    var windowId: UUID?
     /// Compact mode (sidebar open) - hides secondary chip content
     var isCompact: Bool = false
     /// Callback to clear the current chat session (triggered by /clear command).
-    var onClearChat: (() -> Void)? = nil
+    var onClearChat: (() -> Void)?
     /// Callback when the user selects a skill slash command. Passes the skill UUID so the
     /// caller can inject that skill's instructions as one-off context for the next send.
-    var onSkillSelected: ((UUID) -> Void)? = nil
+    var onSkillSelected: ((UUID) -> Void)?
     /// Binding to the session's pending one-off skill. Non-nil shows a dismissable skill chip.
     @Binding var pendingSkillId: UUID?
 
@@ -144,7 +144,7 @@ struct FloatingInputCard: View {
     @State private var contextHoverTask: Task<Void, Never>?
     @State private var isSandboxHovered = false
     @State private var sandboxPulseAmount: CGFloat = 1.0
-    @State private var sandboxPulseTask: Task<Void, Never>? = nil
+    @State private var sandboxPulseTask: Task<Void, Never>?
     @State private var isClipboardHovered = false
     @State private var clipboardPulseAmount: CGFloat = 0.0
     @State private var clipboardPulseOpacity: Double = 0.0
@@ -168,7 +168,7 @@ struct FloatingInputCard: View {
     /// Tracks confirmed transcription length to detect actual changes (for silence timeout)
     @State private var lastConfirmedLength: Int = 0
 
-    @State private var pauseTimerCancellable: AnyCancellable? = nil
+    @State private var pauseTimerCancellable: AnyCancellable?
 
     // TextEditor should grow up to ~6 lines before scrolling
     private var inputFontSize: CGFloat { CGFloat(theme.bodySize) }
@@ -225,7 +225,7 @@ struct FloatingInputCard: View {
         }
         if let info = ModelInfo.load(modelId: model),
             let ctx = info.model.contextLength
-        {
+        {  // swiftlint:disable:this opening_brace
             return ctx
         }
         return nil
@@ -262,7 +262,7 @@ struct FloatingInputCard: View {
                 || isSandboxAvailable
                 || (appConfig.chatConfig.enableClipboardMonitoring && clipboardService.hasNewContent))
                 && !showVoiceOverlay
-            {
+            {  // swiftlint:disable:this opening_brace
                 selectorRow
                     .padding(.top, 8)
                     .padding(.horizontal, 20)
@@ -329,6 +329,7 @@ struct FloatingInputCard: View {
     }
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = ChatPerfTrace.shared.count("body.FloatingInputCard")
         mainContent
             .onAppear {
@@ -563,7 +564,7 @@ struct FloatingInputCard: View {
 // MARK: - Voice Debug Helpers
 
 /// Standalone log helper so VoiceDebugObservers can call it without a card reference.
-fileprivate func voiceDebugLog(
+private func voiceDebugLog(
     trigger: String,
     enabled: Bool,
     micPermission: Bool,
@@ -989,7 +990,7 @@ extension FloatingInputCard {
     private var pendingSkillChipView: some View {
         if let skillId = pendingSkillId,
             let skill = SkillManager.shared.skill(for: skillId)
-        {
+        {  // swiftlint:disable:this opening_brace
             HStack(spacing: 5) {
                 Image(systemName: "wand.and.stars")
                     .font(.system(size: 11, weight: .medium))
@@ -1281,7 +1282,7 @@ extension FloatingInputCard {
     private var thinkingToggleChip: some View {
         if let model = selectedModel,
             let thinkingOpt = ModelProfileRegistry.profile(for: model)?.thinkingOption
-        {
+        {  // swiftlint:disable:this opening_brace
             let isCurrentlyEnabled = activeModelOptions[thinkingOpt.id]?.boolValue ?? false
             let isEnabled = thinkingOpt.inverted ? !isCurrentlyEnabled : isCurrentlyEnabled
 
@@ -1851,7 +1852,7 @@ extension FloatingInputCard {
                 if let data = try? Data(contentsOf: url),
                     let nsImage = NSImage(data: data),
                     let pngData = nsImage.pngData()
-                {
+                {  // swiftlint:disable:this opening_brace
                     withAnimation(theme.springAnimation()) {
                         pendingAttachments.append(.image(pngData))
                         clipboardService.markAsRead()
@@ -2186,7 +2187,7 @@ extension FloatingInputCard {
             if let data = try? Data(contentsOf: url), data.count <= maxImageSize,
                 let nsImage = NSImage(data: data),
                 let pngData = nsImage.pngData()
-            {
+            {  // swiftlint:disable:this opening_brace
                 appendAttachment(.image(pngData))
             }
             return
@@ -2290,14 +2291,14 @@ extension FloatingInputCard {
                     DispatchQueue.main.async {
                         if let nsImage = NSImage(data: data),
                             let pngData = nsImage.pngData()
-                        {
+                        {  // swiftlint:disable:this opening_brace
                             appendAttachment(.image(pngData))
                         }
                     }
                 }
             } else if cap.supportsAudio,
                 provider.hasItemConformingToTypeIdentifier(UTType.audio.identifier)
-            {
+            {  // swiftlint:disable:this opening_brace
                 handled = true
                 // Audio path — load via fileURL so we get the extension,
                 // not raw data identifier.
@@ -2312,7 +2313,7 @@ extension FloatingInputCard {
             } else if cap.supportsVideo,
                 provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)
                     || provider.hasItemConformingToTypeIdentifier(UTType.video.identifier)
-            {
+            {  // swiftlint:disable:this opening_brace
                 handled = true
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
                     guard let urlData = item as? Data,
@@ -2324,7 +2325,7 @@ extension FloatingInputCard {
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 handled = true
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, error in
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
                     guard let data = item as? Data,
                         let url = URL(dataRepresentation: data, relativeTo: nil)
                     else { return }
@@ -2689,7 +2690,7 @@ class PasteMonitorView: NSView {
         if let imageData = pasteboard.data(forType: .tiff),
             let nsImage = NSImage(data: imageData),
             let pngData = nsImage.pngData()
-        {
+        {  // swiftlint:disable:this opening_brace
             onImagePaste?(pngData)
             return true
         }
@@ -2702,7 +2703,7 @@ class PasteMonitorView: NSView {
                     let data = try? Data(contentsOf: url),
                     let nsImage = NSImage(data: data),
                     let pngData = nsImage.pngData()
-                {
+                {  // swiftlint:disable:this opening_brace
                     onImagePaste?(pngData)
                     return true
                 }
@@ -3484,7 +3485,7 @@ private struct StopButton: View {
 
 // MARK: - Resume Button
 
-/// Polished resume button with accent color
+// Polished resume button with accent color
 // MARK: - Preview
 
 #if DEBUG
