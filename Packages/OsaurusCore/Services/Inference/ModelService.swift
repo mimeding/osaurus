@@ -132,7 +132,7 @@ public enum StreamingToolHint: Sendable {
         struct Payload: Encodable { let id, name, arguments, result: String }
         let json =
             (try? JSONEncoder().encode(Payload(id: callId, name: name, arguments: arguments, result: result)))
-            .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            .flatMap { String(bytes: $0, encoding: .utf8) } ?? "{}"
         return donePrefix + json
     }
 

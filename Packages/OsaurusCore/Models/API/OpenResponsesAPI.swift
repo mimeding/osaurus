@@ -21,8 +21,11 @@ public struct OpenResponsesRequest: Codable, Sendable {
     public let model: String
     /// Input content - can be a string or array of input items
     public let input: OpenResponsesInput
+    // Omission carries provider-default semantics that differ from explicitly sending false.
+    // swiftlint:disable discouraged_optional_boolean
     /// Whether to stream the response
     public let stream: Bool?
+    // swiftlint:enable discouraged_optional_boolean
     /// Available tools for the model to use
     public let tools: [OpenResponsesTool]?
     /// Tool choice configuration
@@ -299,9 +302,7 @@ public enum OpenResponsesToolChoice: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         // Try decoding as string first
-        if let container = try? decoder.singleValueContainer(),
-            let str = try? container.decode(String.self)
-        {
+        if let str = try? decoder.singleValueContainer().decode(String.self) {
             switch str {
             case "auto": self = .auto
             case "none": self = .none
@@ -856,7 +857,7 @@ extension OpenResponsesRequest {
         }
 
         // Convert tools
-        var openAITools: [Tool]? = nil
+        var openAITools: [Tool]?
         if let tools = tools {
             openAITools = tools.map { tool in
                 Tool(
@@ -871,7 +872,7 @@ extension OpenResponsesRequest {
         }
 
         // Convert tool choice
-        var openAIToolChoice: ToolChoiceOption? = nil
+        var openAIToolChoice: ToolChoiceOption?
         if let choice = tool_choice {
             switch choice {
             case .auto:

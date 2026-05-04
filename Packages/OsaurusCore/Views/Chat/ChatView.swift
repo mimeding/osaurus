@@ -50,7 +50,7 @@ final class ChatSession: ObservableObject {
     let expandedBlocksStore = ExpandedBlocksStore()
     @Published var input: String = ""
     @Published var pendingAttachments: [Attachment] = []
-    @Published var selectedModel: String? = nil
+    @Published var selectedModel: String?
     @Published var pickerItems: [ModelPickerItem] = []
     @Published var activeModelOptions: [String: ModelOptionValue] = [:]
     @Published var hasAnyModel: Bool = false
@@ -678,9 +678,7 @@ final class ChatSession: ObservableObject {
         // fall back to the agent's preferred model. `isLoadingModel`
         // suppresses the auto-persist sink so a load doesn't look like
         // the user just picked a model.
-        if let savedModel = data.selectedModel,
-            pickerItems.contains(where: { $0.id == savedModel })
-        {
+        if let savedModel = data.selectedModel, pickerItems.contains(where: { $0.id == savedModel }) {
             isLoadingModel = true
             selectedModel = savedModel
             isLoadingModel = false
@@ -797,9 +795,8 @@ final class ChatSession: ObservableObject {
         // marker-only string from before the envelope migration) are
         // accepted too so plugin authors who emit raw markers keep working.
         let markerText: String
-        if let payload = ToolEnvelope.successPayload(toolResult) as? [String: Any],
-            let text = payload["text"] as? String
-        {
+        let payload = ToolEnvelope.successPayload(toolResult) as? [String: Any]
+        if let text = payload?["text"] as? String {
             markerText = text
         } else {
             markerText = toolResult
@@ -959,12 +956,11 @@ final class ChatSession: ObservableObject {
     }
 
     private func trimTrailingEmptyAssistantTurn() {
-        if let lastTurn = turns.last,
-            lastTurn.role == .assistant,
-            lastTurn.contentIsEmpty,
-            lastTurn.toolCalls == nil,
-            !lastTurn.hasThinking
-        {
+        if let lastTurn = turns.last {
+            let isTrailingEmptyAssistant =
+                lastTurn.role == .assistant && lastTurn.contentIsEmpty && lastTurn.toolCalls == nil
+                && !lastTurn.hasThinking
+            guard isTrailingEmptyAssistant else { return }
             turns.removeLast()
         }
     }
@@ -1840,9 +1836,8 @@ final class ChatSession: ObservableObject {
                                 // proper summary.
                             }
                             if inv.toolName == "clarify" {
-                                if !ToolEnvelope.isError(resultText),
-                                    let payload = Self.parseClarifyPayload(from: inv.jsonArguments)
-                                {
+                                let clarifyPayload = Self.parseClarifyPayload(from: inv.jsonArguments)
+                                if !ToolEnvelope.isError(resultText), let payload = clarifyPayload {
                                     // Build a ClarifyPromptState bound to
                                     // `self.send(...)` so the user's answer
                                     // dispatches as the next user turn
@@ -1870,10 +1865,10 @@ final class ChatSession: ObservableObject {
 
                             // Hot-load tools injected by capabilities_load or sandbox_plugin_register.
                             // Skipped in manual mode — the user's explicit tool set is fixed.
-                            if !isManualTools,
-                                inv.toolName == "capabilities_load"
-                                    || inv.toolName == "sandbox_plugin_register"
-                            {
+                            let canHotLoadTools =
+                                !isManualTools
+                                && (inv.toolName == "capabilities_load" || inv.toolName == "sandbox_plugin_register")
+                            if canHotLoadTools {
                                 let newTools = await CapabilityLoadBuffer.shared.drain()
                                 for tool in newTools
                                 where !toolSpecs.contains(where: { $0.function.name == tool.function.name }) {
@@ -1905,9 +1900,8 @@ final class ChatSession: ObservableObject {
                                 }
                             }
 
-                            if inv.toolName == "sandbox_secret_set",
-                                let prompt = SecretPromptParser.parse(resultText)
-                            {
+                            let secretPrompt = SecretPromptParser.parse(resultText)
+                            if inv.toolName == "sandbox_secret_set", let prompt = secretPrompt {
                                 let stored: Bool = await withCheckedContinuation { continuation in
                                     let promptState = SecretPromptState(
                                         key: prompt.key,
@@ -2043,13 +2037,13 @@ struct ChatView: View {
     @State private var editText: String = ""
     @State private var userImagePreview: NSImage?
     // Bonjour agent connection
-    @State private var pendingDiscoveredAgent: DiscoveredAgent? = nil
+    @State private var pendingDiscoveredAgent: DiscoveredAgent?
     // Minimap
     @State private var activeMinimapTurnId: UUID?
     @State private var scrollToTurnId: UUID?
     @State private var scrollToTurnTrigger: Int = 0
     // What's New modal
-    @State private var pendingWhatsNew: WhatsNewRelease? = nil
+    @State private var pendingWhatsNew: WhatsNewRelease?
 
     /// Convenience accessor for the window's theme
     private var theme: ThemeProtocol { windowState.theme }
@@ -2119,6 +2113,8 @@ struct ChatView: View {
     }
 
     var body: some View {
+        // ViewBuilder treats plain assignment as a view expression; the local binding keeps tracing side-effect-only.
+        // swiftlint:disable:next redundant_discardable_let
         let _ = ChatPerfTrace.shared.count("body.ChatView")
         chatModeContent
             .themedAlertScope(.chat(windowState.windowId))
@@ -2762,11 +2758,13 @@ private struct IsolatedThreadView: View {
     let onConfirmEdit: (() -> Void)?
     let onCancelEdit: (() -> Void)?
     let onUserImagePreview: ((String) -> Void)?
-    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)? = nil
-    var scrollToTurnId: UUID? = nil
+    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)?
+    var scrollToTurnId: UUID?
     var scrollToTurnTrigger: Int = 0
 
     var body: some View {
+        // ViewBuilder treats plain assignment as a view expression; the local binding keeps tracing side-effect-only.
+        // swiftlint:disable:next redundant_discardable_let
         let _ = ChatPerfTrace.shared.count("body.IsolatedThreadView")
         MessageThreadView(
             blocks: store.blocks,
@@ -2814,10 +2812,9 @@ extension ChatView {
                 }
             }
         }
-        if let url = sharedArtifactImageURL(artifactId: attachmentId),
-            let data = try? Data(contentsOf: url),
-            let img = NSImage(data: data)
-        {
+        let sharedURL = sharedArtifactImageURL(artifactId: attachmentId)
+        let sharedData = sharedURL.flatMap { try? Data(contentsOf: $0) }
+        if let data = sharedData, let img = NSImage(data: data) {
             userImagePreview = img
         }
     }
@@ -3033,7 +3030,7 @@ private struct PairingSheet: View {
     let onCancel: () -> Void
 
     @State private var isPairing = false
-    @State private var errorMessage: String? = nil
+    @State private var errorMessage: String?
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -3139,17 +3136,17 @@ private enum PairingClient {
         let context = LAContext()
         context.touchIDAuthenticationAllowableReuseDuration = 300
 
-        var masterKey = try MasterKey.getPrivateKey(context: context)
+        var pairingPrivateKey = try MasterKey.getPrivateKey(context: context)
         defer {
-            masterKey.withUnsafeMutableBytes { ptr in
+            pairingPrivateKey.withUnsafeMutableBytes { ptr in
                 if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
             }
         }
 
-        let connectorAddress = try PairingKey.deriveAddress(masterKey: masterKey)
+        let connectorAddress = try PairingKey.deriveAddress(masterKey: pairingPrivateKey)
         let nonce = UUID().uuidString
 
-        let signature = try PairingKey.sign(payload: Data(nonce.utf8), masterKey: masterKey)
+        let signature = try PairingKey.sign(payload: Data(nonce.utf8), masterKey: pairingPrivateKey)
         let hexSig = "0x" + signature.hexEncodedString
 
         let rawHost = agent.host ?? ""

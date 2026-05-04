@@ -13,7 +13,7 @@ import Foundation
 public enum OsaurusPaths {
     /// Optional root directory override for tests
     /// Note: nonisolated(unsafe) since this is only set during test setup before any concurrent access
-    public nonisolated(unsafe) static var overrideRoot: URL?
+    nonisolated(unsafe) public static var overrideRoot: URL?
 
     // MARK: - Root Directory
 
@@ -164,14 +164,12 @@ public enum OsaurusPaths {
     public static func volumeFreeBytes(forPath path: String) -> Int64? {
         let url = URL(fileURLWithPath: path)
         let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey]
-        if let values = try? url.resourceValues(forKeys: keys),
-            let capacity = values.volumeAvailableCapacityForImportantUsage
-        {
+        let values = try? url.resourceValues(forKeys: keys)
+        if let capacity = values?.volumeAvailableCapacityForImportantUsage {
             return capacity
         }
-        if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path),
-            let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value
-        {
+        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path)
+        if let free = (attrs?[.systemFreeSize] as? NSNumber)?.int64Value {
             return free
         }
         return nil
@@ -183,14 +181,12 @@ public enum OsaurusPaths {
     public static func volumeTotalBytes(forPath path: String) -> Int64? {
         let url = URL(fileURLWithPath: path)
         let keys: Set<URLResourceKey> = [.volumeTotalCapacityKey]
-        if let values = try? url.resourceValues(forKeys: keys),
-            let capacity = values.volumeTotalCapacity
-        {
+        let values = try? url.resourceValues(forKeys: keys)
+        if let capacity = values?.volumeTotalCapacity {
             return Int64(capacity)
         }
-        if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path),
-            let total = (attrs[.systemSize] as? NSNumber)?.int64Value
-        {
+        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path)
+        if let total = (attrs?[.systemSize] as? NSNumber)?.int64Value {
             return total
         }
         return nil
@@ -439,30 +435,24 @@ public enum OsaurusPaths {
     /// resource keys; legacy filesystem attributes can return zero for some
     /// sandboxed container paths.
     public static func volumeFreeBytes(containing url: URL) -> Int64? {
-        if let values = try? url.resourceValues(
-            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
-        ),
-            let capacity = values.volumeAvailableCapacityForImportantUsage
-        {
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        if let capacity = values?.volumeAvailableCapacityForImportantUsage {
             return capacity
         }
-        if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: url.path),
-            let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value
-        {
+        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: url.path)
+        if let free = (attrs?[.systemFreeSize] as? NSNumber)?.int64Value {
             return free
         }
         return nil
     }
 
     public static func volumeTotalBytes(containing url: URL) -> Int64? {
-        if let values = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey]),
-            let capacity = values.volumeTotalCapacity
-        {
+        let values = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey])
+        if let capacity = values?.volumeTotalCapacity {
             return Int64(capacity)
         }
-        if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: url.path),
-            let total = (attrs[.systemSize] as? NSNumber)?.int64Value
-        {
+        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: url.path)
+        if let total = (attrs?[.systemSize] as? NSNumber)?.int64Value {
             return total
         }
         return nil

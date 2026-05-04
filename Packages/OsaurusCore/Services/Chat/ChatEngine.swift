@@ -7,7 +7,7 @@
 
 import Foundation
 
-actor ChatEngine: Sendable, ChatEngineProtocol {
+actor ChatEngine: ChatEngineProtocol {
     private let services: [ModelService]
     private let installedModelsProvider: @Sendable () -> [String]
 
@@ -312,8 +312,8 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
             var outputTokenCount = 0
             var deltaCount = 0
             var finishReason: InferenceLog.FinishReason = .stop
-            var errorMsg: String? = nil
-            var toolInvocation: (name: String, args: String)? = nil
+            var errorMsg: String?
+            var toolInvocation: (name: String, args: String)?
             var lastDeltaTime = startTime
 
             print("[Osaurus][Stream] Starting stream wrapper for model: \(model)")
@@ -386,7 +386,7 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
             // Log the completed inference (only for Chat UI - HTTP requests are logged by HTTPHandler)
             if source == .chatUI {
                 let durationMs = Date().timeIntervalSince(startTime) * 1000
-                var toolCalls: [ToolCallLog]? = nil
+                var toolCalls: [ToolCallLog]?
                 if let (name, args) = toolInvocation {
                     toolCalls = [ToolCallLog(name: name, arguments: args)]
                 }
