@@ -223,20 +223,10 @@ final class NativeChartView: NSView {
     ) -> (AAOptions, [AASeriesElement]) {
         let gridHex = NSColor(theme.primaryBorder).withAlphaComponent(0.2).hexString
 
-        // Pie charts read each slice's label from a `name` field on the data
-        // point itself — they ignore the model's `categories` array. Bar/line/etc.
-        // use `categories` for x-axis labels so plain numeric data is fine there
-        let isPie = spec.chartType == "pie"
-        let seriesElements: [AASeriesElement] = spec.series.map { s in
-            let element = AASeriesElement().name(s.name)
-            if isPie, let cats = spec.categories {
-                let paired: [Any] = s.data.enumerated().map { idx, v -> Any in
-                    let label = idx < cats.count ? cats[idx] : "Slice \(idx + 1)"
-                    return ["name": label, "y": v as Any? ?? NSNull()] as [String: Any]
-                }
-                return element.data(paired as [AnyObject])
-            }
-            return element.data(s.data.map { v -> Any in v.map { $0 as Any } ?? NSNull() } as [AnyObject])
+        let seriesElements: [AASeriesElement] = spec.series.map { series in
+            AASeriesElement()
+                .name(series.name)
+                .data(Self.chartDataPoints(for: series, chartType: spec.chartType, categories: spec.categories))
         }
 
         let model = AAChartModel()
@@ -253,10 +243,10 @@ final class NativeChartView: NSView {
         if let categories = spec.categories {
             model.categories(categories)
         }
-        if let stacking = spec.stacking,
-            let stackingType = AAChartStackingType(rawValue: stacking)
-        {
-            model.stacking(stackingType)
+        if let stacking = spec.stacking {
+            if let stackingType = AAChartStackingType(rawValue: stacking) {
+                model.stacking(stackingType)
+            }
         }
         if let colors = spec.colorsTheme {
             model.colorsTheme(colors)
@@ -273,6 +263,41 @@ final class NativeChartView: NSView {
         options.legend?.itemStyle(AAStyle().color(textHex).fontSize(12).fontWeight(.regular))
 
         return (options, seriesElements)
+    }
+
+    static func chartDataPoints(
+        for series: ChartSeries,
+        chartType: String,
+        categories: [String]?
+    ) -> [AnyObject] {
+        guard chartType == "pie" else {
+            return series.data.map { value -> AnyObject in
+                (value.map { $0 as Any } ?? NSNull()) as AnyObject
+            }
+        }
+
+        return series.data.enumerated().map { index, value -> AnyObject in
+            let yValue = value.map { $0 as Any } ?? NSNull()
+            return [
+                "name": Self.sliceName(at: index, categories: categories),
+                "y": yValue,
+            ] as NSDictionary
+        }
+    }
+
+    private static func sliceName(at index: Int, categories: [String]?) -> String {
+        guard let category = categories?[safe: index],
+            !category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return "Slice \(index + 1)"
+        }
+        return category
+    }
+}
+
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 
