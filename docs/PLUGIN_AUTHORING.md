@@ -21,6 +21,7 @@ This document describes how to build external plugins for Osaurus using the Gene
   - [Plugin Skills (SKILL.md)](#plugin-skills-skillmd)
   - [Plugin Documentation](#plugin-documentation)
   - [Artifact Handling](#artifact-handling)
+  - [Business File Formats](#business-file-formats)
 - [Host API Reference](#host-api-reference)
   - [Config Store](#config-store)
   - [Data Store](#data-store)
@@ -1127,6 +1128,47 @@ const char* invoke(osr_plugin_ctx_t ctx, const char* type,
 - The plugin's `invoke` return value is not used by the host for artifact notifications — it is fire-and-forget.
 - Only plugins with ABI version 2 or higher are eligible for artifact handling.
 - Artifacts produced during plugin-initiated inference (`complete` / `complete_stream` with `share_artifact` in the agentic loop) are fully processed and trigger artifact handler notifications, just like artifacts produced from a chat session.
+
+### Business File Formats
+
+Osaurus has an internal document-format registry that splits read-side adapters from write-side emitters. That split is the intended shape for high-fidelity business-file plugins:
+
+- **Parser/adapter side** — Claim a file format, parse bytes into a typed document representation, and provide a text view for the agent.
+- **Emitter side** — Claim a typed document representation and write a concrete file format such as PPTX.
+- **Enhancement side** — Optionally call out to locally installed office software for validation, PDF export, or preview generation.
+
+On current `main`, this split is represented in Swift by `DocumentFormatRegistry.register(adapter:)` and `DocumentFormatRegistry.register(emitter:)`. The plugin C ABI does not yet expose host callbacks named `register_parser` or `register_emitter`, so external plugins should not rely on those names as shipped API. Until that ABI surface exists, use normal plugin tools and artifact handling to create, read, validate, or share business files.
+
+#### Intended PPTX Split
+
+A PPTX plugin should keep native generation separate from enhanced office-runtime work:
+
+```json
+{
+  "plugin_id": "com.acme.pptx",
+  "version": "1.0.0",
+  "description": "Creates and validates PowerPoint presentations",
+  "capabilities": {
+    "tools": [
+      {
+        "id": "create_presentation",
+        "description": "Generate a PPTX file from a structured deck outline"
+      },
+      {
+        "id": "validate_presentation",
+        "description": "Validate a PPTX with an optional local office runtime"
+      },
+      {
+        "id": "export_presentation_pdf",
+        "description": "Export PDF when LibreOffice or OpenOffice is available"
+      }
+    ],
+    "artifact_handler": true
+  }
+}
+```
+
+Native PPTX generation should work without external office software. Enhanced validation, PDF export, and slide previews should detect LibreOffice or OpenOffice at runtime and report a clear unavailable state when neither is installed.
 
 ---
 

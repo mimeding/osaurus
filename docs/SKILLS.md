@@ -232,6 +232,25 @@ No per-agent skill configuration is needed. The system automatically matches the
 
 ---
 
+## High-fidelity business files
+
+Business-file workflows use the same on-demand skill activation model as other Osaurus skills. Specialized skills such as `presentation-content-producer` and `document-data-analyst` should be installed and discoverable by default, but they should not be loaded into every chat.
+
+The lightest activation strategy is:
+
+1. Keep the skill package installed so preflight search and runtime discovery can find it.
+2. Give the skill a precise description that names the work it owns, such as presentation narrative, slide structure, spreadsheet analysis, or document data extraction.
+3. Let preflight capability search select the skill only when the user asks for that kind of business-file work.
+4. Use runtime discovery (`capabilities_search` then `capabilities_load`) when a conversation shifts into business-file work after it has already started.
+
+`presentation-content-producer` is intended for presentation planning and content decisions: storyline, audience fit, slide-by-slide structure, speaker notes, and refinement passes before or after a PPTX artifact is produced.
+
+`document-data-analyst` is intended for analytical document work: extracting tables and facts, summarizing business documents, checking consistency, and turning structured document or spreadsheet content into analysis.
+
+This keeps ordinary chats lean while still making high-fidelity business-file skills available at the moment they are useful.
+
+---
+
 ## Troubleshooting
 
 ### Skills not appearing in chat

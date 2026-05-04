@@ -15,6 +15,7 @@ Canonical reference for all Osaurus features, their status, and documentation.
 | Remote MCP Providers             | Stable    | "Key Features"     | REMOTE_MCP_PROVIDERS.md       | Managers/MCPProviderManager.swift, Tools/MCPProviderTool.swift                        |
 | MCP Server                       | Stable    | "MCP Server"       | (in README)                   | Networking/OsaurusServer.swift, Services/MCP/MCPServerManager.swift                       |
 | Tools & Plugins                  | Stable    | "Tools & Plugins"  | PLUGIN_AUTHORING.md           | Tools/, Managers/Plugin/PluginManager.swift, Services/Plugin/PluginHostAPI.swift, Storage/PluginDatabase.swift, Models/Plugin/PluginHTTP.swift, Views/Plugin/PluginConfigView.swift |
+| Business File Runtime            | Experimental | "Tools & Plugins" | OFFICE_RUNTIME.md             | Managers/Documents/DocumentFormatRegistry.swift, Models/Documents/DocumentFormatAdapter.swift, Models/Documents/DocumentFormatEmitter.swift |
 | Skills                           | Stable    | "Skills"           | SKILLS.md                     | Managers/SkillManager.swift, Views/Skill/SkillsView.swift, Services/Skill/SkillSearchService.swift |
 | Methods                          | Stable    | "Skills & Methods" | SKILLS.md                     | Models/Method/Method.swift, Services/Method/MethodService.swift, Services/Method/MethodSearchService.swift, Storage/MethodDatabase.swift |
 | Context Management               | Stable    | -                  | SKILLS.md                     | Services/Context/PreflightCapabilitySearch.swift, Tools/CapabilityTools.swift, Services/Tool/ToolSearchService.swift, Services/Tool/ToolIndexService.swift |
@@ -744,6 +745,29 @@ See [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md) for the full reference.
 
 ---
 
+### Business File Runtime
+
+**Purpose:** Support high-fidelity office artifacts with native paths first and optional office-runtime enhancement when available.
+
+**Components:**
+
+- `Managers/Documents/DocumentFormatRegistry.swift` — Process-wide registry for document adapters, emitters, and streamers
+- `Models/Documents/DocumentFormatAdapter.swift` — Read-side format adapter protocol
+- `Models/Documents/DocumentFormatEmitter.swift` — Write-side format emitter protocol
+- `Models/Documents/StructuredDocument.swift` — Typed document representation plus text view for agent context
+
+**PPTX capability model:**
+
+| Capability                         | User-facing meaning                                           |
+| ---------------------------------- | ------------------------------------------------------------- |
+| **PPTX: Native**                   | PPTX workflows that do not require external office software   |
+| **PPTX: Enhanced with LibreOffice** | Validation, PDF export, and slide previews via office runtime |
+| **LibreOffice not found**          | Enhanced preview/export unavailable; native PPTX remains usable |
+
+LibreOffice and OpenOffice are optional. Osaurus should detect them on demand, never bundle them, and never force installation. See [OFFICE_RUNTIME.md](OFFICE_RUNTIME.md) for runtime detection, supported enhanced flows, and install-hint wording.
+
+---
+
 ### Skills
 
 **Purpose:** Import and manage reusable AI capabilities following the Agent Skills specification.
@@ -1125,6 +1149,7 @@ Eight settings total, down from v1's 18. The per-section budget knobs, MMR tunin
 | [MEMORY.md](MEMORY.md)                                         | Memory system and configuration guide            |
 | [SANDBOX.md](SANDBOX.md)                                       | Sandbox VM and plugin guide                       |
 | [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md)                     | Creating custom plugins                           |
+| [OFFICE_RUNTIME.md](OFFICE_RUNTIME.md)                         | Optional office runtime detection and enhanced business-file flows |
 | [OpenAI_API_GUIDE.md](OpenAI_API_GUIDE.md)                     | API usage, tool calling, streaming                |
 | [SHARED_CONFIGURATION_GUIDE.md](SHARED_CONFIGURATION_GUIDE.md) | Shared configuration for teams                    |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                             | Contribution guidelines                           |
