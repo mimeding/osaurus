@@ -204,7 +204,7 @@ public final class TTSService: ObservableObject {
             repoDir,
             repoDir
                 .appendingPathComponent("v2", isDirectory: true)
-                .appendingPathComponent("english", isDirectory: true)
+                .appendingPathComponent("english", isDirectory: true),
         ]
         let required = ModelNames.PocketTTS.requiredModels
         let fm = FileManager.default
