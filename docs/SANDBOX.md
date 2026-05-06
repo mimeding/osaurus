@@ -120,6 +120,42 @@ Changes require a container restart to take effect.
 
 ---
 
+## SOUL.md — Per-Agent Identity Layer
+
+Every sandboxed agent gets a `SOUL.md` file at `~/SOUL.md` inside its home (host path: `~/.osaurus/container/workspace/agents/{name}/SOUL.md`). This is the agent-authored complement to the user-authored persona slot — a place for the agent to record stable preferences and patterns it learns about working with you, persisted across sessions.
+
+### What belongs in SOUL.md
+
+- Stable user preferences (tooling choices, voice, formatting).
+- Recurring patterns the user expects.
+- Working agreements established over time.
+
+### What does NOT belong
+
+- Session-specific facts → use [Memory](MEMORY.md).
+- Project-specific details → use `AGENTS.md` in folder mode.
+- Transient context.
+
+### Lifecycle
+
+| Step | When | What happens |
+|------|------|--------------|
+| Seed | First sandbox provision for an agent | A documented seed is written to `~/SOUL.md` (idempotent — never overwrites an existing soul). |
+| Read | Every chat compose in sandbox mode | Composer reads the file, caps it at 8 KB on a line boundary, and emits a `## SOUL` section into the system prompt between persona and operational directives. |
+| Edit | Any time during a sandbox session | The agent edits its own soul via `sandbox_edit_file` or `sandbox_write_file`. Edits apply on the **next** session — within the active turn the cached system prompt stays byte-stable for KV-cache reuse. |
+
+### Precedence with persona
+
+Persona (the user-authored `systemPrompt` on the Agent) wins on conflict. Two reinforcements: render order pins persona above SOUL, and the SOUL section's intro line states "the user's instructions in earlier sections take precedence." In practice the two operate at different scopes (persona = role, SOUL = preferences) and direct conflict is rare.
+
+### Reset
+
+To wipe an agent's soul, delete `~/.osaurus/container/workspace/agents/{name}/SOUL.md`. The next provision will re-seed the boilerplate; the next chat compose will pick it up.
+
+Sandbox-only by design — folder-mode agents are short-lived and project-bound.
+
+---
+
 ## Built-in Tools
 
 When the container is running, sandbox tools are automatically registered for the active agent. Read-only tools are always available. Write and execution tools require `autonomous_exec` to be enabled on the agent.
@@ -151,7 +187,7 @@ Reserve `sandbox_exec` for builds, installs, git, processes, network calls, pack
 | `sandbox_edit_file` | Edit a file by exact string replacement — `old_string` must match exactly once |
 | `sandbox_exec` | Run a shell command. Foreground (default, max 300s) **or** `background:true` for servers/long tasks (the spawn shim returns immediately with `pid` + `log_file`). Pair the background form with `sandbox_process`. |
 | `sandbox_process` | Manage background jobs: `action="poll"` (alive + log tail), `"wait"` (block until exit, capped by `timeout`), `"kill"` (`force:true` for SIGKILL). |
-| `sandbox_execute_code` | Run a Python script that imports `read_file` / `write_file` / `edit_file` / `search_files` / `terminal` / `share_artifact` from `osaurus_tools`. Use for ≥3 tool calls with logic between them. 5-min timeout, 50KB stdout cap, 50 tool calls per script. |
+| `sandbox_execute_code` | Run a Python script that imports `read_file` / `write_file` / `edit_file` / `search_files` / `terminal` from `osaurus_tools`. Use for ≥3 tool calls with logic between them. 5-min timeout, 50KB stdout cap, 50 tool calls per script. `share_artifact` is intentionally not in the helper allow-list — call it from the model layer after the script returns. |
 | `sandbox_install` | Install system packages via `apk` (runs as root). Auto-refreshes the package index before install; serializes across all agents on a single apk lock. |
 | `sandbox_pip_install` | Install Python packages into the agent's venv at `~/.venv/`. Auto-creates the venv on first use; the venv's `python3` and installed scripts are on PATH from any `sandbox_exec` cwd. 240s timeout, runs with `--disable-pip-version-check --no-input`. |
 | `sandbox_npm_install` | Install Node packages into a per-agent project workspace at `~/.osaurus/node_workspace/`. Bootstraps `package.json` on first use; installed CLI binaries are on PATH from any `sandbox_exec` cwd. 240s timeout, runs with `--no-audit --no-fund --no-update-notifier`. |
@@ -477,6 +513,7 @@ Access these operations from the **Container** tab → **Danger Zone** section.
 | `~/.osaurus/container/initfs.ext4` | Initial filesystem |
 | `~/.osaurus/container/workspace/` | Mounted as `/workspace` in the VM |
 | `~/.osaurus/container/workspace/agents/{name}/` | Per-agent home directory |
+| `~/.osaurus/container/workspace/agents/{name}/SOUL.md` | Per-agent SOUL identity layer (seeded on first provision; agent-editable) |
 | `~/.osaurus/container/output/` | Mounted as `/output` in the VM |
 | `~/.osaurus/sandbox-plugins/` | Plugin library (JSON recipes) |
 | `~/.osaurus/agents/{agentId}/sandbox-plugins/installed.json` | Per-agent installed plugin records |

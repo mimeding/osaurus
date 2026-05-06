@@ -705,7 +705,12 @@ struct FileSearchTool: OsaurusTool {
 struct ShellRunTool: OsaurusTool, PermissionedTool {
     let name = "shell_run"
     let description =
-        "Run a shell command in the working directory. This action requires approval. Output is truncated to 10,000 characters. Use for builds, tests, or other commands."
+        "Run a shell command in the working directory. **Reserve this for builds, tests, "
+        + "git, processes, network calls, and filesystem mutations (`mv`/`cp`/`rm`/`mkdir`).** "
+        + "For file IO, search, edit, write, and directory listing, prefer the dedicated "
+        + "`file_*` tools — each one's description states the `shell_run` pattern it "
+        + "replaces. This action requires approval. Output is truncated to 10,000 characters. "
+        + "Default timeout 30s, max 300s."
     let parameters: JSONValue? = .object([
         "type": .string("object"),
         "additionalProperties": .bool(false),
@@ -1006,7 +1011,10 @@ enum FolderToolFactory {
     /// go through `shell_run` rather than discrete `file_move` /
     /// `file_copy` / `file_delete` / `dir_create` tools so the model
     /// picks "shell command" once instead of differentiating four
-    /// near-identical tool names. Multi-step orchestration goes through
+    /// near-identical tool names. `shell_run` is loaded on every folder
+    /// mount (not gated on a detected project type) so the prompt's
+    /// "use `shell_run` for `mv`/`cp`/`rm`/`mkdir`" advice always
+    /// matches the schema. Multi-step orchestration goes through
     /// `shell_run` chains or — when the chat is sandbox-mode —
     /// `sandbox_execute_code`.
     static func buildCoreTools(rootPath: URL) -> [OsaurusTool] {
@@ -1016,14 +1024,7 @@ enum FolderToolFactory {
             FileWriteTool(rootPath: rootPath),
             FileEditTool(rootPath: rootPath),
             FileSearchTool(rootPath: rootPath),
-        ]
-    }
-
-    /// Build project-aware coding tools. Installed when the working folder
-    /// has a detected project type (swift/node/python/rust/go).
-    static func buildCodingTools(rootPath: URL) -> [OsaurusTool] {
-        return [
-            ShellRunTool(rootPath: rootPath)
+            ShellRunTool(rootPath: rootPath),
         ]
     }
 
@@ -1038,7 +1039,7 @@ enum FolderToolFactory {
     // Note: no `allToolNames` helper — the live tool list is the source of
     // truth (via `FolderToolManager.folderToolNames`). A hand-maintained
     // mirror would silently go stale every time a tool is added, renamed,
-    // or moved between Core/Coding/Git groups.
+    // or moved between Core/Git groups.
 }
 
 // MARK: - String Extension

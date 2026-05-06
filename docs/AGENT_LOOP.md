@@ -109,14 +109,11 @@ Built by [`FolderToolFactory`](../Packages/OsaurusCore/Folder/FolderTools.swift)
 | `file_write`    | Create or overwrite files. Use this instead of `echo`/`cat` heredoc. |
 | `file_edit`     | Surgical exact-string replacement. Use this instead of `sed`/`awk`. |
 | `file_search`   | ripgrep-style search across the folder. Use this instead of `grep`/`rg`/`find`. |
+| `shell_run`     | Execute a shell command (requires approval). Reserve for `mv`/`cp`/`rm`/`mkdir`, builds, tests, git, installs, and any work that can't be expressed via the dedicated `file_*` tools. |
 
 The previously-discrete `file_move`, `file_copy`, `file_delete`, `dir_create`, and `batch` tools were dropped — `mv`, `cp`, `rm`, and `mkdir` go through `shell_run` so the model picks "shell command" once instead of differentiating four near-identical tool names. Multi-step orchestration goes through `shell_run` chains.
 
-**Coding (registered when project type is detected):**
-
-| Tool        | Description                                |
-| ----------- | ------------------------------------------ |
-| `shell_run` | Execute a shell command (requires approval). Reserve for `mv`/`cp`/`rm`/`mkdir`, builds, installs, and any work that can't be expressed via the dedicated `file_*` tools. |
+`shell_run` lives in the core set so it's available for every folder mount, regardless of whether a project type was detected; the folder-section prompt names it unconditionally and the registration matrix has to follow.
 
 **Git (registered when the folder is a git repo):**
 
@@ -145,6 +142,8 @@ public enum ExecutionMode: Sendable {
 ```
 
 `ExecutionMode` is what the system prompt composer, tool registry, and memory layer all key off when deciding which tools and instructions to surface. The single resolver is [`ToolRegistry.resolveExecutionMode(folderContext:autonomousEnabled:)`](../Packages/OsaurusCore/Tools/ToolRegistry.swift) and its priority is **sandbox > host folder > none**: if the user has both an open folder and the autonomous-exec toggle on (with `sandbox_exec` registered), the sandbox wins. Plugin and HTTP entry points use the same resolver so the same agent gets the same mode regardless of how it's invoked.
+
+In sandbox mode, the composer also reads the agent's `~/SOUL.md` and emits it as a static `## SOUL` section between persona and the operational directives. This is the agent-authored complement to the user-authored persona slot — see the [Sandbox Guide](SANDBOX.md) for the full contract. Folder mode does not get a SOUL section; folder agents are short-lived and project-bound.
 
 ---
 

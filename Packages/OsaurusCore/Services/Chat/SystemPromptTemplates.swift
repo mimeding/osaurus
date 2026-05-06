@@ -13,13 +13,21 @@ public enum SystemPromptTemplates {
 
     // MARK: - Identity
 
-    /// Default identity used when the user has not configured a base prompt.
+    /// Platform framing — emitted unconditionally as a stable, non-customizable
+    /// section ahead of the user's persona. Tells the model where it's
+    /// running so a custom persona doesn't accidentally erase that context.
+    /// Names no tools (see `defaultPersona` for why).
+    public static let platformIdentity =
+        "You are an Osaurus chat agent running locally on the user's Mac."
+
+    /// Default persona used when the user has not configured a custom one.
     /// Frames the agent as tool-driven so models don't reflexively say
-    /// "I cannot do that" when they actually can.
+    /// "I cannot do that" when they actually can. Behavior-only — platform
+    /// framing lives separately in `platformIdentity`.
     ///
     /// **Tool names are deliberately NOT mentioned here.** Naming `todo` /
     /// `complete` / `share_artifact` / `clarify` / `capabilities_search`
-    /// in the unconditional identity caused MiniMax M2.7 Small JANGTQ
+    /// in the unconditional persona caused MiniMax M2.7 Small JANGTQ
     /// (and other low-bit MoE models) to fall into a recitation loop on
     /// any chat where those tools weren't actually in the request's
     /// `tools[]` array — the model saw the names in the system prompt,
@@ -32,20 +40,18 @@ public enum SystemPromptTemplates {
     /// which fire ONLY when the corresponding tool is actually resolved
     /// into the schema. Sandbox-/folder-tool hints are similarly gated
     /// at their composer call-sites.
-    public static let defaultIdentity = """
-        You are an Osaurus chat agent running locally on the user's Mac.
-
+    public static let defaultPersona = """
         Use the tools available in this conversation when they raise \
         correctness or ground a claim in real data; do not narrate intent \
         before acting. If no tools are listed, answer directly from your \
         own knowledge.
         """
 
-    /// Returns the effective base prompt, falling back to `defaultIdentity`
+    /// Returns the effective persona, falling back to `defaultPersona`
     /// when the user has not configured one.
-    public static func effectiveBasePrompt(_ basePrompt: String) -> String {
+    public static func effectivePersona(_ basePrompt: String) -> String {
         let trimmed = basePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? defaultIdentity : trimmed
+        return trimmed.isEmpty ? defaultPersona : trimmed
     }
 
     // MARK: - Agent Loop
@@ -84,9 +90,15 @@ public enum SystemPromptTemplates {
         Do not invent tool names — the search step is the source of truth.
         """
 
-    /// Code-style discipline injected into the sandbox section.
+    // MARK: - Cross-cutting Engineering Discipline
+
+    /// General code-style discipline. Injected into the system prompt
+    /// whenever any file-mutation tool (sandbox or folder) is in the
+    /// resolved schema. Not sandbox-specific — folder-mode agents doing
+    /// real edits get the same guardrails.
     public static let codeStyleGuidance = """
-        Code style:
+        ## Code style
+
         - Limit changes to what was requested — a bug fix does not warrant adjacent refactoring or style cleanup.
         - Do not add defensive error handling, fallback logic, or input validation for conditions that cannot arise in the current code path.
         - Do not extract helpers or utilities for logic that appears only once.
@@ -94,39 +106,72 @@ public enum SystemPromptTemplates {
         - Do not add docstrings, comments, or type annotations to code you did not modify.
         """
 
-    // MARK: - Sandbox
+    /// Risk-aware action discipline. Same gate as `codeStyleGuidance` —
+    /// fires whenever the schema includes a tool that can mutate the
+    /// user's filesystem or run arbitrary code (sandbox or folder).
+    public static let riskAwareGuidance = """
+        ## Risk-aware actions
 
-    public static func sandbox(compact: Bool, secretNames: [String] = []) -> String {
-        chatSandboxSection(compact: compact, secretNames: secretNames)
+        - Local, reversible actions (editing a file, running a test) — proceed without hesitation.
+        - Destructive or hard-to-undo actions (deleting files, `rm -rf`, dropping data) — confirm with the user first.
+        - When encountering unexpected state (unfamiliar files, unknown processes), investigate before removing anything.
+        """
+
+    // MARK: - Soul
+
+    /// Renders the SOUL section — agent-authored, sandbox-only identity
+    /// layer that complements the user-authored persona slot. Frames the
+    /// content as the agent's own notes and explicitly tells the model
+    /// that earlier sections (i.e. persona) take precedence on conflict.
+    ///
+    /// Returns `""` when `content` trims to empty so the composer's
+    /// existing `PromptSection.isEmpty` filter drops the section without
+    /// the caller having to second-guess the gate.
+    ///
+    /// Size policy (truncate at 8 KB on a line boundary) lives at the
+    /// read site in `SystemPromptComposer.resolveSoul` — keeping the
+    /// renderer pure means PR2's bootstrap seed and PR3's advert can
+    /// reuse `soulSection` without dragging in I/O.
+    public static func soulSection(_ content: String) -> String {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return """
+            ## SOUL
+
+            The agent has recorded the following stable preferences and patterns \
+            across prior sessions. These are the agent's own notes; the user's \
+            instructions in earlier sections take precedence.
+
+            \(trimmed)
+            """
     }
 
-    // MARK: Chat sandbox
+    // MARK: - Sandbox
 
-    private static func chatSandboxSection(compact: Bool, secretNames: [String]) -> String {
-        let env = compact ? sandboxEnvironmentBlockCompact : sandboxEnvironmentBlock
-        let tools = compact ? sandboxToolGuideCompact : sandboxToolGuide
-        let hints = compact ? sandboxRuntimeHintsCompact : sandboxRuntimeHints
+    /// Renders the sandbox section. Code style + risk-aware actions are
+    /// NOT included here — they live as top-level sections gated on
+    /// file-mutation tools being in the schema, so folder-mode agents
+    /// doing real edits get the same discipline.
+    public static func sandbox(secretNames: [String] = []) -> String {
         var section = """
 
             \(sandboxSectionHeading)
 
-            \(env)
+            \(sandboxEnvironmentBlock)
             Files persist across messages.
 
-            \(tools)
+            \(sandboxToolGuide)
 
-            \(hints)
+            \(sandboxRuntimeHints)
 
             """
-        if !compact {
-            section += """
-                \(sandboxCodeStyle)
-
-                \(sandboxRiskGuidance)
-
-                """
+        // The runtime hints block ends with a single `\n`; the secrets
+        // block is its own logical subsection, so prepend a blank-line
+        // separator instead of having it run on as a sixth bullet.
+        let secrets = secretsPromptBlock(secretNames)
+        if !secrets.isEmpty {
+            section += "\n" + secrets
         }
-        section += secretsPromptBlock(secretNames)
         return section
     }
 
@@ -140,60 +185,22 @@ public enum SystemPromptTemplates {
         You have access to an isolated Linux sandbox (Alpine Linux, ARM64). \
         Your workspace is your home directory inside the sandbox.
 
-        **IMPORTANT — You have full internet access in this sandbox.** You can \
-        use `curl`, `wget`, Python `requests`/`urllib`, Node `fetch`, or any \
-        HTTP client to call external APIs, download files, and fetch live data. \
-        Do NOT say you lack internet access or cannot reach external services — \
-        you can. Always prefer fetching real data over generating fake/placeholder data.
+        You have full internet access in the sandbox. Use `curl`, `wget`, \
+        Python `requests`, or Node `fetch` for live data; prefer fetched \
+        data over generated placeholders.
 
         Pre-installed: bash, python3, node, git, curl, wget, jq, ripgrep (rg), \
         sqlite3, build-base (gcc/make), cmake, vim, tree, and standard POSIX utilities.
         """
 
-    private static let sandboxEnvironmentBlockCompact = """
-        Isolated Linux sandbox (Alpine, ARM64). Home dir is your workspace. \
-        **You have full internet access.** Use `curl`, Python `requests`, or \
-        Node `fetch` to call APIs and download data. Do NOT claim you lack \
-        internet — always fetch real data. \
-        Pre-installed: bash, python3, node, git, curl, jq, rg, sqlite3, gcc/make, cmake.
-        """
-
     private static let sandboxToolGuide = """
-        Tool usage — pick the dedicated tool, not its shell equivalent:
-        - **Do NOT use `cat`/`head`/`tail` to read files** — use `sandbox_read_file`.
-        - **Do NOT use `grep`/`rg`/`find`/`ls` to search** — use `sandbox_search_files`. \
-          `target="content"` (default) searches inside files; `target="files"` finds by name.
-        - **Do NOT use `sed`/`awk` to edit files** — use `sandbox_edit_file` (old_string -> new_string).
-        - **Do NOT use `echo`/`cat` heredoc to create files** — use `sandbox_write_file`.
-        - Read before edit: `sandbox_read_file` first; never modify code you have not inspected.
-        - `sandbox_write_file` is for new files or complete rewrites only — `sandbox_edit_file` is the right tool for targeted in-place edits.
-        - **Reserve `sandbox_exec` for builds, installs, git, processes, network calls, and anything else that needs a shell.** Pass `background:true` for servers / long-running tasks; track them with `sandbox_process` (poll/wait/kill).
-        - Use `sandbox_execute_code` when you need 3+ tool calls with logic between them (filter/loop/branch). The Python helpers (`from osaurus_tools import read_file, write_file, edit_file, search_files, terminal, share_artifact`) mirror the same tools as Python functions.
-        - Set `timeout` for long operations (default 30s exec, 300s execute_code, max 300s).
-        - Issue independent tool calls in parallel.
-        - Anything you generate inside the sandbox stays in the sandbox unless you also call `share_artifact` — that's the only path to the chat thread.
-        """
-
-    private static let sandboxToolGuideCompact = """
-        Tools — prefer dedicated tools over shell equivalents. \
-        `sandbox_read_file` instead of cat/head/tail. \
-        `sandbox_search_files(target="content"|"files")` instead of grep/rg/find/ls. \
-        `sandbox_edit_file` (old_string/new_string) instead of sed/awk. \
-        `sandbox_write_file` instead of echo/cat heredoc. \
-        `sandbox_exec` for shell commands (chain with && when steps depend on each other; pass `background:true` for servers, then `sandbox_process` to poll/wait/kill). \
-        `sandbox_execute_code` for Python orchestration (≥3 tool calls with logic between them). \
-        Use `share_artifact` to surface anything to the user (the chat does not show sandbox files directly).
-        """
-
-    /// Sandbox section reuses the canonical code-style block exposed at
-    /// the top of this file so updates propagate to both surfaces.
-    private static let sandboxCodeStyle = codeStyleGuidance
-
-    private static let sandboxRiskGuidance = """
-        Risk-aware actions:
-        - Local, reversible actions (editing a file, running a test) — proceed without hesitation.
-        - Destructive or hard-to-undo actions (deleting files, `rm -rf`, dropping data) — confirm with the user first.
-        - When encountering unexpected state (unfamiliar files, unknown processes), investigate before removing anything.
+        Tool dispatch (each tool's description has full detail and the \
+        shell pattern it replaces):
+        - File IO: `sandbox_read_file` to read, `sandbox_write_file` to create or rewrite, `sandbox_edit_file` for targeted in-place edits.
+        - Search: `sandbox_search_files` (`target="content"` for ripgrep, `target="files"` for filename glob).
+        - Shell: `sandbox_exec` for builds, installs, git, processes, network calls. Pass `background:true` for servers; track with `sandbox_process`.
+        - Python orchestration: `sandbox_execute_code` for 3+ calls with logic between them. Helpers: `from osaurus_tools import read_file, write_file, edit_file, search_files, terminal`.
+        - Issue independent calls in parallel; chain dependent shell steps with `&&` inside one `sandbox_exec`.
         """
 
     private static let sandboxRuntimeHints = """
@@ -203,10 +210,7 @@ public enum SystemPromptTemplates {
         - System packages: `sandbox_install` — e.g. `{"packages": ["ffmpeg"]}`.
         - Use \(sandboxReadFileHint) to inspect large logs.
         - The sandbox is disposable — experiment freely.
-        """
-
-    private static let sandboxRuntimeHintsCompact = """
-        `sandbox_pip_install` for Python, `sandbox_npm_install` for Node, `sandbox_install` for system packages.
+        - Your `SOUL.md` at `~/SOUL.md` records stable preferences across sessions. Edit it with `sandbox_edit_file` or `sandbox_write_file` when you observe a durable pattern; edits apply on the next session.
         """
 
     private static func secretsPromptBlock(_ names: [String]) -> String {
@@ -223,40 +227,39 @@ public enum SystemPromptTemplates {
     // MARK: - Folder Context
 
     /// Working-directory framing appended to the system prompt when chat
-    /// is mounted on a host folder (`ExecutionMode.hostFolder`). Carries
-    /// the path, project type, top-level layout, optional git status,
-    /// usage guidance, and any project-level context file
-    /// (AGENTS.md / CLAUDE.md / .hermes.md / .cursorrules) loaded at
-    /// folder-mount time. Returns `""` when no folder is mounted so the
+    /// is mounted on a host folder (`ExecutionMode.hostFolder`). Mirrors
+    /// the sandbox section's structure: heading + environment metadata +
+    /// path rule + tool dispatch + mode-specific framing + optional
+    /// project context. Returns `""` when no folder is mounted so the
     /// composer can append unconditionally.
     public static func folderContext(from folderContext: FolderContext?) -> String {
         guard let folder = folderContext else { return "" }
 
+        var lines: [String] = ["## Working Directory"]
+        lines.append("**Path:** \(folder.rootPath.path)")
+        if folder.projectType != .unknown {
+            lines.append("**Project Type:** \(folder.projectType.displayName)")
+        }
         let topLevel = buildTopLevelSummary(from: folder.tree)
-        let gitBlock =
-            folder.gitStatus.flatMap { status -> String? in
-                let trimmed = String(status.prefix(300))
-                guard !trimmed.isEmpty else { return nil }
-                return "\n**Git status (uncommitted changes):**\n```\n\(trimmed)\n```\n"
-            } ?? ""
+        if !topLevel.isEmpty {
+            lines.append("**Root contents:** \(topLevel)")
+        }
+        var section = "\n" + lines.joined(separator: "\n") + "\n"
 
-        var section = """
+        if let status = folder.gitStatus {
+            let trimmed = String(status.prefix(300))
+            if !trimmed.isEmpty {
+                section += "\n**Git status (uncommitted changes):**\n```\n\(trimmed)\n```\n"
+            }
+        }
 
-            ## Working Directory
-            **Path:** \(folder.rootPath.path)
-            **Project Type:** \(folder.projectType.displayName)
-            **Root contents:** \(topLevel)
-            \(gitBlock)
-            **Path arguments are relative to the Working Directory** — pass `README.md`, `src/app.py`, `docs/intro.md`. Absolute paths are rejected as a security boundary, even ones that point inside the directory. The path above is for orientation when you describe the project to the user, not for tool calls.
+        section += """
 
-            Tool recipe — prefer dedicated tools over their shell equivalents:
-            - Layout: `file_tree` for the directory structure (skips hidden + truncates at 300 entries) — **not** `ls`/`tree` in `shell_run`.
-            - Discovery: `file_search` for content (ripgrep) — **not** `grep`/`rg`/`find`. Read individual files with `file_read` — **not** `cat`/`head`/`tail`.
-            - Edits: `file_edit` for targeted (old_string -> new_string) changes — **not** `sed`/`awk`. `file_write` for new files or full rewrites — **not** `echo`/`cat` heredoc. Always read a file before editing it.
-            - Mutations: use `shell_run` for `mv` / `cp` / `rm` / `mkdir` (write/exec ops are logged and undoable).
-            - Multi-step work: take the next concrete action each turn — read, write, run. Don't narrate intent; just do the thing.
+            \(folderPathRule)
 
-            **Files land in the working folder, not in chat.** When you create or edit a file with `file_write` / `file_edit`, the user can see it on disk and in the operations log. If the user needs the deliverable to appear in the chat thread (an image, chart, generated text, report, code blob), additionally call `share_artifact` — it's the only thing that surfaces an artifact card.
+            \(folderToolGuide)
+
+            \(folderArtifactReminder)
 
             """
 
@@ -280,6 +283,35 @@ public enum SystemPromptTemplates {
         return section
     }
 
+    // MARK: - Folder Building Blocks
+
+    /// One-line restatement of the path-arg rule. Each `file_*` tool's
+    /// description carries the per-arg detail; this lives in the prompt
+    /// so the rule is anchored once at the top of the section instead of
+    /// repeated in every dispatch bullet.
+    static let folderPathRule =
+        "Tool paths are relative to the working directory; absolute paths are rejected."
+
+    /// Positive dispatch table for the folder-mode tools. Mirror of
+    /// `sandboxToolGuide` — discipline ("instead of cat / sed / awk")
+    /// lives in each tool's description.
+    static let folderToolGuide = """
+        Tool dispatch (each tool's description has full detail and the \
+        shell pattern it replaces):
+        - Layout: `file_tree` to list directory structure.
+        - Search: `file_search` for content (case-insensitive substring match).
+        - Read: `file_read` to inspect a file (optional line range).
+        - Edit: `file_edit` for targeted in-place edits, `file_write` for new files or full rewrites.
+        - Shell: `shell_run` for `mv` / `cp` / `rm` / `mkdir` (write/exec ops are logged and undoable).
+        """
+
+    /// Folder-mode-specific reminder: filesystem changes ARE visible to
+    /// the user (unlike sandbox), but only `share_artifact` surfaces an
+    /// artifact card in the chat thread.
+    static let folderArtifactReminder = """
+        **Files land in the working folder, not in chat.** When you create or edit a file with `file_write` / `file_edit`, the user can see it on disk and in the operations log. If the user needs the deliverable to appear in the chat thread (an image, chart, generated text, report, code blob), additionally call `share_artifact` — it's the only thing that surfaces an artifact card.
+        """
+
     private static func buildTopLevelSummary(from tree: String) -> String {
         let lines = tree.components(separatedBy: .newlines)
         let topLevel = lines.compactMap { line -> String? in
@@ -301,18 +333,4 @@ public enum SystemPromptTemplates {
         return shown.joined(separator: ", ") + ", and \(topLevel.count - 6) other items"
     }
 
-    // MARK: - Model Classification
-
-    /// Returns true when the model identifier refers to a local model
-    /// (Foundation or MLX) that benefits from shorter/compact prompts.
-    public static func isLocalModel(_ modelId: String?) -> Bool {
-        let trimmed = (modelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if trimmed.isEmpty || trimmed == "default" || trimmed == "foundation" {
-            return true
-        }
-        if trimmed.contains("/") {
-            return false
-        }
-        return ModelManager.findInstalledModel(named: trimmed) != nil
-    }
 }

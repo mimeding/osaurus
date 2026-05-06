@@ -3,6 +3,87 @@
   <channel>
     <title>Osaurus</title>
         <item>
+            <title>0.18.10</title>
+            <pubDate>Wed, 06 May 2026 16:12:37 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.10</sparkle:version>
+            <sparkle:shortVersionString>0.18.10</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.10/Osaurus-0.18.10.dmg" length="39688329" type="application/octet-stream" sparkle:edSignature="nVk7n0vp0uhj9w2OyVQ3H89qTAhs0CKJs0vXQM1aPxGdz0EJeuG07SvttoYg0nT8Wc+UUCtZXBe4k98mkJqVAg=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+## 🚀 Features
+
+- added SOUL.md support for sandbox (#1036) by @tpae
+
+## 🧰 Maintenance
+
+- Prompt updates (#1035) by @tpae
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.9...0.18.10
+]]></description>
+        </item>
+        <item>
+            <title>0.18.9</title>
+            <pubDate>Tue, 05 May 2026 22:41:52 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.9</sparkle:version>
+            <sparkle:shortVersionString>0.18.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.9/Osaurus-0.18.9.dmg" length="39687898" type="application/octet-stream" sparkle:edSignature="5r0xgXgKsf7QZPbcdaMF3KIFXYN26+wF5zFxjBT7uzq2EQB22cmGLSr+1cwvVZn6rWDhQULt14zcxVkSioqeDg=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- auto speak tts in chat (#1026) by @RaajeevChandran
+
+## 🚀 Features
+
+- added insights details tab (#1034) by @tpae
+
+## 🐛 Bug Fixes
+
+- chat history \& schedule creation improvements (#1032) by @RaajeevChandran
+- hide folder tool guidance in auto selection mode (#1028) by @RaajeevChandran
+
+## 🧰 Maintenance
+
+- reverted system prompt changes (#1029) by @RaajeevChandran
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.8...0.18.9
+]]></description>
+        </item>
+        <item>
+            <title>0.18.8</title>
+            <pubDate>Mon, 04 May 2026 18:59:58 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.8</sparkle:version>
+            <sparkle:shortVersionString>0.18.8</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.8/Osaurus-0.18.8.dmg" length="39650467" type="application/octet-stream" sparkle:edSignature="6wiRA4dXwpEIWJmvKPTcF5yw3+2T6iAarkbrNj/ushiqF0a+8E8hzcuRTt3LjlaH+3ErYEvsxmptztz/GaIGDw=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- [codex] Fix false granted permission states (#1019) by @mimeding
+- [codex] Fix scheduled state leaking into new chats (#1018) by @mimeding
+- [codex] Sync refreshed provider service models (#1025) by @mimeding
+- [codex] Stabilize OsaurusCore test gate (#1015) by @mimeding
+
+## 🐛 Bug Fixes
+
+- refresh model picker when new models/providers are added (#1020) by @RaajeevChandran
+
+## 🧰 Maintenance
+
+- fixed pie chart labelling mismatch (#1016) by @RaajeevChandran
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.7...0.18.8
+]]></description>
+        </item>
+        <item>
             <title>0.18.7</title>
             <pubDate>Sun, 03 May 2026 15:23:39 +0000</pubDate>
             <sparkle:channel>release</sparkle:channel>

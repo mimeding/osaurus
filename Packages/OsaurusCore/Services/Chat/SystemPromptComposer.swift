@@ -6,9 +6,6 @@
 //  section-by-section composition plus the high-level `composeChatContext`
 //  entry point that handles the full pipeline.
 //
-//  Compact prompt selection is automatic: pass the model ID and the composer
-//  resolves whether to use compact or full prompt variants via isLocalModel.
-//
 
 import Foundation
 
@@ -40,11 +37,20 @@ public struct SystemPromptComposer: Sendable {
         PromptManifest(sections: sections.filter { !$0.isEmpty })
     }
 
-    @MainActor
-    public mutating func appendBasePrompt(agentId: UUID) {
-        let raw = AgentManager.shared.effectiveSystemPrompt(for: agentId)
-        let effective = SystemPromptTemplates.effectiveBasePrompt(raw)
-        append(.static(id: "base", label: "Base Prompt", content: effective))
+    /// Append the platform + persona pair from a pre-captured snapshot
+    /// without re-querying `AgentManager`. Used by `finalizeContext` and
+    /// `composePreviewContext` so a single MainActor read services the
+    /// whole compose pipeline.
+    public mutating func appendBasePrompt(systemPrompt: String) {
+        append(
+            .static(
+                id: "platform",
+                label: "Platform",
+                content: SystemPromptTemplates.platformIdentity
+            )
+        )
+        let effective = SystemPromptTemplates.effectivePersona(systemPrompt)
+        append(.static(id: "persona", label: "Persona", content: effective))
     }
 
     // MARK: - Memory Assembly
@@ -69,17 +75,10 @@ public struct SystemPromptComposer: Sendable {
 
     // MARK: - High-Level API
 
-    /// Compose the full chat context: prompt + tools + manifest in one call.
-    ///
-    /// `query` is used to seed pre-flight capability search. If `query` is
-    /// empty, the most recent `"user"` message in `messages` is used as a
-    /// fallback so retries / regenerations still drive preflight.
-    ///
-    /// Pass `cachedPreflight` from a per-session `SessionToolState` to skip
-    /// the LLM-based selection (it only ever needs to run on the first send
-    /// of a session). Pass `additionalToolNames` to merge tools the agent has
-    /// loaded mid-session via `capabilities_load`, so they survive across
-    /// subsequent composes.
+    /// Compose the full chat context: prompt + tools + manifest in one
+    /// call. Backwards-compatible positional surface; new code should
+    /// reach for the `ComposeRequest`-taking overload below so the
+    /// 11-param tail doesn't have to grow further.
     @MainActor
     static func composeChatContext(
         agentId: UUID,
@@ -89,22 +88,63 @@ public struct SystemPromptComposer: Sendable {
         messages: [ChatMessage] = [],
         toolsDisabled: Bool = false,
         cachedPreflight: PreflightResult? = nil,
-        additionalToolNames: Set<String> = [],
-        frozenAlwaysLoadedNames: Set<String>? = nil,
+        additionalToolNames: LoadedTools = [],
+        frozenAlwaysLoadedNames: LoadedTools? = nil,
         trace: TTFTTrace? = nil
     ) async -> ComposedContext {
+        await composeChatContext(
+            ComposeRequest(
+                agentId: agentId,
+                executionMode: executionMode,
+                model: model,
+                query: query,
+                messages: messages,
+                toolsDisabled: toolsDisabled,
+                cachedPreflight: cachedPreflight,
+                additionalToolNames: additionalToolNames,
+                frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
+                trace: trace
+            )
+        )
+    }
+
+    /// Canonical entry point: every parameter rides on `ComposeRequest`
+    /// so optional bits (trace, frozen snapshot, mid-session loaded
+    /// names) stay grouped instead of trailing the signature.
+    ///
+    /// `request.query` seeds preflight capability search. If empty, the
+    /// most recent `"user"` message in `request.messages` is used so
+    /// retries / regenerations still drive preflight. Pass
+    /// `cachedPreflight` from a per-session `SessionToolState` to skip
+    /// the LLM call after turn 1. Pass `additionalToolNames` so tools
+    /// the agent loaded mid-session via `capabilities_load` survive
+    /// across subsequent composes.
+    @MainActor
+    static func composeChatContext(_ request: ComposeRequest) async -> ComposedContext {
+        let trace = request.trace
         trace?.mark("compose_context_start")
-        let composer = forChat(agentId: agentId, executionMode: executionMode, model: model)
+        // One MainActor read services every downstream `effective*`
+        // gate. Closes the race window the `PluginCreatorGate.Inputs`
+        // comment used to apologise for.
+        let snapshot = AgentConfigSnapshot.capture(
+            agentId: request.agentId,
+            requestToolsDisabled: request.toolsDisabled,
+            modelOverride: request.model
+        )
+        let composer = forChat(
+            snapshot: snapshot,
+            agentId: request.agentId,
+            executionMode: request.executionMode
+        )
         let result = await finalizeContext(
             composer: composer,
-            agentId: agentId,
-            executionMode: executionMode,
-            query: resolvePreflightQuery(query: query, messages: messages),
-            toolsDisabled: toolsDisabled,
-            cachedPreflight: cachedPreflight,
-            additionalToolNames: additionalToolNames,
-            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
-            model: model,
+            snapshot: snapshot,
+            agentId: request.agentId,
+            executionMode: request.executionMode,
+            query: resolvePreflightQuery(query: request.query, messages: request.messages),
+            cachedPreflight: request.cachedPreflight,
+            additionalToolNames: request.additionalToolNames,
+            frozenAlwaysLoadedNames: request.frozenAlwaysLoadedNames,
             trace: trace
         )
         trace?.mark("compose_context_done")
@@ -137,80 +177,223 @@ public struct SystemPromptComposer: Sendable {
     @MainActor
     private static func finalizeContext(
         composer: SystemPromptComposer,
+        snapshot: AgentConfigSnapshot,
         agentId: UUID,
         executionMode: ExecutionMode,
         query: String,
-        toolsDisabled: Bool,
         cachedPreflight: PreflightResult? = nil,
-        additionalToolNames: Set<String> = [],
-        frozenAlwaysLoadedNames: Set<String>? = nil,
-        model: String? = nil,
+        additionalToolNames: LoadedTools = [],
+        frozenAlwaysLoadedNames: LoadedTools? = nil,
         trace: TTFTTrace? = nil
     ) async -> ComposedContext {
         var comp = composer
+        // Memory and SOUL are independent — overlap their reads. Memory
+        // does DB work; SOUL is a tiny file read; running them in
+        // parallel keeps SOUL effectively free behind the memory hop.
+        async let memoryAsync = resolveMemory(snapshot: snapshot, agentId: agentId, trace: trace)
+        async let soulAsync = resolveSoul(
+            snapshot: snapshot,
+            agentId: agentId,
+            executionMode: executionMode,
+            trace: trace
+        )
+        let memorySection = await memoryAsync
+        let soulSection = await soulAsync
+        let toolset = await resolveToolset(
+            snapshot: snapshot,
+            agentId: agentId,
+            executionMode: executionMode,
+            query: query,
+            cachedPreflight: cachedPreflight,
+            additionalToolNames: additionalToolNames,
+            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
+            trace: trace
+        )
+        appendGatedSections(
+            composer: &comp,
+            snapshot: snapshot,
+            toolset: toolset,
+            agentId: agentId,
+            executionMode: executionMode,
+            soulSection: soulSection,
+            trace: trace
+        )
+        let manifest = comp.manifest()
+        debugLog("[Context] \(manifest.debugDescription)")
+        emitToolDiagnostics(
+            snapshot: snapshot,
+            toolset: toolset,
+            executionMode: executionMode,
+            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
+            additionalToolNames: additionalToolNames,
+            trace: trace
+        )
+        let rendered = comp.render()
+        let toolNames = toolset.tools.map { $0.function.name }
+        trace?.set("systemPromptChars", rendered.count)
+        trace?.set("toolCount", toolset.tools.count)
+        trace?.set("preflightItems", toolset.preflight.items.count)
+        return ComposedContext(
+            prompt: rendered,
+            manifest: manifest,
+            tools: toolset.tools,
+            toolTokens: ToolRegistry.shared.totalEstimatedTokens(for: toolset.tools),
+            preflightItems: toolset.preflight.items,
+            preflight: toolset.preflight,
+            memorySection: memorySection,
+            alwaysLoadedNames: toolset.alwaysLoadedNames,
+            cacheHint: manifest.staticPrefixHash(toolNames: toolNames),
+            staticPrefix: manifest.staticPrefixContent,
+            contextDisable: toolset.contextDisable
+        )
+    }
 
-        let agentToolsOff = toolsDisabled || AgentManager.shared.effectiveToolsDisabled(for: agentId)
-        let agentMemoryOff = AgentManager.shared.effectiveMemoryDisabled(for: agentId)
-        let autonomousConfig = AgentManager.shared.effectiveAutonomousExec(for: agentId)
-        let autonomousEnabled = autonomousConfig?.enabled == true
-        let canCreatePlugins = autonomousConfig.map { $0.enabled && $0.pluginCreate } ?? false
-        let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
+    /// Per-turn memory snippet, or nil when memory is disabled (either
+    /// at the agent level or auto-off via the size-class). We deliberately
+    /// do NOT pass `query` to the assembler so the cached memory snapshot
+    /// can be reused even when the user's wording shifts.
+    @MainActor
+    private static func resolveMemory(
+        snapshot: AgentConfigSnapshot,
+        agentId: UUID,
+        trace: TTFTTrace?
+    ) async -> String? {
+        let window = ContextSizeResolver.resolve(modelId: snapshot.model)
+        let memoryOff = snapshot.memoryDisabled || window.sizeClass.disablesMemory
+        guard !memoryOff else { return nil }
+        trace?.mark("memory_start")
+        let section = await assembleMemorySection(agentId: agentId.uuidString)
+        trace?.mark("memory_done")
+        return section
+    }
 
+    // MARK: - SOUL Assembly
+
+    /// 8 KB cap for `~/SOUL.md` content surfaced into the prompt. Past
+    /// this size the file's value-per-token plummets and the agent is
+    /// almost certainly stashing transient context that belongs in
+    /// memory or AGENTS.md, not the soul. Caps live next to the read so
+    /// PR2's bootstrap seed and PR3's advert don't have to re-derive it.
+    static let soulMaxBytes: Int = 8 * 1024
+
+    /// Marker appended on its own line after a truncation so the model
+    /// knows the agent's soul was clipped (don't extrapolate from the
+    /// trailing line as if it were the natural end of the file).
+    static let soulTruncationMarker = "... (truncated)"
+
+    /// Read SOUL.md from the agent's host-mounted home, trim, and cap
+    /// at `soulMaxBytes` on a line boundary. Returns `nil` when the
+    /// file is missing, unreadable, or trims to empty — the composer's
+    /// existing `PromptSection.isEmpty` filter then drops the section
+    /// without an explicit gate at the call-site.
+    ///
+    /// Sync because the read is a tiny local file and the preview path
+    /// (`composePreviewContext`) is itself sync; the async `resolveSoul`
+    /// wrapper just adds trace marks. Errors are swallowed and logged —
+    /// a missing/corrupt SOUL must never block compose.
+    private static func loadSoulContent(linuxName: String) -> String? {
+        let url = OsaurusPaths.containerAgentDir(linuxName)
+            .appendingPathComponent("SOUL.md", isDirectory: false)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let raw: String
+        do {
+            raw = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            debugLog("[Soul] read failed for \(url.path): \(error.localizedDescription)")
+            return nil
+        }
+        let capped = capSoulContent(raw)
+        let trimmed = capped.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Truncate `raw` at the nearest line boundary at or before the
+    /// `soulMaxBytes` UTF-8 byte budget and append `soulTruncationMarker`
+    /// on its own line. No-op when the input already fits.
+    ///
+    /// When no newline exists in the budget (single huge line — not a
+    /// realistic shape for a markdown soul, but possible in principle)
+    /// we hard-cut at the budget and still append the marker on a new
+    /// line so the model sees the truncation signal regardless.
+    static func capSoulContent(_ raw: String) -> String {
+        let utf8 = Array(raw.utf8)
+        guard utf8.count > soulMaxBytes else { return raw }
+        // Cutoff = byte index of the last `\n` within the budget + 1
+        // (so the slice keeps the newline). Falls back to a hard cut
+        // at the budget when no newline is reachable.
+        let lastNewline = utf8.prefix(soulMaxBytes)
+            .lastIndex(of: UInt8(ascii: "\n"))
+        let cutoff = lastNewline.map { $0 + 1 } ?? soulMaxBytes
+        let prefix = String(decoding: utf8.prefix(cutoff), as: UTF8.self)
+        // Hard-cut prefix may not end on `\n`; force one so the marker
+        // always reads as its own line below the soul content.
+        let separator = prefix.hasSuffix("\n") ? "" : "\n"
+        return prefix + separator + soulTruncationMarker
+    }
+
+    /// Per-turn SOUL snippet, or nil when not in sandbox mode or the
+    /// file is missing/empty. Mirrors `resolveMemory` shape (gate +
+    /// trace marks) so a future async-only soul source can slot in
+    /// without changing the call-site.
+    @MainActor
+    private static func resolveSoul(
+        snapshot: AgentConfigSnapshot,
+        agentId: UUID,
+        executionMode: ExecutionMode,
+        trace: TTFTTrace?
+    ) async -> String? {
+        guard executionMode.usesSandboxTools else { return nil }
+        trace?.mark("soul_start")
+        let linuxName = SandboxAgentProvisioner.linuxName(for: agentId.uuidString)
+        let content = loadSoulContent(linuxName: linuxName)
+        trace?.mark("soul_done")
+        return content
+    }
+
+    /// Assemble every tool-axis decision for the request: size-class
+    /// auto-disable, preflight (cached or fresh), final tool set,
+    /// always-loaded snapshot, and standalone-skill teasers.
+    @MainActor
+    private static func resolveToolset(
+        snapshot: AgentConfigSnapshot,
+        agentId: UUID,
+        executionMode: ExecutionMode,
+        query: String,
+        cachedPreflight: PreflightResult?,
+        additionalToolNames: LoadedTools,
+        frozenAlwaysLoadedNames: LoadedTools?,
+        trace: TTFTTrace?
+    ) async -> ResolvedToolset {
         // Auto-disable for small-context models (Foundation et al.).
         // OR into the agent's flags so every downstream gate (preflight,
         // skills, agent loop, capability nudge, model family, plugin
-        // creator, memory assembly) cascades correctly without each
-        // gate having to know about the size class itself.
-        let (sizeClass, contextLength) = ContextSizeResolver.resolve(modelId: model)
-        let effectiveToolsOff = agentToolsOff || sizeClass.disablesTools
-        let memoryOff = agentMemoryOff || sizeClass.disablesMemory
-        let contextDisable = ContextDisableInfo(
-            sizeClass: sizeClass,
-            modelId: model,
-            contextLength: contextLength,
-            agentToolsOff: agentToolsOff,
-            agentMemoryOff: agentMemoryOff
+        // creator) cascades correctly without each gate having to know
+        // about the size class itself.
+        let window = ContextSizeResolver.resolve(modelId: snapshot.model)
+        let effectiveToolsOff = snapshot.toolsDisabled || window.sizeClass.disablesTools
+        let contextDisable = ContextDisableInfo.from(
+            sizeClass: window.sizeClass,
+            modelId: snapshot.model,
+            contextLength: window.contextLength,
+            agentToolsOff: snapshot.toolsDisabled,
+            agentMemoryOff: snapshot.memoryDisabled
         )
         if contextDisable != nil {
-            trace?.set("contextSizeClass", String(describing: sizeClass))
+            trace?.set("contextSizeClass", String(describing: window.sizeClass))
         }
 
-        // Memory is assembled here but returned separately (see ComposedContext.memorySection).
-        // We deliberately do NOT pass `query` so the cached memory snapshot
-        // can be reused even when the user's wording shifts — preserves the
-        // pre-split behaviour and avoids a per-turn embedding lookup.
-        trace?.mark("memory_start")
-        let memorySection: String? =
-            memoryOff
-            ? nil
-            : await assembleMemorySection(agentId: agentId.uuidString)
-        trace?.mark("memory_done")
-
-        let preflight: PreflightResult
-        if let cachedPreflight {
-            preflight = cachedPreflight
-            trace?.set("preflightSource", "cached")
-        } else if !effectiveToolsOff && toolMode == .auto && !query.isEmpty {
-            let mode = ChatConfigurationStore.load().preflightSearchMode ?? .balanced
-            trace?.mark("preflight_search_start")
-            // `model` is forwarded as the chat-model fallback for the
-            // preflight LLM call — see GitHub issue #823.
-            preflight = await PreflightCapabilitySearch.search(
-                query: query,
-                mode: mode,
-                agentId: agentId,
-                model: model
-            )
-            trace?.mark("preflight_search_done")
-            trace?.set("preflightSource", "fresh")
-        } else {
-            preflight = .empty
-            trace?.set("preflightSource", "skipped")
-        }
+        let preflight = await resolvePreflight(
+            snapshot: snapshot,
+            agentId: agentId,
+            query: query,
+            effectiveToolsOff: effectiveToolsOff,
+            cachedPreflight: cachedPreflight,
+            trace: trace
+        )
 
         trace?.mark("resolve_tools_start")
         let tools = resolveTools(
-            agentId: agentId,
+            snapshot: snapshot,
             executionMode: executionMode,
             toolsDisabled: effectiveToolsOff,
             preflight: preflight,
@@ -218,94 +401,129 @@ public struct SystemPromptComposer: Sendable {
             frozenAlwaysLoadedNames: frozenAlwaysLoadedNames
         )
         trace?.mark("resolve_tools_done")
+
         let alwaysLoadedNames = resolveAlwaysLoadedNames(
             tools: tools,
             executionMode: executionMode,
             frozenAlwaysLoadedNames: frozenAlwaysLoadedNames
         )
 
-        // Skill suggestions: when the user's query semantically matches
-        // a standalone (non-plugin) skill, surface it as a compact
-        // teaser the model can pull in via `capabilities_load`. Same
-        // gates as preflight (auto mode + tools on + non-empty query)
-        // plus `capabilities_load` in the schema so the loader nudge
-        // is actionable. Skills already surfaced via plugin companions
-        // or already loaded mid-session are filtered out so the model
-        // doesn't see the same name twice.
-        let skillSuggestions: [SkillTeaser] = await {
-            guard toolMode == .auto, !effectiveToolsOff, !query.isEmpty,
-                tools.contains(where: { $0.function.name == "capabilities_load" })
-            else { return [] }
-            let alreadySurfaced = Set(preflight.companions.compactMap(\.skill?.name))
-                .union(additionalToolNames)
-            trace?.mark("skill_suggestions_start")
-            let teasers = await PreflightCompanions.deriveSkillSuggestions(
-                query: query,
-                alreadyLoadedSkillNames: alreadySurfaced
-            )
-            trace?.mark("skill_suggestions_done")
-            trace?.set("skillSuggestions", String(teasers.count))
-            return teasers
-        }()
-
-        appendGatedSections(
-            composer: &comp,
-            agentId: agentId,
-            executionMode: executionMode,
-            model: model,
+        let skillSuggestions = await resolveSkillSuggestions(
+            snapshot: snapshot,
             tools: tools,
             preflight: preflight,
-            skillSuggestions: skillSuggestions,
-            effectiveToolsOff: effectiveToolsOff,
-            autonomousEnabled: autonomousEnabled,
-            canCreatePlugins: canCreatePlugins,
-            toolMode: toolMode,
-            trace: trace
-        )
-
-        let manifest = comp.manifest()
-        let toolNames = tools.map { $0.function.name }
-        debugLog("[Context] \(manifest.debugDescription)")
-        emitToolDiagnostics(
-            tools: tools,
-            toolMode: toolMode,
-            preflight: preflight,
-            executionMode: executionMode,
-            autonomousEnabled: autonomousEnabled,
-            effectiveToolsOff: effectiveToolsOff,
-            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames,
+            query: query,
             additionalToolNames: additionalToolNames,
+            effectiveToolsOff: effectiveToolsOff,
             trace: trace
         )
 
-        let rendered = comp.render()
-        trace?.set("systemPromptChars", rendered.count)
-        trace?.set("toolCount", tools.count)
-        trace?.set("preflightItems", preflight.items.count)
-
-        return ComposedContext(
-            prompt: rendered,
-            manifest: manifest,
-            tools: tools,
-            toolTokens: ToolRegistry.shared.totalEstimatedTokens(for: tools),
-            preflightItems: preflight.items,
+        return ResolvedToolset(
             preflight: preflight,
-            memorySection: memorySection,
+            tools: tools,
+            skillSuggestions: skillSuggestions,
             alwaysLoadedNames: alwaysLoadedNames,
-            cacheHint: manifest.staticPrefixHash(toolNames: toolNames),
-            staticPrefix: manifest.staticPrefixContent,
-            contextDisable: contextDisable
+            contextDisable: contextDisable,
+            effectiveToolsOff: effectiveToolsOff
         )
     }
 
-    /// Append every gated "deterministic" prompt section (sandbox notice,
-    /// plugin companions, agent loop, capability nudge, model family,
-    /// plugin creator) given the resolved tool set + preflight.
+    /// Pick the preflight to use this turn: cached (skip the LLM call),
+    /// fresh (auto-mode + tools on + non-empty query), or `.empty`.
+    @MainActor
+    private static func resolvePreflight(
+        snapshot: AgentConfigSnapshot,
+        agentId: UUID,
+        query: String,
+        effectiveToolsOff: Bool,
+        cachedPreflight: PreflightResult?,
+        trace: TTFTTrace?
+    ) async -> PreflightResult {
+        if let cachedPreflight {
+            trace?.set("preflightSource", "cached")
+            return cachedPreflight
+        }
+        guard !effectiveToolsOff, snapshot.toolMode == .auto, !query.isEmpty else {
+            trace?.set("preflightSource", "skipped")
+            return .empty
+        }
+        let mode = ChatConfigurationStore.load().preflightSearchMode ?? .balanced
+        trace?.mark("preflight_search_start")
+        // `snapshot.model` is forwarded as the chat-model fallback for
+        // the preflight LLM call — see GitHub issue #823.
+        let result = await PreflightCapabilitySearch.search(
+            query: query,
+            mode: mode,
+            agentId: agentId,
+            model: snapshot.model
+        )
+        trace?.mark("preflight_search_done")
+        trace?.set("preflightSource", "fresh")
+        return result
+    }
+
+    /// Standalone (non-plugin) skill teasers derived from the user query.
+    /// Same gates as preflight (auto mode + tools on + non-empty query)
+    /// plus `capabilities_load` in the schema so the loader nudge is
+    /// actionable. Skills already surfaced via plugin companions or
+    /// already loaded mid-session are filtered out so the model doesn't
+    /// see the same name twice.
+    @MainActor
+    private static func resolveSkillSuggestions(
+        snapshot: AgentConfigSnapshot,
+        tools: [Tool],
+        preflight: PreflightResult,
+        query: String,
+        additionalToolNames: LoadedTools,
+        effectiveToolsOff: Bool,
+        trace: TTFTTrace?
+    ) async -> [SkillTeaser] {
+        guard snapshot.toolMode == .auto, !effectiveToolsOff, !query.isEmpty,
+            tools.contains(where: { $0.function.name == "capabilities_load" })
+        else { return [] }
+        let alreadySurfaced = Set(preflight.companions.compactMap(\.skill?.name))
+            .union(additionalToolNames)
+        trace?.mark("skill_suggestions_start")
+        let teasers = await PreflightCompanions.deriveSkillSuggestions(
+            query: query,
+            alreadyLoadedSkillNames: alreadySurfaced
+        )
+        trace?.mark("skill_suggestions_done")
+        trace?.set("skillSuggestions", String(teasers.count))
+        return teasers
+    }
+
+    /// Append every gated "deterministic" prompt section given the
+    /// resolved tool set + preflight.
+    ///
+    /// Order is deliberate — cross-cutting rules first, harness second,
+    /// mode-specific capability third, recovery path last, dynamics
+    /// finally. Pre-platform/persona happens in `forChat`. The full
+    /// rendered prompt looks like:
+    ///
+    ///   1. platform                  (forChat)
+    ///   2. persona                   (forChat)
+    ///   3. soul                      static, sandbox-only, gated on non-empty SOUL.md
+    ///   4. modelFamilyGuidance       static, gated on family match
+    ///   5. codeStyle                 static, gated on file-mutation tools
+    ///   6. riskAware                 static, gated on file-mutation tools
+    ///   7. agentLoopGuidance         static, gated on loop tools
+    ///   8. sandbox / folderContext   static, mode-specific
+    ///   9. capabilityNudge           static, gated on capabilities_search
+    ///  10. sandboxUnavailable        dynamic, gated on registrar failure
+    ///  11. pluginCompanions          dynamic, gated on preflight result
+    ///  12. skillSuggestions          dynamic, gated on preflight result
+    ///  13. pluginCreator             dynamic, backstop
+    ///
+    /// Statics come before dynamics so the cached prefix
+    /// (`PromptManifest.staticPrefixContent`) reaches as far as possible —
+    /// every static section above the first dynamic break joins the
+    /// KV-cache reuse window.
     ///
     /// Shared between the real send path (`finalizeContext`) and the sync
     /// preview path (`composePreviewContext`) so the welcome-screen budget
     /// popover lists the same sections the next send will produce, modulo
-    /// the two query-dependent ones (preflight tools + plugin companions).
+    /// the dynamic ones it can't price ahead of time.
     ///
     /// Skills are intentionally NOT injected here — they're discovered via
     /// `capabilities_search` and pulled in via `capabilities_load` instead.
@@ -313,26 +531,148 @@ public struct SystemPromptComposer: Sendable {
     /// the budget on small-context models (55k+ tokens with reference
     /// inlining); the loader path keeps the schema small and lets the
     /// model decide which skill bodies it actually needs.
+    ///
+    /// `soulSection` is passed in (rather than re-read here) because the
+    /// read needs to happen once per compose — `finalizeContext` calls
+    /// `resolveSoul`, the preview path calls `loadSoulContent` directly.
     @MainActor
     private static func appendGatedSections(
         composer: inout SystemPromptComposer,
+        snapshot: AgentConfigSnapshot,
+        toolset: ResolvedToolset,
         agentId: UUID,
         executionMode: ExecutionMode,
-        model: String?,
-        tools: [Tool],
-        preflight: PreflightResult,
-        skillSuggestions: [SkillTeaser] = [],
-        effectiveToolsOff: Bool,
-        autonomousEnabled: Bool,
-        canCreatePlugins: Bool,
-        toolMode: ToolSelectionMode,
+        soulSection: String? = nil,
         trace: TTFTTrace? = nil
     ) {
+        let tools = toolset.tools
+        let preflight = toolset.preflight
+        let effectiveToolsOff = toolset.effectiveToolsOff
+        let resolvedNames = Set(tools.map { $0.function.name })
+
+        // ── Statics ──────────────────────────────────────────────────
+
+        // SOUL: agent-authored identity layer for sandbox mode. Sits
+        // between the user-authored persona (above) and operational
+        // directives (below) so render order reinforces the inline
+        // "earlier sections take precedence" framing — persona wins on
+        // conflict. Sandbox-only by design: folder-mode agents are
+        // short-lived and project-bound. `composer.append` drops empty
+        // sections, so we don't re-check past the `nil` gate.
+        if let soulSection {
+            composer.append(
+                .static(
+                    id: "soul",
+                    label: "Soul",
+                    content: SystemPromptTemplates.soulSection(soulSection)
+                )
+            )
+        }
+
+        // Per-model-family nudge — small, targeted blocks for known model
+        // weaknesses (Gemma over-enumerates, GPT under-acts, etc.). We
+        // deliberately ship NO universal "agentic workflow" addendum: it
+        // inflates context and encourages tool enumeration.
+        // See ModelFamilyGuidance.swift.
+        if !effectiveToolsOff,
+            let familyGuidance = ModelFamilyGuidance.guidance(forModelId: snapshot.model)
+        {
+            composer.append(
+                .static(
+                    id: "modelFamilyGuidance",
+                    label: "Model Family Guidance",
+                    content: familyGuidance
+                )
+            )
+        }
+
+        // Code style + risk-aware actions — general engineering discipline
+        // for any agent that can mutate the user's filesystem or run
+        // arbitrary code. Sandbox tools, folder tools, and any future
+        // plugin tool that writes all qualify. The set lives at the top
+        // of the file so it can grow as new mutation-capable tools land.
+        if !effectiveToolsOff,
+            !resolvedNames.isDisjoint(with: Self.mutationToolNames)
+        {
+            composer.append(
+                .static(
+                    id: "codeStyle",
+                    label: "Code Style",
+                    content: SystemPromptTemplates.codeStyleGuidance
+                )
+            )
+            composer.append(
+                .static(
+                    id: "riskAware",
+                    label: "Risk-Aware Actions",
+                    content: SystemPromptTemplates.riskAwareGuidance
+                )
+            )
+        }
+
+        // Agent-loop guidance: short cheat-sheet for the chat-layer-
+        // intercepted tools (todo / complete / clarify / share_artifact).
+        // Gated on at least one of those names appearing in the resolved
+        // schema — in practice that's every chat where tools are on, but
+        // the gate keeps tools-off sessions from carrying dead text.
+        if !effectiveToolsOff,
+            !resolvedNames.isDisjoint(with: Self.agentLoopToolNames)
+        {
+            composer.append(
+                .static(
+                    id: "agentLoopGuidance",
+                    label: "Agent Loop",
+                    content: SystemPromptTemplates.agentLoopGuidance
+                )
+            )
+        }
+
+        // Mode-specific capability framing: sandbox section when sandbox
+        // tools are active, working-directory framing when chat is mounted
+        // on a host folder. Static so it joins the cached prefix.
+        if executionMode.usesSandboxTools {
+            let secretNames = Array(AgentSecretsKeychain.getAllSecrets(agentId: agentId).keys)
+            composer.append(
+                .static(
+                    id: "sandbox",
+                    label: "Chat Sandbox",
+                    content: SystemPromptTemplates.sandbox(secretNames: secretNames)
+                )
+            )
+        } else if let folder = executionMode.folderContext {
+            composer.append(
+                .static(
+                    id: "folderContext",
+                    label: "Working Directory",
+                    content: SystemPromptTemplates.folderContext(from: folder)
+                )
+            )
+        }
+
+        // Capability-discovery nudge: explain how to recover when the
+        // current tool kit is incomplete. Gated to auto mode + presence of
+        // `capabilities_search` so manual-mode agents and tools-disabled
+        // sessions don't see irrelevant guidance.
+        if snapshot.toolMode == .auto,
+            !effectiveToolsOff,
+            tools.contains(where: { $0.function.name == "capabilities_search" })
+        {
+            composer.append(
+                .static(
+                    id: "capabilityNudge",
+                    label: "Capability Discovery",
+                    content: SystemPromptTemplates.capabilityDiscoveryNudge
+                )
+            )
+        }
+
+        // ── Dynamics ─────────────────────────────────────────────────
+
         // Surface a "sandbox unavailable" notice when the agent wants
         // sandbox tools but registration couldn't provide them — otherwise
         // the model hallucinates sandbox calls that never get a result.
         if !executionMode.usesSandboxTools,
-            autonomousEnabled,
+            snapshot.autonomousEnabled,
             let reason = SandboxToolRegistrar.shared.unavailabilityReason(for: agentId)
         {
             composer.append(
@@ -354,7 +694,7 @@ public struct SystemPromptComposer: Sendable {
         // (the section instructs the model to call it). Rendering itself
         // skips when `companions` is empty, so this just decides whether
         // to even ask for a section.
-        if toolMode == .auto,
+        if snapshot.toolMode == .auto,
             !effectiveToolsOff,
             !preflight.companions.isEmpty,
             tools.contains(where: { $0.function.name == "capabilities_load" }),
@@ -379,69 +719,14 @@ public struct SystemPromptComposer: Sendable {
         // append. Skipping on `effectiveToolsOff` here is belt-and-braces
         // for the preview composer which doesn't pre-gate.
         if !effectiveToolsOff,
-            !skillSuggestions.isEmpty,
-            let suggestionsSection = PreflightCompanions.renderSkillSuggestions(skillSuggestions)
+            !toolset.skillSuggestions.isEmpty,
+            let suggestionsSection = PreflightCompanions.renderSkillSuggestions(toolset.skillSuggestions)
         {
             composer.append(
                 .dynamic(
                     id: "skillSuggestions",
                     label: "Skill Suggestions",
                     content: suggestionsSection
-                )
-            )
-        }
-
-        // Agent-loop guidance: short cheat-sheet for the chat-layer-
-        // intercepted tools (todo / complete / clarify / share_artifact).
-        // Gated on at least one of those names appearing in the resolved
-        // schema — in practice that's every chat where tools are on, but
-        // the gate keeps tools-off sessions from carrying dead text.
-        // Static section so it joins the cached prefix.
-        if !effectiveToolsOff {
-            let resolvedNames = Set(tools.map { $0.function.name })
-            let loopNames: Set<String> = ["todo", "complete", "clarify", "share_artifact"]
-            if !resolvedNames.isDisjoint(with: loopNames) {
-                composer.append(
-                    .static(
-                        id: "agentLoopGuidance",
-                        label: "Agent Loop",
-                        content: SystemPromptTemplates.agentLoopGuidance
-                    )
-                )
-            }
-        }
-
-        // Capability-discovery nudge: explain how to recover when the
-        // current tool kit is incomplete. Gated to auto mode + presence of
-        // `capabilities_search` so manual-mode agents and tools-disabled
-        // sessions don't see irrelevant guidance. Static section so it
-        // contributes to the cached prefix.
-        if toolMode == .auto,
-            !effectiveToolsOff,
-            tools.contains(where: { $0.function.name == "capabilities_search" })
-        {
-            composer.append(
-                .static(
-                    id: "capabilityNudge",
-                    label: "Capability Discovery",
-                    content: SystemPromptTemplates.capabilityDiscoveryNudge
-                )
-            )
-        }
-
-        // Per-model-family nudge — small, targeted blocks for known model
-        // weaknesses (Gemma over-enumerates, GPT under-acts, etc.). Static
-        // section so it joins the cached prefix. We deliberately ship NO
-        // universal "agentic workflow" addendum: it inflates context and
-        // encourages tool enumeration. See ModelFamilyGuidance.swift.
-        if !effectiveToolsOff,
-            let familyGuidance = ModelFamilyGuidance.guidance(forModelId: model)
-        {
-            composer.append(
-                .static(
-                    id: "modelFamilyGuidance",
-                    label: "Model Family Guidance",
-                    content: familyGuidance
                 )
             )
         }
@@ -460,16 +745,16 @@ public struct SystemPromptComposer: Sendable {
         // container finished provisioning — `canCreatePlugins` already
         // folds `autonomousEnabled && pluginCreate`, so this stays correct.
         //
-        // All gate inputs are snapshotted here so the decision can't race
-        // a sibling test / plugin registration / skill toggle happening on
-        // the MainActor between our `await`s.
+        // All agent-side flags ride on `snapshot`, captured once at the
+        // start of compose, so the gate can't race sibling MainActor work
+        // (test setup, plugin registration, skill toggle) between awaits.
         let pluginCreatorSkill = SkillManager.shared.skill(named: "Sandbox Plugin Creator")
         let gateInputs = PluginCreatorGate.Inputs(
             effectiveToolsOff: effectiveToolsOff,
-            sandboxAvailable: executionMode.usesSandboxTools || autonomousEnabled,
-            canCreatePlugins: canCreatePlugins,
+            sandboxAvailable: executionMode.usesSandboxTools || snapshot.autonomousEnabled,
+            canCreatePlugins: snapshot.canCreatePlugins,
             dynamicCatalogIsEmpty: ToolRegistry.shared.dynamicCatalogIsEmpty(),
-            hasResolvedDynamicTools: hasDynamicTools(toolMode: toolMode, preflight: preflight, agentId: agentId),
+            hasResolvedDynamicTools: hasDynamicTools(snapshot: snapshot, preflight: preflight),
             skillEnabled: pluginCreatorSkill?.enabled ?? false
         )
         if PluginCreatorGate.shouldInject(gateInputs), let skill = pluginCreatorSkill {
@@ -487,6 +772,26 @@ public struct SystemPromptComposer: Sendable {
         }
     }
 
+    /// Tools that drive the chat-layer agent loop — `agentLoopGuidance`
+    /// fires when any one of these resolves into the schema.
+    static let agentLoopToolNames: Set<String> = [
+        "todo", "complete", "clarify", "share_artifact",
+    ]
+
+    /// Tools that can mutate the user's filesystem, exec arbitrary code,
+    /// or install dependencies. `codeStyleGuidance` and `riskAwareGuidance`
+    /// fire whenever any one of these resolves into the schema. Grow this
+    /// set as new write-capable tools land (plugin tools, future sandbox
+    /// tools, etc.).
+    static let mutationToolNames: Set<String> = [
+        // sandbox built-ins
+        "sandbox_write_file", "sandbox_edit_file", "sandbox_exec",
+        "sandbox_install", "sandbox_pip_install", "sandbox_npm_install",
+        "sandbox_execute_code",
+        // folder tools
+        "file_write", "file_edit", "shell_run",
+    ]
+
     /// Capture the always-loaded names present in this turn's schema so
     /// callers can stash the snapshot for the next turn. When a snapshot
     /// was supplied, just echo it; otherwise compute fresh from the
@@ -499,8 +804,8 @@ public struct SystemPromptComposer: Sendable {
     private static func resolveAlwaysLoadedNames(
         tools: [Tool],
         executionMode: ExecutionMode,
-        frozenAlwaysLoadedNames: Set<String>?
-    ) -> Set<String> {
+        frozenAlwaysLoadedNames: LoadedTools?
+    ) -> LoadedTools {
         if let frozenAlwaysLoadedNames {
             return frozenAlwaysLoadedNames
         }
@@ -529,66 +834,90 @@ public struct SystemPromptComposer: Sendable {
         executionMode: ExecutionMode,
         model: String? = nil
     ) -> ComposedContext {
-        var composer = forChat(agentId: agentId, executionMode: executionMode, model: model)
-
-        let agentToolsOff = AgentManager.shared.effectiveToolsDisabled(for: agentId)
-        let agentMemoryOff = AgentManager.shared.effectiveMemoryDisabled(for: agentId)
-        let autonomousConfig = AgentManager.shared.effectiveAutonomousExec(for: agentId)
-        let autonomousEnabled = autonomousConfig?.enabled == true
-        let canCreatePlugins = autonomousConfig.map { $0.enabled && $0.pluginCreate } ?? false
-        let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
-
-        let (sizeClass, contextLength) = ContextSizeResolver.resolve(modelId: model)
-        let effectiveToolsOff = agentToolsOff || sizeClass.disablesTools
-        let contextDisable = ContextDisableInfo(
-            sizeClass: sizeClass,
-            modelId: model,
-            contextLength: contextLength,
-            agentToolsOff: agentToolsOff,
-            agentMemoryOff: agentMemoryOff
-        )
-
-        let tools = resolveTools(
+        // Same one-shot snapshot as the real send path so the popover
+        // can never disagree with the next compose's gate decisions.
+        let snapshot = AgentConfigSnapshot.capture(
             agentId: agentId,
-            executionMode: executionMode,
-            toolsDisabled: effectiveToolsOff
+            modelOverride: model
         )
-
+        var composer = forChat(
+            snapshot: snapshot,
+            agentId: agentId,
+            executionMode: executionMode
+        )
+        let toolset = previewToolset(snapshot: snapshot, executionMode: executionMode)
+        // Sync soul read — the preview path is itself sync and the file
+        // is tiny + local. `resolveSoul` is just an async wrapper around
+        // `loadSoulContent` for trace marks, so calling the underlying
+        // helper directly keeps the popover honest with no I/O hop.
+        let soulSection: String? =
+            executionMode.usesSandboxTools
+            ? loadSoulContent(linuxName: SandboxAgentProvisioner.linuxName(for: agentId.uuidString))
+            : nil
         appendGatedSections(
             composer: &composer,
+            snapshot: snapshot,
+            toolset: toolset,
             agentId: agentId,
             executionMode: executionMode,
-            model: model,
-            tools: tools,
-            preflight: .empty,
-            effectiveToolsOff: effectiveToolsOff,
-            autonomousEnabled: autonomousEnabled,
-            canCreatePlugins: canCreatePlugins,
-            toolMode: toolMode
-        )
-
-        let alwaysLoadedNames = resolveAlwaysLoadedNames(
-            tools: tools,
-            executionMode: executionMode,
-            frozenAlwaysLoadedNames: nil
+            soulSection: soulSection
         )
 
         let manifest = composer.manifest()
-        let toolNames = tools.map { $0.function.name }
+        let toolNames = toolset.tools.map { $0.function.name }
         let rendered = composer.render()
 
         return ComposedContext(
             prompt: rendered,
             manifest: manifest,
-            tools: tools,
-            toolTokens: ToolRegistry.shared.totalEstimatedTokens(for: tools),
+            tools: toolset.tools,
+            toolTokens: ToolRegistry.shared.totalEstimatedTokens(for: toolset.tools),
             preflightItems: [],
             preflight: .empty,
             memorySection: nil,
-            alwaysLoadedNames: alwaysLoadedNames,
+            alwaysLoadedNames: toolset.alwaysLoadedNames,
             cacheHint: manifest.staticPrefixHash(toolNames: toolNames),
             staticPrefix: manifest.staticPrefixContent,
-            contextDisable: contextDisable
+            contextDisable: toolset.contextDisable
+        )
+    }
+
+    /// Sync companion to `resolveToolset` for the preview path. Skips
+    /// preflight (LLM call), skill suggestions (also async), and always
+    /// passes nil for the freeze snapshot — the popover prices what
+    /// `composeChatContext(query: "")` would emit, not a mid-session
+    /// freeze.
+    @MainActor
+    private static func previewToolset(
+        snapshot: AgentConfigSnapshot,
+        executionMode: ExecutionMode
+    ) -> ResolvedToolset {
+        let window = ContextSizeResolver.resolve(modelId: snapshot.model)
+        let effectiveToolsOff = snapshot.toolsDisabled || window.sizeClass.disablesTools
+        let contextDisable = ContextDisableInfo.from(
+            sizeClass: window.sizeClass,
+            modelId: snapshot.model,
+            contextLength: window.contextLength,
+            agentToolsOff: snapshot.toolsDisabled,
+            agentMemoryOff: snapshot.memoryDisabled
+        )
+        let tools = resolveTools(
+            snapshot: snapshot,
+            executionMode: executionMode,
+            toolsDisabled: effectiveToolsOff
+        )
+        let alwaysLoadedNames = resolveAlwaysLoadedNames(
+            tools: tools,
+            executionMode: executionMode,
+            frozenAlwaysLoadedNames: nil
+        )
+        return ResolvedToolset(
+            preflight: .empty,
+            tools: tools,
+            skillSuggestions: [],
+            alwaysLoadedNames: alwaysLoadedNames,
+            contextDisable: contextDisable,
+            effectiveToolsOff: effectiveToolsOff
         )
     }
 
@@ -651,20 +980,18 @@ public struct SystemPromptComposer: Sendable {
     ///     carve-out, `loaded` is the running `capabilities_load` union.
     @MainActor
     private static func emitToolDiagnostics(
-        tools: [Tool],
-        toolMode: ToolSelectionMode,
-        preflight: PreflightResult,
+        snapshot: AgentConfigSnapshot,
+        toolset: ResolvedToolset,
         executionMode: ExecutionMode,
-        autonomousEnabled: Bool,
-        effectiveToolsOff: Bool,
-        frozenAlwaysLoadedNames: Set<String>?,
-        additionalToolNames: Set<String>,
+        frozenAlwaysLoadedNames: LoadedTools?,
+        additionalToolNames: LoadedTools,
         trace: TTFTTrace?
     ) {
+        let tools = toolset.tools
         let toolSource = resolveToolSource(
-            toolMode: toolMode,
-            preflight: preflight,
-            effectiveToolsOff: effectiveToolsOff
+            toolMode: snapshot.toolMode,
+            preflight: toolset.preflight,
+            effectiveToolsOff: toolset.effectiveToolsOff
         )
         let sandboxStatus = String(describing: SandboxManager.State.shared.status)
         let sortedNames = tools.map { $0.function.name }.sorted()
@@ -675,17 +1002,17 @@ public struct SystemPromptComposer: Sendable {
         )
 
         debugLog(
-            "[Context:tools] mode=\(toolMode) source=\(toolSource) autonomous=\(autonomousEnabled) sandboxStatus=\(sandboxStatus) executionMode=\(executionMode) count=\(tools.count) frozen=\(frozenSize) additive=\(additiveCount) loaded=\(additionalToolNames.count) names=[\(sortedNames.joined(separator: ", "))]"
+            "[Context:tools] mode=\(snapshot.toolMode) source=\(toolSource) autonomous=\(snapshot.autonomousEnabled) sandboxStatus=\(sandboxStatus) executionMode=\(executionMode) count=\(tools.count) frozen=\(frozenSize) additive=\(additiveCount) loaded=\(additionalToolNames.count) names=[\(sortedNames.joined(separator: ", "))]"
         )
         emitAutonomousWarningsIfNeeded(
             tools: tools,
             executionMode: executionMode,
-            autonomousEnabled: autonomousEnabled,
+            autonomousEnabled: snapshot.autonomousEnabled,
             sandboxStatus: sandboxStatus
         )
-        trace?.set("toolMode", String(describing: toolMode))
+        trace?.set("toolMode", String(describing: snapshot.toolMode))
         trace?.set("toolSource", toolSource)
-        trace?.set("autonomous", autonomousEnabled ? "1" : "0")
+        trace?.set("autonomous", snapshot.autonomousEnabled ? "1" : "0")
         trace?.set("sandboxStatus", sandboxStatus)
         trace?.set("toolFrozen", frozenSize)
         trace?.set("toolAdditive", additiveCount)
@@ -711,7 +1038,7 @@ public struct SystemPromptComposer: Sendable {
     @MainActor
     private static func countAdditiveSandboxTools(
         in toolNames: [String],
-        frozen: Set<String>?
+        frozen: LoadedTools?
     ) -> Int {
         guard let frozen else { return 0 }
         let liveSandboxNames = ToolRegistry.shared.builtInSandboxToolNamesSnapshot
@@ -748,18 +1075,15 @@ public struct SystemPromptComposer: Sendable {
     /// non-sandbox-builtin) tool via preflight or manual selection? Used by
     /// `finalizeContext` to decide whether to inject the plugin-creator
     /// fallback skill.
-    @MainActor
     private static func hasDynamicTools(
-        toolMode: ToolSelectionMode,
-        preflight: PreflightResult,
-        agentId: UUID
+        snapshot: AgentConfigSnapshot,
+        preflight: PreflightResult
     ) -> Bool {
-        switch toolMode {
+        switch snapshot.toolMode {
         case .auto:
             return !preflight.toolSpecs.isEmpty
         case .manual:
-            let names = AgentManager.shared.effectiveManualToolNames(for: agentId) ?? []
-            return !names.isEmpty
+            return !(snapshot.manualToolNames?.isEmpty ?? true)
         }
     }
 
@@ -787,13 +1111,35 @@ public struct SystemPromptComposer: Sendable {
         executionMode: ExecutionMode,
         toolsDisabled: Bool = false,
         preflight: PreflightResult = .empty,
-        additionalToolNames: Set<String> = [],
-        frozenAlwaysLoadedNames: Set<String>? = nil
+        additionalToolNames: LoadedTools = [],
+        frozenAlwaysLoadedNames: LoadedTools? = nil
+    ) -> [Tool] {
+        let snapshot = AgentConfigSnapshot.capture(
+            agentId: agentId,
+            requestToolsDisabled: toolsDisabled
+        )
+        return resolveTools(
+            snapshot: snapshot,
+            executionMode: executionMode,
+            toolsDisabled: toolsDisabled,
+            preflight: preflight,
+            additionalToolNames: additionalToolNames,
+            frozenAlwaysLoadedNames: frozenAlwaysLoadedNames
+        )
+    }
+
+    @MainActor
+    static func resolveTools(
+        snapshot: AgentConfigSnapshot,
+        executionMode: ExecutionMode,
+        toolsDisabled: Bool = false,
+        preflight: PreflightResult = .empty,
+        additionalToolNames: LoadedTools = [],
+        frozenAlwaysLoadedNames: LoadedTools? = nil
     ) -> [Tool] {
         guard !toolsDisabled else { return [] }
 
-        let toolMode = AgentManager.shared.effectiveToolSelectionMode(for: agentId)
-        let isManual = toolMode == .manual
+        let isManual = snapshot.toolMode == .manual
 
         var byName: [String: Tool] = [:]
 
@@ -836,7 +1182,7 @@ public struct SystemPromptComposer: Sendable {
         add(filtered(ToolRegistry.shared.alwaysLoadedSpecs(mode: executionMode)))
 
         if isManual {
-            if let manualNames = AgentManager.shared.effectiveManualToolNames(for: agentId) {
+            if let manualNames = snapshot.manualToolNames {
                 add(ToolRegistry.shared.specs(forTools: manualNames))
             }
         } else {
@@ -887,113 +1233,35 @@ public struct SystemPromptComposer: Sendable {
         return tools.sorted { sortKey($0) < sortKey($1) }
     }
 
-    /// Compose from a pre-resolved base with an optional dynamic skills section.
-    public static func composePrompt(
-        base: String,
-        skillSection: String? = nil
-    ) -> (prompt: String, manifest: PromptManifest) {
-        var composer = SystemPromptComposer()
-        composer.append(.static(id: "base", label: "System Prompt", content: base))
-        if let section = skillSection {
-            composer.append(.dynamic(id: "skills", label: "Skills", content: section))
-        }
-        return (composer.render(), composer.manifest())
-    }
-
-    /// Compose agent base prompt and inject into an existing message array.
-    /// Memory is now prepended to the latest user message instead of the
-    /// system prompt so the system message stays byte-stable across turns.
-    /// The returned `(cacheHint, staticPrefix)` tuple is informational —
-    /// vmlx's `CacheCoordinator` is content-addressed and discovers
-    /// reusable prefixes autonomously, so callers no longer need to
-    /// thread these into the request. Kept on the signature for
-    /// preflight-cache bookkeeping callers (e.g. `SessionToolStateStore`).
-    @discardableResult
-    static func injectAgentContext(
-        agentId: UUID,
-        query: String = "",
-        into messages: inout [ChatMessage]
-    ) async -> (cacheHint: String, staticPrefix: String) {
-        // only forChat needs @MainActor. so hop there briefly and return the value type composer.
-        // Memory assembly itself runs on the cooperative thread pool so the
-        // app stays responsive during HTTP requests.
-        let composer = await MainActor.run { forChat(agentId: agentId, executionMode: .none) }
-        let memoryOff = await AgentManager.shared.effectiveMemoryDisabled(for: agentId)
-
-        let memorySection: String? =
-            memoryOff
-            ? nil
-            : await assembleMemorySection(
-                agentId: agentId.uuidString,
-                query: query
-            )
-
-        let manifest = composer.manifest()
-        let rendered = composer.render()
-        debugLog("[Context:inject] \(manifest.debugDescription)")
-        if !rendered.isEmpty {
-            injectSystemContent(rendered, into: &messages)
-        }
-        injectMemoryPrefix(memorySection, into: &messages)
-        return (manifest.staticPrefixHash(toolNames: []), manifest.staticPrefixContent)
-    }
-
-    // MARK: - Compact Resolution
-
-    /// Resolve whether to use compact prompts from an explicit model ID,
-    /// falling back to the agent's configured default model.
-    @MainActor
-    static func resolveCompact(model: String? = nil, agentId: UUID? = nil) -> Bool {
-        if let model { return SystemPromptTemplates.isLocalModel(model) }
-        if let agentId, let agentModel = AgentManager.shared.effectiveModel(for: agentId) {
-            return SystemPromptTemplates.isLocalModel(agentModel)
-        }
-        return false
-    }
-
     // MARK: - Factory Methods
 
     /// Pre-loaded composer for chat mode. Compact is auto-resolved from model/agent.
+    /// Captures an `AgentConfigSnapshot` internally and forwards. Use the
+    /// snapshot-taking overload below from the compose pipeline so a single
+    /// MainActor read services every downstream gate.
     @MainActor
     public static func forChat(
         agentId: UUID,
         executionMode: ExecutionMode,
         model: String? = nil
     ) -> SystemPromptComposer {
-        let compact = resolveCompact(model: model, agentId: agentId)
-        return forChat(agentId: agentId, executionMode: executionMode, compact: compact)
+        let snapshot = AgentConfigSnapshot.capture(agentId: agentId, modelOverride: model)
+        return forChat(snapshot: snapshot, agentId: agentId, executionMode: executionMode)
     }
 
+    /// Snapshot-aware composer factory. Returns just the platform +
+    /// persona pair — every other static section (operational directives,
+    /// agent loop, sandbox/folder, capability nudge) is appended later by
+    /// `appendGatedSections` so the static cross-cutting block can land
+    /// between persona and the mode-specific section.
     @MainActor
-    static func forChat(
+    public static func forChat(
+        snapshot: AgentConfigSnapshot,
         agentId: UUID,
-        executionMode: ExecutionMode,
-        compact: Bool
+        executionMode: ExecutionMode
     ) -> SystemPromptComposer {
         var composer = SystemPromptComposer()
-        composer.appendBasePrompt(agentId: agentId)
-        if executionMode.usesSandboxTools {
-            let secretNames = Array(AgentSecretsKeychain.getAllSecrets(agentId: agentId).keys)
-            composer.append(
-                .static(
-                    id: "sandbox",
-                    label: "Chat Sandbox",
-                    content: SystemPromptTemplates.sandbox(compact: compact, secretNames: secretNames)
-                )
-            )
-        } else if let folder = executionMode.folderContext {
-            // Working-directory framing for `.hostFolder`. Without it the
-            // model gets folder tools in its schema but no prose anchor for
-            // WHERE it is, which leads to generic exploration + "I'll do X"
-            // stalls. Static so it joins the cached prefix.
-            composer.append(
-                .static(
-                    id: "folderContext",
-                    label: "Working Directory",
-                    content: SystemPromptTemplates.folderContext(from: folder)
-                )
-            )
-        }
+        composer.appendBasePrompt(systemPrompt: snapshot.systemPrompt)
         return composer
     }
 
@@ -1034,6 +1302,15 @@ public struct SystemPromptComposer: Sendable {
     /// is true the content lands at the top of an existing system message;
     /// false appends to the bottom. With no existing system message, a new
     /// one is inserted at index 0 in either case.
+    ///
+    /// The `prepend` parameter exists to support both call shapes:
+    ///   - `injectSystemContent` (prepend=true) — used by the HTTP path
+    ///     to land the agent's composed prompt ahead of any caller-
+    ///     supplied system content.
+    ///   - `appendSystemContent` (prepend=false) — used by `PluginHostAPI`
+    ///     to tack plugin-instructions and the dynamic skills section
+    ///     onto the END of the system block so they read as additions
+    ///     to the (already-composed) base prompt rather than overrides.
     static func mergeSystemContent(
         _ content: String,
         into messages: inout [ChatMessage],
@@ -1051,10 +1328,19 @@ public struct SystemPromptComposer: Sendable {
         }
     }
 
+    /// Prepend system content. Used by the HTTP enrichment path so the
+    /// agent's composed system prompt lands ahead of any caller-supplied
+    /// system message.
     static func injectSystemContent(_ content: String, into messages: inout [ChatMessage]) {
         mergeSystemContent(content, into: &messages, prepend: true)
     }
 
+    /// Append system content. Used by `PluginHostAPI` to tack plugin
+    /// instructions and dynamic skill sections onto the end of the
+    /// composed system message — they read as additions to the base
+    /// prompt rather than overriding it. Two live callers in
+    /// `PluginHostAPI.prepareInference`; do not delete without
+    /// migrating those.
     static func appendSystemContent(_ content: String, into messages: inout [ChatMessage]) {
         mergeSystemContent(content, into: &messages, prepend: false)
     }
