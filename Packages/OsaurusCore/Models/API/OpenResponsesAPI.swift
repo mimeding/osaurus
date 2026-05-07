@@ -287,8 +287,7 @@ public enum OpenResponsesToolChoice: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         // Try decoding as string first
         if let container = try? decoder.singleValueContainer(),
-            let str = try? container.decode(String.self)
-        {
+            let str = try? container.decode(String.self) {
             switch str {
             case "auto": self = .auto
             case "none": self = .none
@@ -843,7 +842,7 @@ extension OpenResponsesRequest {
         }
 
         // Convert tools
-        var openAITools: [Tool]? = nil
+        var openAITools: [Tool]?
         if let tools = tools {
             openAITools = tools.map { tool in
                 Tool(
@@ -858,7 +857,7 @@ extension OpenResponsesRequest {
         }
 
         // Convert tool choice
-        var openAIToolChoice: ToolChoiceOption? = nil
+        var openAIToolChoice: ToolChoiceOption?
         if let choice = tool_choice {
             switch choice {
             case .auto:

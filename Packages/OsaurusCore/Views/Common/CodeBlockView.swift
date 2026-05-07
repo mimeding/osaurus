@@ -76,7 +76,7 @@ struct CodeBlockView: View {
     @State private var isHovered = false
 
     var body: some View {
-        let _ = ensureHighlightrTheme(for: theme)
+        let _ = ensureHighlightrTheme(for: theme) // swiftlint:disable:this redundant_discardable_let
         let bgColor = highlightrThemeBackgroundColor()
 
         VStack(alignment: .leading, spacing: 0) {
@@ -318,7 +318,7 @@ final class CodeNSTextView: NSTextView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if NSPointInRect(point, bounds) { return self }
+        if bounds.contains(point) { return self }
         return nil
     }
 
@@ -330,8 +330,7 @@ final class CodeNSTextView: NSTextView {
         let point = convert(event.locationInWindow, from: nil)
         let charIndex = characterIndexForInsertion(at: point)
         if charIndex < textStorage?.length ?? 0,
-            let link = textStorage?.attribute(.link, at: charIndex, effectiveRange: nil)
-        {
+            let link = textStorage?.attribute(.link, at: charIndex, effectiveRange: nil) {
             let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
             if let url { NSWorkspace.shared.open(url); return }
         }

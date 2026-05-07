@@ -23,9 +23,7 @@ struct ProvidersView: View {
                 if manager.configuration.providers.isEmpty {
                     emptyState
                 } else {
-                    ForEach(Array(manager.configuration.providers.enumerated()), id: \.element.id) {
-                        index,
-                        provider in
+                    ForEach(Array(manager.configuration.providers.enumerated()), id: \.element.id) { index, provider in
                         ProviderCard(
                             provider: provider,
                             state: manager.providerStates[provider.id],
@@ -897,7 +895,7 @@ private struct ProviderEditSheet: View {
         // Note: Token not loaded for security - user must re-enter if changing
     }
 
-    private func testConnection() {
+    func testConnection() {
         isTesting = true
         testResult = nil
 

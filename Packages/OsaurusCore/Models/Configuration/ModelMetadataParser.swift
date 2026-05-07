@@ -25,8 +25,7 @@ enum ModelMetadataParser {
             if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
                 let range = NSRange(text.startIndex..., in: text)
                 if let match = regex.firstMatch(in: text, options: [], range: range),
-                    let numRange = Range(match.range(at: 1), in: text)
-                {
+                    let numRange = Range(match.range(at: 1), in: text) {
                     let number = String(text[numRange])
                     let fullMatch = String(text[Range(match.range, in: text)!]).uppercased()
                     return "\(number)\(fullMatch.contains("M") ? "M" : "B")"
@@ -51,8 +50,8 @@ enum ModelMetadataParser {
             ("q4_0", "Q4_0"), ("q4_k_m", "Q4_K_M"),
             ("q8_0", "Q8_0"), ("q8_k_m", "Q8_K_M"),
         ]
-        for (pattern, result) in ggufPatterns {
-            if text.contains(pattern) { return result }
+        for (pattern, result) in ggufPatterns where text.contains(pattern) {
+            return result
         }
         return precisionFormat(from: repoId)
     }

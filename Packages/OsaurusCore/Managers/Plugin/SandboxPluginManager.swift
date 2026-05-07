@@ -305,8 +305,7 @@ public final class SandboxPluginManager: ObservableObject {
         let existing = self.plugin(id: pluginId, for: agentId)
 
         if existing?.status == .ready,
-            hostFilesIntact(plugin: plugin, agentName: agentName)
-        {
+            hostFilesIntact(plugin: plugin, agentName: agentName) {
             return true
         }
 

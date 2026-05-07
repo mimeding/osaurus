@@ -35,7 +35,7 @@ final class NativeMarkdownView: NSView {
             let pInSeg = convert(point, to: entry.view)
             if let hit = entry.view.hitTest(pInSeg) { return hit }
         }
-        if NSPointInRect(point, bounds) { return self }
+        if bounds.contains(point) { return self }
         return nil
     }
 
@@ -426,8 +426,7 @@ final class NativeMarkdownView: NSView {
         let verticalConstraints = constraints.filter { c in
             if c.firstAttribute == .top || c.firstAttribute == .bottom {
                 if let first = c.firstItem as? NSView,
-                    subviewPointers.contains(Unmanaged.passUnretained(first).toOpaque())
-                {
+                    subviewPointers.contains(Unmanaged.passUnretained(first).toOpaque()) {
                     return true
                 }
             }

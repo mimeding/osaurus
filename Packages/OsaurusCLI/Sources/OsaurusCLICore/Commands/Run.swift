@@ -80,8 +80,7 @@ public struct RunCommand: Command {
                     if line.isEmpty { continue }
                     // Decode NDJSON event and print incremental content
                     if let data = line.data(using: .utf8),
-                        let event = try? decoder.decode(NDJSONEvent.self, from: data)
-                    {
+                        let event = try? decoder.decode(NDJSONEvent.self, from: data) {
                         if let content = event.message?.content, !content.isEmpty {
                             assistantAggregate += content
                             print(content, terminator: "")

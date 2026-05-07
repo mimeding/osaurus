@@ -108,7 +108,7 @@ private struct SystemPermissionRow: View {
     let permission: SystemPermission
 
     @State private var isTesting = false
-    @State private var testResult: String? = nil
+    @State private var testResult: String?
     @State private var isHovered = false
 
     private var isGranted: Bool {

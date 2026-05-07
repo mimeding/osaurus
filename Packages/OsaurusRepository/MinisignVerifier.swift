@@ -104,7 +104,7 @@ public enum MinisignVerifier {
 
         for (index, line) in lines.enumerated() {
             // "RW" = Ed25519 (non-prehashed), "RU" = Ed25519ph (prehashed)
-            if (line.hasPrefix("RW") || line.hasPrefix("RU")), Data(base64Encoded: line) != nil {
+            if line.hasPrefix("RW") || line.hasPrefix("RU"), Data(base64Encoded: line) != nil {
                 signatureLine = line
                 // Next non-empty line after "trusted comment:" is the global signature
                 for nextLine in lines[(index + 1)...] {

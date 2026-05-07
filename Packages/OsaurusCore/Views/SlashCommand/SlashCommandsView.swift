@@ -15,7 +15,7 @@ struct SlashCommandsView: View {
     private var theme: ThemeProtocol { themeManager.currentTheme }
 
     @State private var isCreating = false
-    @State private var editingCommand: SlashCommand? = nil
+    @State private var editingCommand: SlashCommand?
     @State private var hasAppeared = false
 
     var body: some View {

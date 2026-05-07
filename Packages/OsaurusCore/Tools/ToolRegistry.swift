@@ -374,7 +374,7 @@ final class ToolRegistry: ObservableObject {
     /// fall through unchanged: parsing is best-effort, and tool bodies
     /// keep their richer `requireXxx` helpers as the second line of
     /// defence.
-    private nonisolated static func preflight(
+    nonisolated private static func preflight(
         argumentsJSON: String,
         schema: JSONValue?,
         toolName: String
@@ -435,7 +435,7 @@ final class ToolRegistry: ObservableObject {
     /// post-return throw from reaching the caller as the function's
     /// error — historically the slow-tool case rethrew CancellationError
     /// and stalled while the group drained.
-    internal nonisolated static func runToolBody(
+    nonisolated internal static func runToolBody(
         _ tool: OsaurusTool,
         argumentsJSON: String,
         timeoutSeconds: TimeInterval

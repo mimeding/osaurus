@@ -126,8 +126,7 @@ public struct WhatsNewModal: View {
             Spacer()
             // Optional per-page CTA between the chevrons.
             if let label = release.pages[currentIndex].actionLabel,
-                let action = release.pages[currentIndex].action
-            {
+                let action = release.pages[currentIndex].action {
                 Button {
                     onAction?(action)
                 } label: {

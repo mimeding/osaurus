@@ -51,8 +51,7 @@ final class BlockMemoizer {
             && pendingToolName == lastPendingToolName
             && pendingToolArgSize == lastPendingToolArgSize
             && version == lastVersion && !cached.isEmpty
-            && streamingTurnId == lastStreamingTurnId
-        {
+            && streamingTurnId == lastStreamingTurnId {
             return limited(streaming: streamingTurnId != nil)
         }
 

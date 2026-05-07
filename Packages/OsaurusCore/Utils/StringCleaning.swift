@@ -36,8 +36,7 @@ public enum StringCleaning {
         if let lastBrace = result.lastIndex(of: "{") {
             let suffix = String(result[lastBrace...])
             if (suffix.contains("\"name\"") || suffix.contains("\"function\"") || suffix.contains("\"tool\""))
-                && !suffix.contains("}}")
-            {
+                && !suffix.contains("}}") {
                 result = String(result[..<lastBrace]).trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }

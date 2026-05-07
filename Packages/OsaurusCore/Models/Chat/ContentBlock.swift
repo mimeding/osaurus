@@ -194,8 +194,7 @@ struct ContentBlock: Identifiable, Equatable, Hashable {
     }
 
     static func thinking(turnId: UUID, index: Int, text: String, isStreaming: Bool, position: BlockPosition)
-        -> ContentBlock
-    {
+        -> ContentBlock {
         ContentBlock(
             id: "think-\(turnId.uuidString)-\(index)",
             turnId: turnId,
@@ -205,8 +204,7 @@ struct ContentBlock: Identifiable, Equatable, Hashable {
     }
 
     static func userMessage(turnId: UUID, text: String, attachments: [Attachment], position: BlockPosition)
-        -> ContentBlock
-    {
+        -> ContentBlock {
         ContentBlock(
             id: "usermsg-\(turnId.uuidString)",
             turnId: turnId,
@@ -244,8 +242,7 @@ struct ContentBlock: Identifiable, Equatable, Hashable {
     }
 
     static func preflightCapabilities(turnId: UUID, items: [PreflightCapabilityItem], position: BlockPosition)
-        -> ContentBlock
-    {
+        -> ContentBlock {
         ContentBlock(
             id: "preflight-\(turnId.uuidString)",
             turnId: turnId,
@@ -392,8 +389,7 @@ extension ContentBlock {
             }
 
             if isStreaming && turn.contentIsEmpty && !turn.hasThinking
-                && (turn.toolCalls ?? []).isEmpty && turn.pendingToolName == nil
-            {
+                && (turn.toolCalls ?? []).isEmpty && turn.pendingToolName == nil {
                 // During prefill (no content/thinking/tools yet), always show the typing
                 // indicator so the interface doesn't appear frozen.
                 // Only add the thinking placeholder when thinking is actually enabled for
@@ -440,8 +436,7 @@ extension ContentBlock {
                     // renders as the next user bubble below.
                     if Self.isAgentLoopToolName(call.function.name) {
                         if call.function.name == "clarify",
-                            let block = Self.makeClarifyQuestionBlock(turnId: turn.id, call: call)
-                        {
+                            let block = Self.makeClarifyQuestionBlock(turnId: turn.id, call: call) {
                             flushRegularItems()
                             turnBlocks.append(block)
                         }
@@ -451,14 +446,12 @@ extension ContentBlock {
                     let result = turn.toolResults[call.id]
                     if call.function.name == "share_artifact",
                         let result,
-                        let artifact = Self.parseSharedArtifactFromResult(result)
-                    {
+                        let artifact = Self.parseSharedArtifactFromResult(result) {
                         flushRegularItems()
                         turnBlocks.append(.sharedArtifact(turnId: turn.id, artifact: artifact, position: .middle))
                     } else if call.function.name == "render_chart",
                         let result,
-                        let spec = Self.parseChartSpecFromResult(result)
-                    {
+                        let spec = Self.parseChartSpecFromResult(result) {
                         flushRegularItems()
                         turnBlocks.append(.chart(turnId: turn.id, spec: spec.normalized, position: .middle))
                     } else {
@@ -481,8 +474,7 @@ extension ContentBlock {
             }
 
             if !isStreaming && turn.role == .assistant,
-                turn.timeToFirstToken != nil || turn.generationTokensPerSecond != nil
-            {
+                turn.timeToFirstToken != nil || turn.generationTokensPerSecond != nil {
                 turnBlocks.append(
                     .generationStats(
                         turnId: turn.id,
@@ -499,8 +491,7 @@ extension ContentBlock {
             // turn in a consecutive assistant group — intermediate tool-calling turns in
             // an agent loop don't get their own footer.
             if !isStreaming && turn.role == .assistant && isLastInGroup,
-                !turn.contentIsEmpty || !(turn.toolCalls ?? []).isEmpty
-            {
+                !turn.contentIsEmpty || !(turn.toolCalls ?? []).isEmpty {
                 turnBlocks.append(.assistantActions(turnId: turn.id, position: .last))
             }
 
@@ -523,8 +514,7 @@ extension ContentBlock {
     private static func parseChartSpecFromResult(_ result: String) -> ChartSpec? {
         let source: String
         if let payload = ToolEnvelope.successPayload(result) as? [String: Any],
-            let text = payload["text"] as? String
-        {
+            let text = payload["text"] as? String {
             source = text
         } else {
             source = result
@@ -588,8 +578,7 @@ extension ContentBlock {
                 remaining = String(afterFence[closeRange.upperBound...])
 
                 if let data = json.data(using: .utf8),
-                    let spec = try? JSONDecoder().decode(ChartSpec.self, from: data)
-                {
+                    let spec = try? JSONDecoder().decode(ChartSpec.self, from: data) {
                     blocks.append(.chart(turnId: turnId, spec: spec.normalized, position: .middle))
                 } else {
                     // Malformed JSON — show as readable code block so user can see what was emitted

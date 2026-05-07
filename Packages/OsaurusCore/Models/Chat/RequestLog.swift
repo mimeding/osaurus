@@ -213,8 +213,7 @@ struct RequestLog: Identifiable, Sendable {
         guard let body = requestBody, let data = body.data(using: .utf8) else { return requestBody }
         if let json = try? JSONSerialization.jsonObject(with: data, options: []),
             let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
-            let prettyString = String(data: prettyData, encoding: .utf8)
-        {
+            let prettyString = String(data: prettyData, encoding: .utf8) {
             return prettyString
         }
         return body
@@ -225,8 +224,7 @@ struct RequestLog: Identifiable, Sendable {
         guard let body = responseBody, let data = body.data(using: .utf8) else { return responseBody }
         if let json = try? JSONSerialization.jsonObject(with: data, options: []),
             let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
-            let prettyString = String(data: prettyData, encoding: .utf8)
-        {
+            let prettyString = String(data: prettyData, encoding: .utf8) {
             return prettyString
         }
         return body

@@ -278,8 +278,7 @@ public enum ArgumentCoercion {
         if let arr = value as? [String] { return arr }
         if let str = value as? String {
             if let data = str.data(using: .utf8),
-                let parsed = try? JSONSerialization.jsonObject(with: data) as? [String]
-            {
+                let parsed = try? JSONSerialization.jsonObject(with: data) as? [String] {
                 return parsed
             }
             let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)

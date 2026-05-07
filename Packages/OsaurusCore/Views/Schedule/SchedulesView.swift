@@ -65,9 +65,7 @@ struct SchedulesView: View {
                             ],
                             spacing: 20
                         ) {
-                            ForEach(Array(scheduleManager.schedules.enumerated()), id: \.element.id) {
-                                index,
-                                schedule in
+                            ForEach(Array(scheduleManager.schedules.enumerated()), id: \.element.id) { index, schedule in
                                 ScheduleCard(
                                     schedule: schedule,
                                     isRunning: scheduleManager.isRunning(schedule.id),
@@ -1553,7 +1551,7 @@ struct ScheduleEditorSheet: View {
     let mode: Mode
     let onSave: (Schedule) -> Void
     let onCancel: () -> Void
-    var initialAgentId: UUID? = nil
+    var initialAgentId: UUID?
 
     @State private var name = ""
     @State private var instructions = ""

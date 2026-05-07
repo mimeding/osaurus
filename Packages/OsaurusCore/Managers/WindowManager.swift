@@ -82,7 +82,7 @@ public final class WindowManager: NSObject, ObservableObject {
     private var windows: [WindowIdentifier: NSWindow] = [:]
     private var windowDelegates: [WindowIdentifier: WindowManagerDelegate] = [:]
 
-    private override init() {
+    override private init() {
         super.init()
         loadPinnedState()
     }

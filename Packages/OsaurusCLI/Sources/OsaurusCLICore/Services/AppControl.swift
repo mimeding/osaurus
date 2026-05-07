@@ -68,8 +68,8 @@ public struct AppControl {
             "/Applications/osaurus.app",
             "\(home)/Applications/osaurus.app",
         ]
-        for c in candidates {
-            if fm.fileExists(atPath: c) { return c }
+        for c in candidates where fm.fileExists(atPath: c) {
+            return c
         }
         // Try Spotlight via mdfind, restricted to Applications folders first
         if let path = spotlightFind(queryArgs: [

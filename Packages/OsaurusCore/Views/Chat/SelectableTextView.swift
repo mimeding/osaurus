@@ -60,14 +60,14 @@ struct SelectableTextView: NSViewRepresentable {
     let baseWidth: CGFloat
     let theme: ThemeProtocol
     /// Optional cache key (turn ID) for persisting measured height across view recycling
-    var cacheKey: String? = nil
+    var cacheKey: String?
 
     final class Coordinator {
         var lastBlocks: [SelectableTextBlock] = []
         var lastWidth: CGFloat = 0
         var lastThemeFingerprint: String = ""
         var lastMeasuredHeight: CGFloat = 0
-        var cacheKey: String? = nil
+        var cacheKey: String?
         var blockLengths: [Int] = []  // per-block rendered lengths for incremental updates
         /// Disables ThreadCache lookups once content changes (prevents stale heights during streaming)
         var contentChangedSinceInit: Bool = false
@@ -767,8 +767,7 @@ struct SelectableTextView: NSViewRepresentable {
             if scalars[i] == "$"
                 && i + 1 < scalars.count
                 && !scalars[i + 1].properties.isWhitespace
-                && scalars[i + 1] != "$"
-            {
+                && scalars[i + 1] != "$" {
                 if let closeIdx = findClosingDollar(scalars, from: i + 1) {
                     let start = text.unicodeScalars.index(text.unicodeScalars.startIndex, offsetBy: i + 1)
                     let end = text.unicodeScalars.index(text.unicodeScalars.startIndex, offsetBy: closeIdx)
@@ -839,8 +838,7 @@ struct SelectableTextView: NSViewRepresentable {
                     let markdownAttr = try? NSAttributedString(
                         markdown: segment.text,
                         options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                    )
-                {
+                    ) {
                     let mutable = NSMutableAttributedString(attributedString: markdownAttr)
                     applyThemeStyling(to: mutable, baseFontSize: fontSize, baseWeight: weight, isItalic: isItalic)
                     result.append(mutable)
@@ -1048,7 +1046,7 @@ final class SelectableNSTextView: NSTextView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // if point is not in bounds, not us
-        guard NSPointInRect(point, bounds) else { return nil }
+        guard bounds.contains(point) else { return nil }
 
         // find character index for the point
         guard let lm = layoutManager, let tc = textContainer else { return self }
@@ -1074,8 +1072,7 @@ final class SelectableNSTextView: NSTextView {
         let charIndex = characterIndexForInsertion(at: point)
 
         if charIndex < textStorage?.length ?? 0,
-            let link = textStorage?.attribute(.link, at: charIndex, effectiveRange: nil)
-        {
+            let link = textStorage?.attribute(.link, at: charIndex, effectiveRange: nil) {
             let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
             if let url {
                 if url.scheme == "artifact" {

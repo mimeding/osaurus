@@ -384,7 +384,7 @@ enum CapabilitySearch {
 
 /// Marker protocol so the env-flag log path can format hits from any
 /// of the three `*SearchDiagnostic.Hit` types with one helper.
-fileprivate protocol DiagnosticHit {
+private protocol DiagnosticHit {
     var name: String { get }
     var score: Float { get }
 }
@@ -393,7 +393,7 @@ extension ToolSearchDiagnostic.Hit: DiagnosticHit {}
 extension MethodSearchDiagnostic.Hit: DiagnosticHit {}
 extension SkillSearchDiagnostic.Hit: DiagnosticHit {}
 
-fileprivate func formatHits<H: DiagnosticHit>(_ hits: [H]) -> String {
+private func formatHits<H: DiagnosticHit>(_ hits: [H]) -> String {
     if hits.isEmpty { return "[]" }
     return
         hits
@@ -405,7 +405,7 @@ fileprivate func formatHits<H: DiagnosticHit>(_ hits: [H]) -> String {
 /// renders as `name(bm25=X.XXX|n/a, embed=Y.YYY|n/a, fused=Z.ZZZ)`
 /// so an engineer reading Console can see at a glance which source
 /// surfaced the candidate (the `n/a` markers carry the H4/H5 signal).
-fileprivate func formatHybridHits(_ hits: [ToolSearchHybridDiagnostic.Hit]) -> String {
+private func formatHybridHits(_ hits: [ToolSearchHybridDiagnostic.Hit]) -> String {
     if hits.isEmpty { return "[]" }
     return
         hits

@@ -477,10 +477,8 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
 
         // Best-effort GC. We re-check each hash against the surviving
         // rows; anything still referenced stays.
-        for hash in ownedRefs {
-            if !isBlobReferenced(hash) {
-                AttachmentBlobStore.delete(hash)
-            }
+        for hash in ownedRefs where !isBlobReferenced(hash) {
+            AttachmentBlobStore.delete(hash)
         }
     }
 

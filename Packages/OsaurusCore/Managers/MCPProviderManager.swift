@@ -297,7 +297,7 @@ public final class MCPProviderManager: ObservableObject {
     }
 
     /// Trampoline that runs the MCP network call outside MainActor isolation.
-    private nonisolated static func callMCPTool(
+    nonisolated private static func callMCPTool(
         client: MCP.Client,
         toolName: String,
         arguments: [String: MCP.Value],
@@ -422,8 +422,7 @@ public final class MCPProviderManager: ObservableObject {
     }
 
     private func withTimeout<T: Sendable>(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T)
-        async throws -> T
-    {
+        async throws -> T {
         try await withThrowingTaskGroup(of: T.self) { group in
             group.addTask {
                 try await operation()

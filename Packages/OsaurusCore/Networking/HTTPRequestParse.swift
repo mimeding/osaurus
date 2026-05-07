@@ -32,6 +32,6 @@ extension HTTPHandler {
         var bodyCopy = body
         let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
         let data = Data(bytes)
-        return ParsedBody(data: data, text: String(decoding: data, as: UTF8.self))
+        return ParsedBody(data: data, text: String(bytes: data, encoding: .utf8) ?? "")
     }
 }

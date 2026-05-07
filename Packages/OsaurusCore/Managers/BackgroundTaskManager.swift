@@ -424,8 +424,7 @@ public final class BackgroundTaskManager: ObservableObject {
         }
 
         if let loaded = PluginManager.shared.loadedPlugin(for: pluginId),
-            loaded.plugin.hasTaskEventHandler
-        {
+            loaded.plugin.hasTaskEventHandler {
             loaded.plugin.notifyTaskEvent(
                 taskId: state.id.uuidString,
                 eventType: type,
@@ -449,8 +448,7 @@ public final class BackgroundTaskManager: ObservableObject {
     func releaseEventsForDispatch(taskId: UUID) {
         dispatchHoldTasks.remove(taskId)
         if let events = heldTaskEvents.removeValue(forKey: taskId),
-            let state = backgroundTasks[taskId]
-        {
+            let state = backgroundTasks[taskId] {
             for event in events {
                 emitPluginEvent(state, type: event.type, json: event.json)
             }

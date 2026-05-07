@@ -225,8 +225,8 @@ struct MLXModel: Identifiable, Codable {
             "opencoder": "OpenCoder",
         ]
 
-        for (key, value) in strongMatches {
-            if name.contains(key) { return value }
+        for (key, value) in strongMatches where name.contains(key) {
+            return value
         }
 
         // 2. Fallback heuristic: clean up the name and take the first part
@@ -235,11 +235,9 @@ struct MLXModel: Identifiable, Codable {
         let prefixes = [
             "Meta-", "Google-", "Mistral-", "MistralAI-", "Microsoft-", "NousResearch-", "Qwen-", "DeepSeek-",
         ]
-        for prefix in prefixes {
-            if cleaned.hasPrefix(prefix) {
-                cleaned = String(cleaned.dropFirst(prefix.count))
-                break
-            }
+        for prefix in prefixes where cleaned.hasPrefix(prefix) {
+            cleaned = String(cleaned.dropFirst(prefix.count))
+            break
         }
 
         // Take first semantic part (before dash or dot)
@@ -275,8 +273,8 @@ struct MLXModel: Identifiable, Codable {
             ("2-bit", 0.25), ("3-bit", 0.375), ("4-bit", 0.5),
             ("5-bit", 0.625), ("6-bit", 0.75), ("8-bit", 1.0),
         ]
-        for (label, bytes) in bitWidths {
-            if quant.contains(label) { return bytes }
+        for (label, bytes) in bitWidths where quant.contains(label) {
+            return bytes
         }
 
         switch quant {

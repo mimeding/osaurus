@@ -20,9 +20,9 @@ final class DirectoryPickerService: ObservableObject {
     private var securityScopedResource: URL?
 
     // MARK: - Bookmark URL Cache (in-memory, avoids expensive IPC)
-    private static nonisolated let cacheLock = NSLock()
-    private static nonisolated(unsafe) var cachedBookmarkURL: URL?
-    private static nonisolated(unsafe) var cacheInitialized = false
+    nonisolated private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedBookmarkURL: URL?
+    nonisolated(unsafe) private static var cacheInitialized = false
 
     nonisolated private static func invalidateCache() {
         cacheLock.lock()

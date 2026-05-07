@@ -50,7 +50,7 @@ final class ChatSession: ObservableObject {
     let expandedBlocksStore = ExpandedBlocksStore()
     @Published var input: String = ""
     @Published var pendingAttachments: [Attachment] = []
-    @Published var selectedModel: String? = nil
+    @Published var selectedModel: String?
     @Published var pickerItems: [ModelPickerItem] = []
     @Published var activeModelOptions: [String: ModelOptionValue] = [:]
     @Published var hasAnyModel: Bool = false
@@ -717,8 +717,7 @@ final class ChatSession: ObservableObject {
         // suppresses the auto-persist sink so a load doesn't look like
         // the user just picked a model.
         if let savedModel = data.selectedModel,
-            pickerItems.contains(where: { $0.id == savedModel })
-        {
+            pickerItems.contains(where: { $0.id == savedModel }) {
             isLoadingModel = true
             selectedModel = savedModel
             loadActiveModelOptions(for: selectedModel)
@@ -837,8 +836,7 @@ final class ChatSession: ObservableObject {
         // accepted too so plugin authors who emit raw markers keep working.
         let markerText: String
         if let payload = ToolEnvelope.successPayload(toolResult) as? [String: Any],
-            let text = payload["text"] as? String
-        {
+            let text = payload["text"] as? String {
             markerText = text
         } else {
             markerText = toolResult
@@ -1002,8 +1000,7 @@ final class ChatSession: ObservableObject {
             lastTurn.role == .assistant,
             lastTurn.contentIsEmpty,
             lastTurn.toolCalls == nil,
-            !lastTurn.hasThinking
-        {
+            !lastTurn.hasThinking {
             turns.removeLast()
         }
     }
@@ -1064,8 +1061,7 @@ final class ChatSession: ObservableObject {
         guard persistConversationArtifacts, let context else { return }
 
         if let lastAssistant = turns.last(where: { $0.role == .assistant }),
-            !lastAssistant.contentIsEmpty
-        {
+            !lastAssistant.contentIsEmpty {
             lastCompletedAssistantTurnId = lastAssistant.id
         }
 
@@ -1898,8 +1894,7 @@ final class ChatSession: ObservableObject {
                             }
                             if inv.toolName == "clarify" {
                                 if !ToolEnvelope.isError(resultText),
-                                    let payload = Self.parseClarifyPayload(from: inv.jsonArguments)
-                                {
+                                    let payload = Self.parseClarifyPayload(from: inv.jsonArguments) {
                                     // Build a ClarifyPromptState bound to
                                     // `self.send(...)` so the user's answer
                                     // dispatches as the next user turn
@@ -1929,8 +1924,7 @@ final class ChatSession: ObservableObject {
                             // Skipped in manual mode — the user's explicit tool set is fixed.
                             if !isManualTools,
                                 inv.toolName == "capabilities_load"
-                                    || inv.toolName == "sandbox_plugin_register"
-                            {
+                                    || inv.toolName == "sandbox_plugin_register" {
                                 let newTools = await CapabilityLoadBuffer.shared.drain()
                                 for tool in newTools
                                 where !toolSpecs.contains(where: { $0.function.name == tool.function.name }) {
@@ -1963,8 +1957,7 @@ final class ChatSession: ObservableObject {
                             }
 
                             if inv.toolName == "sandbox_secret_set",
-                                let prompt = SecretPromptParser.parse(resultText)
-                            {
+                                let prompt = SecretPromptParser.parse(resultText) {
                                 let stored: Bool = await withCheckedContinuation { continuation in
                                     let promptState = SecretPromptState(
                                         key: prompt.key,
@@ -2100,13 +2093,13 @@ struct ChatView: View {
     @State private var editText: String = ""
     @State private var userImagePreview: NSImage?
     // Bonjour agent connection
-    @State private var pendingDiscoveredAgent: DiscoveredAgent? = nil
+    @State private var pendingDiscoveredAgent: DiscoveredAgent?
     // Minimap
     @State private var activeMinimapTurnId: UUID?
     @State private var scrollToTurnId: UUID?
     @State private var scrollToTurnTrigger: Int = 0
     // What's New modal
-    @State private var pendingWhatsNew: WhatsNewRelease? = nil
+    @State private var pendingWhatsNew: WhatsNewRelease?
     @State private var showAutoSpeakPrompt: Bool = false
 
     /// Convenience accessor for the window's theme
@@ -2177,7 +2170,7 @@ struct ChatView: View {
     }
 
     var body: some View {
-        let _ = ChatPerfTrace.shared.count("body.ChatView")
+        let _ = ChatPerfTrace.shared.count("body.ChatView") // swiftlint:disable:this redundant_discardable_let
         chatModeContent
             .themedAlert(
                 "Do you want Osaurus to auto speak every reply in this chat?",
@@ -2866,12 +2859,12 @@ private struct IsolatedThreadView: View {
     let onConfirmEdit: (() -> Void)?
     let onCancelEdit: (() -> Void)?
     let onUserImagePreview: ((String) -> Void)?
-    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)? = nil
-    var scrollToTurnId: UUID? = nil
+    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)?
+    var scrollToTurnId: UUID?
     var scrollToTurnTrigger: Int = 0
 
     var body: some View {
-        let _ = ChatPerfTrace.shared.count("body.IsolatedThreadView")
+        let _ = ChatPerfTrace.shared.count("body.IsolatedThreadView") // swiftlint:disable:this redundant_discardable_let
         MessageThreadView(
             blocks: store.blocks,
             groupHeaderMap: store.groupHeaderMap,
@@ -2921,8 +2914,7 @@ extension ChatView {
         }
         if let url = sharedArtifactImageURL(artifactId: attachmentId),
             let data = try? Data(contentsOf: url),
-            let img = NSImage(data: data)
-        {
+            let img = NSImage(data: data) {
             userImagePreview = img
         }
     }
@@ -3158,7 +3150,7 @@ private struct PairingSheet: View {
     let onCancel: () -> Void
 
     @State private var isPairing = false
-    @State private var errorMessage: String? = nil
+    @State private var errorMessage: String?
     @Environment(\.theme) private var theme
 
     var body: some View {

@@ -109,8 +109,7 @@ struct PluginsView: View {
         }
         .onReceive(PluginRepositoryService.shared.$plugins) { newPlugins in
             if let selected = selectedPlugin,
-                let updated = newPlugins.first(where: { $0.pluginId == selected.pluginId })
-            {
+                let updated = newPlugins.first(where: { $0.pluginId == selected.pluginId }) {
                 selectedPlugin = updated
             }
             Task { await updateFilteredLists() }
@@ -1181,8 +1180,7 @@ private struct PluginDetailView: View {
                 }
 
                 if plugin.isInstalled && !plugin.hasLoadError,
-                    let webConfig = loadedPlugin?.webConfig
-                {
+                    let webConfig = loadedPlugin?.webConfig {
                     Button {
                         let port = loadServerPort()
                         // Browsers cannot set the X-Osaurus-Agent-Id header
@@ -1482,8 +1480,7 @@ private struct PluginDetailView: View {
     private var externalLinksSection: some View {
         if let loaded = loadedPlugin,
             let links = loaded.plugin.manifest.docs?.links,
-            !links.isEmpty
-        {
+            !links.isEmpty {
             detailSection(title: "Links", icon: "link") {
                 HStack(spacing: 12) {
                     ForEach(links, id: \.url) { link in

@@ -297,8 +297,7 @@ final class SSEResponseWriter: ResponseWriter {
         tail.writeString("data: [DONE]\n\n")
         context.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(tail))), promise: nil)
         let ctx = NIOLoopBound(context, eventLoop: context.eventLoop)
-        context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete {
-            _ in
+        context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete { _ in
             ctx.value.close(promise: nil)
         }
     }
@@ -435,8 +434,7 @@ final class NDJSONResponseWriter: ResponseWriter {
 
     func writeEnd(_ context: ChannelHandlerContext) {
         let ctx = NIOLoopBound(context, eventLoop: context.eventLoop)
-        context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete {
-            _ in
+        context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete { _ in
             ctx.value.close(promise: nil)
         }
     }
@@ -640,8 +638,7 @@ final class AnthropicSSEResponseWriter {
     /// Close the connection
     func writeEnd(_ context: ChannelHandlerContext) {
         let ctx = NIOLoopBound(context, eventLoop: context.eventLoop)
-        context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete {
-            _ in
+        context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete { _ in
             ctx.value.close(promise: nil)
         }
     }
@@ -1036,8 +1033,7 @@ final class OpenResponsesSSEWriter {
         tail.writeString("data: [DONE]\n\n")
         context.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(tail))), promise: nil)
         let ctx = NIOLoopBound(context, eventLoop: context.eventLoop)
-        context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete {
-            _ in
+        context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete { _ in
             ctx.value.close(promise: nil)
         }
     }

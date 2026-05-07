@@ -32,16 +32,16 @@ struct ModelDetailView: View, Identifiable {
     // MARK: - State
 
     /// Estimated download size in bytes (nil if not yet calculated)
-    @State private var estimatedSize: Int64? = nil
+    @State private var estimatedSize: Int64?
 
     /// Whether a size estimation is currently in progress
     @State private var isEstimating = false
 
     /// Error message if size estimation fails
-    @State private var estimateError: String? = nil
+    @State private var estimateError: String?
 
     /// Hugging Face model details (loaded asynchronously)
-    @State private var hfDetails: HuggingFaceService.ModelDetails? = nil
+    @State private var hfDetails: HuggingFaceService.ModelDetails?
 
     /// Whether HF details are currently loading
     @State private var isLoadingHFDetails = false

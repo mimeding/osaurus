@@ -310,7 +310,7 @@ struct HeaderIconButton: View {
     let icon: String
     let action: () -> Void
     var isLoading: Bool = false
-    var help: String? = nil
+    var help: String?
 
     @State private var isHovering = false
 

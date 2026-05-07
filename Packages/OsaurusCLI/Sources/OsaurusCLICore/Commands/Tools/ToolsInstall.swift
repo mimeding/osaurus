@@ -25,7 +25,7 @@ public struct ToolsInstall {
     }
 
     private static func installFromRegistry(pluginId: String, args: [String]) async {
-        var preferredVersion: SemanticVersion? = nil
+        var preferredVersion: SemanticVersion?
         if let idx = args.firstIndex(of: "--version"), idx + 1 < args.count {
             let vstr = args[idx + 1]
             preferredVersion = SemanticVersion.parse(vstr)
@@ -243,10 +243,8 @@ public struct ToolsInstall {
         else {
             return nil
         }
-        for case let fileURL as URL in enumerator {
-            if fileURL.pathExtension == "dylib" {
-                return fileURL
-            }
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "dylib" {
+            return fileURL
         }
         return nil
     }

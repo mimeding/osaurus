@@ -158,8 +158,7 @@ public struct SystemPromptComposer: Sendable {
         if !trimmed.isEmpty { return trimmed }
         for msg in messages.reversed() where msg.role == "user" {
             if let content = msg.content?.trimmingCharacters(in: .whitespacesAndNewlines),
-                !content.isEmpty
-            {
+                !content.isEmpty {
                 return content
             }
         }
@@ -324,7 +323,7 @@ public struct SystemPromptComposer: Sendable {
         let lastNewline = utf8.prefix(soulMaxBytes)
             .lastIndex(of: UInt8(ascii: "\n"))
         let cutoff = lastNewline.map { $0 + 1 } ?? soulMaxBytes
-        let prefix = String(decoding: utf8.prefix(cutoff), as: UTF8.self)
+        let prefix = String(bytes: utf8.prefix(cutoff), encoding: .utf8) ?? ""
         // Hard-cut prefix may not end on `\n`; force one so the marker
         // always reads as its own line below the soul content.
         let separator = prefix.hasSuffix("\n") ? "" : "\n"
@@ -575,8 +574,7 @@ public struct SystemPromptComposer: Sendable {
         // inflates context and encourages tool enumeration.
         // See ModelFamilyGuidance.swift.
         if !effectiveToolsOff,
-            let familyGuidance = ModelFamilyGuidance.guidance(forModelId: snapshot.model)
-        {
+            let familyGuidance = ModelFamilyGuidance.guidance(forModelId: snapshot.model) {
             composer.append(
                 .static(
                     id: "modelFamilyGuidance",
@@ -592,8 +590,7 @@ public struct SystemPromptComposer: Sendable {
         // plugin tool that writes all qualify. The set lives at the top
         // of the file so it can grow as new mutation-capable tools land.
         if !effectiveToolsOff,
-            !resolvedNames.isDisjoint(with: Self.mutationToolNames)
-        {
+            !resolvedNames.isDisjoint(with: Self.mutationToolNames) {
             composer.append(
                 .static(
                     id: "codeStyle",
@@ -616,8 +613,7 @@ public struct SystemPromptComposer: Sendable {
         // schema — in practice that's every chat where tools are on, but
         // the gate keeps tools-off sessions from carrying dead text.
         if !effectiveToolsOff,
-            !resolvedNames.isDisjoint(with: Self.agentLoopToolNames)
-        {
+            !resolvedNames.isDisjoint(with: Self.agentLoopToolNames) {
             composer.append(
                 .static(
                     id: "agentLoopGuidance",
@@ -655,8 +651,7 @@ public struct SystemPromptComposer: Sendable {
         // sessions don't see irrelevant guidance.
         if snapshot.toolMode == .auto,
             !effectiveToolsOff,
-            tools.contains(where: { $0.function.name == "capabilities_search" })
-        {
+            tools.contains(where: { $0.function.name == "capabilities_search" }) {
             composer.append(
                 .static(
                     id: "capabilityNudge",
@@ -673,8 +668,7 @@ public struct SystemPromptComposer: Sendable {
         // the model hallucinates sandbox calls that never get a result.
         if !executionMode.usesSandboxTools,
             snapshot.autonomousEnabled,
-            let reason = SandboxToolRegistrar.shared.unavailabilityReason(for: agentId)
-        {
+            let reason = SandboxToolRegistrar.shared.unavailabilityReason(for: agentId) {
             composer.append(
                 .dynamic(
                     id: "sandboxUnavailable",
@@ -698,8 +692,7 @@ public struct SystemPromptComposer: Sendable {
             !effectiveToolsOff,
             !preflight.companions.isEmpty,
             tools.contains(where: { $0.function.name == "capabilities_load" }),
-            let companionsSection = PreflightCompanions.render(preflight.companions)
-        {
+            let companionsSection = PreflightCompanions.render(preflight.companions) {
             composer.append(
                 .dynamic(
                     id: "pluginCompanions",
@@ -720,8 +713,7 @@ public struct SystemPromptComposer: Sendable {
         // for the preview composer which doesn't pre-gate.
         if !effectiveToolsOff,
             !toolset.skillSuggestions.isEmpty,
-            let suggestionsSection = PreflightCompanions.renderSkillSuggestions(toolset.skillSuggestions)
-        {
+            let suggestionsSection = PreflightCompanions.renderSkillSuggestions(toolset.skillSuggestions) {
             composer.append(
                 .dynamic(
                     id: "skillSuggestions",
@@ -1319,8 +1311,7 @@ public struct SystemPromptComposer: Sendable {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if let idx = messages.firstIndex(where: { $0.role == "system" }),
-            let existing = messages[idx].content, !existing.isEmpty
-        {
+            let existing = messages[idx].content, !existing.isEmpty {
             let combined = prepend ? trimmed + "\n\n" + existing : existing + "\n\n" + trimmed
             messages[idx] = ChatMessage(role: "system", content: combined)
         } else {

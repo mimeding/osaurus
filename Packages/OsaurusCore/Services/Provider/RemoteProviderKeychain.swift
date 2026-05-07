@@ -251,8 +251,7 @@ public enum RemoteProviderKeychain {
 
         for item in items {
             if let account = item[kSecAttrAccount as String] as? String,
-                account.hasPrefix(accountPrefix)
-            {
+                account.hasPrefix(accountPrefix) {
                 let deleteQuery: [String: Any] = [
                     kSecClass as String: kSecClassGenericPassword,
                     kSecAttrService as String: service,

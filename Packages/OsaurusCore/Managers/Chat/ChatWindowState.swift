@@ -48,7 +48,7 @@ final class ChatWindowState: ObservableObject {
 
     // MARK: - Private
 
-    private nonisolated(unsafe) var notificationObservers: [NSObjectProtocol] = []
+    nonisolated(unsafe) private var notificationObservers: [NSObjectProtocol] = []
     private var sessionRefreshWorkItem: DispatchWorkItem?
     private var bonjourCancellable: AnyCancellable?
     private var agentsCancellable: AnyCancellable?
@@ -267,8 +267,7 @@ final class ChatWindowState: ObservableObject {
             .sink { [weak self] agents in
                 self?.discoveredAgents = agents
                 if let selected = self?.selectedDiscoveredAgent,
-                    !agents.contains(where: { $0.id == selected.id })
-                {
+                    !agents.contains(where: { $0.id == selected.id }) {
                     self?.removeEphemeralProviderIfNeeded()
                     self?.selectedDiscoveredAgent = nil
                     self?.selectedDiscoveredAgentProviderId = nil
@@ -377,8 +376,7 @@ final class ChatWindowState: ObservableObject {
 
     private static func loadTheme(for agentId: UUID) -> ThemeProtocol {
         if let themeId = AgentManager.shared.themeId(for: agentId),
-            let custom = ThemeManager.shared.installedThemes.first(where: { $0.metadata.id == themeId })
-        {
+            let custom = ThemeManager.shared.installedThemes.first(where: { $0.metadata.id == themeId }) {
             return CustomizableTheme(config: custom)
         }
         return ThemeManager.shared.currentTheme

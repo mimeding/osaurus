@@ -15,15 +15,15 @@ struct OpenAIModel: Codable, Sendable {
     var object: String = "model"
     var created: Int = 0
     var owned_by: String = "osaurus"
-    var permission: [ModelPermission]? = nil
-    var root: String? = nil
-    var parent: String? = nil
-    var name: String? = nil
-    var model: String? = nil
-    var modified_at: String? = nil
-    var size: Int? = nil
-    var digest: String? = nil
-    var details: ModelDetails? = nil
+    var permission: [ModelPermission]?
+    var root: String?
+    var parent: String?
+    var name: String?
+    var model: String?
+    var modified_at: String?
+    var size: Int?
+    var digest: String?
+    var details: ModelDetails?
 
     /// Initialize from a model name (for local models)
     init(modelName: String) {
@@ -354,8 +354,7 @@ extension ChatMessage {
                 case .imageUrl, .audioInput, .videoUrl: return true
                 case .text: return false
                 }
-            })
-        {
+            }) {
             try container.encode(parts, forKey: .content)
         } else if let content = content {
             // Only encode content if it's not nil (OpenAI rejects null content)
@@ -482,7 +481,7 @@ struct ChatCompletionRequest: Codable, Sendable {
     let temperature: Float?
     let max_tokens: Int?
     /// OpenAI newer alias for max_tokens; accepted on inbound requests alongside max_tokens.
-    var max_completion_tokens: Int? = nil
+    var max_completion_tokens: Int?
     let stream: Bool?
     let top_p: Float?
     let frequency_penalty: Float?
@@ -496,23 +495,23 @@ struct ChatCompletionRequest: Codable, Sendable {
     /// Optional session identifier for chat/history grouping. Not a KV cache key —
     /// vmlx-swift-lm's `CacheCoordinator` is content-addressed and discovers
     /// reusable prefixes autonomously.
-    var session_id: String? = nil
+    var session_id: String?
     /// Deterministic-sampling seed (OpenAI v1.x). When set, identical
     /// requests should yield identical completions on the same backend.
-    var seed: Int? = nil
+    var seed: Int?
     /// `{"type":"json_object"}` for OpenAI JSON mode. Other shapes
     /// (`text`, `json_schema`) are rejected at request validation.
-    var response_format: ResponseFormat? = nil
+    var response_format: ResponseFormat?
     /// `{"include_usage": true}` instructs the SSE producer to emit a
     /// final chunk carrying `usage` (prompt/completion/total tokens).
-    var stream_options: StreamOptions? = nil
+    var stream_options: StreamOptions?
     /// Model-specific options from the active ModelProfile (not serialized to JSON).
-    var modelOptions: [String: ModelOptionValue]? = nil
+    var modelOptions: [String: ModelOptionValue]?
     /// Optional TTFT trace for diagnostic timing (not serialized to JSON).
-    var ttftTrace: TTFTTrace? = nil
+    var ttftTrace: TTFTTrace?
     /// Per-request thinking toggle. Translated to `modelOptions["disableThinking"]`
     /// at request entry; absent preserves server defaults.
-    var enable_thinking: Bool? = nil
+    var enable_thinking: Bool?
 
     /// Resolved max tokens, preferring max_tokens then max_completion_tokens.
     var resolvedMaxTokens: Int? { max_tokens ?? max_completion_tokens }
@@ -583,12 +582,12 @@ struct ChatCompletionResponse: Codable, Sendable {
     let model: String
     let choices: [ChatChoice]
     let usage: Usage
-    var system_fingerprint: String? = nil
+    var system_fingerprint: String?
     /// Content hash of the system prompt + tool names used for this request.
     /// Informational only — clients can use it to detect when the system
     /// prefix changed across requests. KV reuse itself is handled
     /// autonomously by vmlx's `CacheCoordinator` (content-addressed).
-    var prefix_hash: String? = nil
+    var prefix_hash: String?
 }
 
 // MARK: - Streaming Response Structures
@@ -635,12 +634,12 @@ struct ChatCompletionChunk: Codable, Sendable {
     let created: Int
     let model: String
     let choices: [StreamChoice]
-    var system_fingerprint: String? = nil
+    var system_fingerprint: String?
     /// Included only in the first chunk; see `ChatCompletionResponse.prefix_hash`.
-    var prefix_hash: String? = nil
+    var prefix_hash: String?
     /// Final usage chunk (OpenAI `stream_options.include_usage`). Populated
     /// only on the dedicated penultimate SSE chunk; nil on every other.
-    var usage: Usage? = nil
+    var usage: Usage?
 }
 
 // MARK: - Error Response

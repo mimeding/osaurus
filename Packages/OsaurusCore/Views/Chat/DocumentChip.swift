@@ -10,7 +10,7 @@ import SwiftUI
 
 struct DocumentChip: View {
     let attachment: Attachment
-    var onRemove: (() -> Void)? = nil
+    var onRemove: (() -> Void)?
 
     @Environment(\.theme) private var theme
     @State private var isHovered = false

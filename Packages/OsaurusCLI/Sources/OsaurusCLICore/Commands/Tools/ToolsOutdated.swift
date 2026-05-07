@@ -22,8 +22,7 @@ public struct ToolsOutdated {
             let pluginId = pluginDir.lastPathComponent
             let installed = InstalledPluginsStore.shared.latestInstalledVersion(pluginId: pluginId)
             guard
-                let available = specs.first(where: { $0.plugin_id == pluginId })?.versions.map(\.version).sorted(by: >)
-                    .first
+                let available = specs.first(where: { $0.plugin_id == pluginId })?.versions.map(\.version).max()
             else {
                 continue
             }

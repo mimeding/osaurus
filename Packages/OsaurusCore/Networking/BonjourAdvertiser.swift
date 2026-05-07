@@ -24,7 +24,7 @@ public final class BonjourAdvertiser: NSObject {
     private var isAdvertising = false
     private var cancellables: Set<AnyCancellable> = []
 
-    private override init() {
+    override private init() {
         super.init()
         // Keep advertisements in sync whenever the agent list changes.
         AgentManager.shared.$agents
@@ -108,11 +108,11 @@ public final class BonjourAdvertiser: NSObject {
 // MARK: - NetServiceDelegate
 
 extension BonjourAdvertiser: NetServiceDelegate {
-    public nonisolated func netServiceDidPublish(_ sender: NetService) {
+    nonisolated public func netServiceDidPublish(_ sender: NetService) {
         print("[Bonjour] Advertised agent '\(sender.name)' on port \(sender.port)")
     }
 
-    public nonisolated func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
+    nonisolated public func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
         print("[Bonjour] Failed to advertise agent '\(sender.name)': \(errorDict)")
     }
 }

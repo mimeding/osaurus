@@ -17,14 +17,14 @@ struct EditableTextView: NSViewRepresentable {
     @Binding var isFocused: Bool
     @Binding var isComposing: Bool
     var maxHeight: CGFloat = .infinity
-    var onCommit: (() -> Void)? = nil
-    var onShiftCommit: (() -> Void)? = nil
+    var onCommit: (() -> Void)?
+    var onShiftCommit: (() -> Void)?
     /// Called on ↑ arrow key. Return true to consume the event (prevents cursor movement).
-    var onArrowUp: (() -> Bool)? = nil
+    var onArrowUp: (() -> Bool)?
     /// Called on ↓ arrow key. Return true to consume the event (prevents cursor movement).
-    var onArrowDown: (() -> Bool)? = nil
+    var onArrowDown: (() -> Bool)?
     /// Called on Escape key. Return true to consume the event.
-    var onEscape: (() -> Bool)? = nil
+    var onEscape: (() -> Bool)?
 
     // MARK: - NSViewRepresentable
 

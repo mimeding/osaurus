@@ -138,8 +138,7 @@ public extension PluginSpec {
             if let match = sorted.first(where: { $0.version == preferred }),
                 let art = match.artifacts.first(where: {
                     $0.os == targetPlatform.rawValue && $0.arch == targetArch.rawValue
-                })
-            {
+                }) {
                 return PluginResolution(spec: self, version: match, artifact: art)
             }
         }

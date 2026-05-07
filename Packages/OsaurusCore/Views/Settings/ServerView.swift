@@ -26,7 +26,7 @@ private let sharedMediumDateFormatter: DateFormatter = {
     return f
 }()
 
-private nonisolated(unsafe) let sharedByteCountFormatter: ByteCountFormatter = {
+nonisolated(unsafe) private let sharedByteCountFormatter: ByteCountFormatter = {
     let f = ByteCountFormatter()
     f.countStyle = .file
     return f
@@ -929,8 +929,7 @@ private struct APIReferenceTabContent: View {
                             onToggleExpand: {
                                 toggleEndpoint(endpoint.id)
                                 if expandedEndpoint == endpoint.id,
-                                    editablePayloads[endpoint.id] == nil
-                                {
+                                    editablePayloads[endpoint.id] == nil {
                                     editablePayloads[endpoint.id] = endpoint.examplePayload ?? "{}"
                                 }
                             },
@@ -1088,16 +1087,16 @@ private struct APIReferenceTabContent: View {
                 request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
                 var body = Data()
-                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append(Data("--\(boundary)\r\n".utf8))
                 body.append(
-                    "Content-Disposition: form-data; name=\"file\"; filename=\"recording.wav\"\r\n".data(using: .utf8)!
+                    Data("Content-Disposition: form-data; name=\"file\"; filename=\"recording.wav\"\r\n".utf8)
                 )
-                body.append("Content-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+                body.append(Data("Content-Type: audio/wav\r\n\r\n".utf8))
                 body.append(audioData)
-                body.append("\r\n--\(boundary)\r\n".data(using: .utf8)!)
-                body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-                body.append(modelId.data(using: .utf8)!)
-                body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+                body.append(Data("\r\n--\(boundary)\r\n".utf8))
+                body.append(Data("Content-Disposition: form-data; name=\"model\"\r\n\r\n".utf8))
+                body.append(Data(modelId.utf8))
+                body.append(Data("\r\n--\(boundary)--\r\n".utf8))
                 request.httpBody = body
 
                 let (data, response) = try await URLSession.shared.data(for: request)
@@ -1451,8 +1450,7 @@ struct EndpointTestResult: Equatable {
         if let error { return "Error: \(error)" }
         if let json = try? JSONSerialization.jsonObject(with: body, options: []),
             let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
-            let prettyString = String(data: prettyData, encoding: .utf8)
-        {
+            let prettyString = String(data: prettyData, encoding: .utf8) {
             return prettyString
         }
         return String(data: body, encoding: .utf8) ?? "(Unable to decode response)"

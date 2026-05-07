@@ -109,8 +109,7 @@ public final class CentralRepositoryManager: @unchecked Sendable {
         for case let fileURL as URL in enumerator {
             if fileURL.pathExtension.lowercased() == "json",
                 let data = try? Data(contentsOf: fileURL),
-                (try? JSONDecoder().decode(PluginSpec.self, from: data)) != nil
-            {
+                (try? JSONDecoder().decode(PluginSpec.self, from: data)) != nil {
                 return true
             }
         }
@@ -131,13 +130,10 @@ public final class CentralRepositoryManager: @unchecked Sendable {
         else {
             return specs
         }
-        for case let fileURL as URL in enumr {
-            if fileURL.pathExtension.lowercased() == "json" {
-                if let data = try? Data(contentsOf: fileURL),
-                    let spec = try? JSONDecoder().decode(PluginSpec.self, from: data)
-                {
-                    specs.append(spec)
-                }
+        for case let fileURL as URL in enumr where fileURL.pathExtension.lowercased() == "json" {
+            if let data = try? Data(contentsOf: fileURL),
+                let spec = try? JSONDecoder().decode(PluginSpec.self, from: data) {
+                specs.append(spec)
             }
         }
         return specs

@@ -20,7 +20,7 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     // MARK: - Published State for Update Availability
     @Published var updateAvailable: Bool = false
-    @Published var availableVersion: String? = nil
+    @Published var availableVersion: String?
 
     @Published var isBetaChannel: Bool {
         didSet {

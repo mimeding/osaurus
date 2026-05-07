@@ -510,8 +510,7 @@ public actor ToolSearchService {
         for (key, value) in properties {
             parts.append(key)
             if case .object(let propSchema) = value,
-                case .string(let desc) = propSchema["description"]
-            {
+                case .string(let desc) = propSchema["description"] {
                 parts.append(desc)
             }
         }

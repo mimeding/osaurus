@@ -223,16 +223,14 @@ final class PluginManager {
                 for section in configSpec.sections {
                     for field in section.fields {
                         if values[field.key] == nil, field.type != .readonly, field.type != .status,
-                            let val = ToolSecretsKeychain.getSecret(id: field.key, for: pluginId, agentId: agentId)
-                        {
+                            let val = ToolSecretsKeychain.getSecret(id: field.key, for: pluginId, agentId: agentId) {
                             values[field.key] = val
                         }
                         if values[field.key] == nil, let def = field.default {
                             values[field.key] = def.stringValue
                         }
                         if let connKey = field.connected_when, values[connKey] == nil,
-                            let val = ToolSecretsKeychain.getSecret(id: connKey, for: pluginId, agentId: agentId)
-                        {
+                            let val = ToolSecretsKeychain.getSecret(id: connKey, for: pluginId, agentId: agentId) {
                             values[connKey] = val
                         }
                     }
@@ -268,11 +266,10 @@ final class PluginManager {
             let destinations = agents.map { $0.id }
 
             for agentId in destinations {
-                for (key, value) in legacySecrets {
+                for (key, value) in legacySecrets
+                    where ToolSecretsKeychain.getSecret(id: key, for: pluginId, agentId: agentId) == nil {
                     // Only copy if the agent doesn't already have a value for this key.
-                    if ToolSecretsKeychain.getSecret(id: key, for: pluginId, agentId: agentId) == nil {
-                        ToolSecretsKeychain.saveSecret(value, id: key, for: pluginId, agentId: agentId)
-                    }
+                    ToolSecretsKeychain.saveSecret(value, id: key, for: pluginId, agentId: agentId)
                 }
             }
 
@@ -742,8 +739,7 @@ final class PluginManager {
                 guard url.hasDirectoryPath, let v = SemanticVersion.parse(url.lastPathComponent) else { return nil }
                 return (v, url)
             }
-            .sorted { $0.0 > $1.0 }
-            .first?.1
+            .max { $0.0 < $1.0 }?.1
     }
 
     nonisolated static func toolsRootDirectory() -> URL {
@@ -764,11 +760,11 @@ final class PluginManager {
 
     // MARK: - Plugin Quarantine
 
-    private nonisolated static func currentlyLoadingURL() -> URL {
+    nonisolated private static func currentlyLoadingURL() -> URL {
         toolsRootDirectory().appendingPathComponent(".currently_loading", isDirectory: false)
     }
 
-    private nonisolated static func quarantineURL() -> URL {
+    nonisolated private static func quarantineURL() -> URL {
         toolsRootDirectory().appendingPathComponent(".quarantine", isDirectory: false)
     }
 
@@ -779,7 +775,7 @@ final class PluginManager {
         return Set(ids)
     }
 
-    private nonisolated static func addToQuarantine(_ pluginId: String) {
+    nonisolated private static func addToQuarantine(_ pluginId: String) {
         var ids = quarantinedPluginIds()
         ids.insert(pluginId)
         if let data = try? JSONEncoder().encode(Array(ids)) {
@@ -795,7 +791,7 @@ final class PluginManager {
 
     /// If a `.currently_loading` marker was left behind by a crash during
     /// dlopen/init, quarantine that plugin so it is skipped on future launches.
-    private nonisolated static func promoteStaleLoadingMarker() {
+    nonisolated private static func promoteStaleLoadingMarker() {
         let markerURL = currentlyLoadingURL()
         guard let data = try? Data(contentsOf: markerURL),
             let pluginId = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -805,11 +801,11 @@ final class PluginManager {
         try? FileManager.default.removeItem(at: markerURL)
     }
 
-    private nonisolated static func writeLoadingMarker(pluginId: String) {
+    nonisolated private static func writeLoadingMarker(pluginId: String) {
         try? pluginId.data(using: .utf8)?.write(to: currentlyLoadingURL())
     }
 
-    private nonisolated static func clearLoadingMarker() {
+    nonisolated private static func clearLoadingMarker() {
         try? FileManager.default.removeItem(at: currentlyLoadingURL())
     }
 
@@ -857,7 +853,7 @@ final class PluginManager {
                         guard let v = SemanticVersion.parse(url.lastPathComponent) else { return nil }
                         return (v, url)
                     }
-                    versionDir = versions.sorted(by: { $0.0 > $1.0 }).first?.1
+                    versionDir = versions.max(by: { $0.0 < $1.0 })?.1
                 }
             }
 
@@ -873,16 +869,14 @@ final class PluginManager {
                 includingPropertiesForKeys: [.isRegularFileKey],
                 options: [.skipsHiddenFiles]
             ) {
-                for case let fileURL as URL in enumerator {
-                    if fileURL.pathExtension == "dylib" {
-                        foundDylib = true
-                        let verifyResult = verifyDylibBeforeLoadWithError(fileURL)
-                        switch verifyResult {
-                        case .success:
-                            dylibURLs.append(fileURL)
-                        case .failure(let error):
-                            failures[pluginId] = error.message
-                        }
+                for case let fileURL as URL in enumerator where fileURL.pathExtension == "dylib" {
+                    foundDylib = true
+                    let verifyResult = verifyDylibBeforeLoadWithError(fileURL)
+                    switch verifyResult {
+                    case .success:
+                        dylibURLs.append(fileURL)
+                    case .failure(let error):
+                        failures[pluginId] = error.message
                     }
                 }
             }

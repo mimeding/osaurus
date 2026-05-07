@@ -90,12 +90,12 @@ struct MessageTableRepresentable: NSViewRepresentable {
     let editText: Binding<String>?
     let onConfirmEdit: (() -> Void)?
     let onCancelEdit: (() -> Void)?
-    var onUserImagePreview: ((String) -> Void)? = nil
+    var onUserImagePreview: ((String) -> Void)?
 
     // Minimap support
-    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)? = nil
+    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)?
     /// Turn ID to scroll to. Paired with `scrollToTurnTrigger` for one-shot delivery.
-    var scrollToTurnId: UUID? = nil
+    var scrollToTurnId: UUID?
     var scrollToTurnTrigger: Int = 0
 
     // MARK: - NSViewRepresentable Lifecycle
@@ -507,8 +507,7 @@ extension MessageTableRepresentable {
                 let blockId = blockIds[row]
                 heightCache.removeValue(forKey: blockId)
                 if let cell = tableView?.view(atColumn: 0, row: row, makeIfNecessary: false) as? NativeMessageCellView,
-                    let block = blockLookup[blockId]
-                {
+                    let block = blockLookup[blockId] {
                     configureCell(cell, with: block)
                 }
                 // let the hosting view settle before re-measuring
@@ -527,10 +526,8 @@ extension MessageTableRepresentable {
             let visible = tableView.rows(in: tableView.visibleRect)
             guard visible.length > 0 else { return }
             let rows = IndexSet(integersIn: visible.location ..< visible.location + visible.length)
-            for row in rows {
-                if row < blockIds.count {
-                    heightCache.removeValue(forKey: blockIds[row])
-                }
+            for row in rows where row < blockIds.count {
+                heightCache.removeValue(forKey: blockIds[row])
             }
             noteRowHeightsChanged(rows)
         }
@@ -682,8 +679,8 @@ extension MessageTableRepresentable {
         // MARK: - Update Paths (Private)
 
         private func hasContentChanges(newLookup: [String: ContentBlock]) -> Bool {
-            for id in blockIds {
-                if newLookup[id] != blockLookup[id] { return true }
+            for id in blockIds where newLookup[id] != blockLookup[id] {
+                return true
             }
             return false
         }
@@ -776,8 +773,7 @@ extension MessageTableRepresentable {
                                 atColumn: 0,
                                 row: row,
                                 makeIfNecessary: false
-                            ) as? NativeMessageCellView
-                        {
+                            ) as? NativeMessageCellView {
                             self.heightCache.removeValue(forKey: id)
                             self.configureCell(cell, with: block)
                             reconfiguredRows.insert(row)
@@ -799,8 +795,7 @@ extension MessageTableRepresentable {
                 // schedule a deferred re-measurement after the hosting view's
                 // layout has settled, then re-pin scroll position.
                 if streamingJustEnded, let streamId = previousStreamingBlockId,
-                    let row = self.blockIds.firstIndex(of: streamId)
-                {
+                    let row = self.blockIds.firstIndex(of: streamId) {
                     self.schedulePostStreamingHeightFix(
                         streamId: streamId,
                         row: row,
@@ -821,8 +816,7 @@ extension MessageTableRepresentable {
         ) {
             if autoScrollEnabled,
                 let turnId = lastAssistantTurnId,
-                turnId != lastScrolledToTurnId
-            {
+                turnId != lastScrolledToTurnId {
                 lastScrolledToTurnId = turnId
                 let headerId = "header-\(turnId.uuidString)"
                 if let row = blockIds.firstIndex(of: headerId) {
@@ -878,8 +872,7 @@ extension MessageTableRepresentable {
             var affectedRows = IndexSet()
             for (index, blockId) in blockIds.enumerated() {
                 guard let block = blockLookup[blockId], block.turnId == turnId else { continue }
-                if let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false) as? NativeMessageCellView
-                {
+                if let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false) as? NativeMessageCellView {
                     heightCache.removeValue(forKey: blockId)
                     configureCell(cell, with: block)
                 }
@@ -927,8 +920,7 @@ extension MessageTableRepresentable {
                 if row < self.blockIds.count {
                     let bid = self.blockIds[row]
                     if let h = self.heightCache[bid], let noted = self.lastNotedHeight[bid],
-                        abs(h - noted) < 0.5
-                    {
+                        abs(h - noted) < 0.5 {
                         ChatPerfTrace.shared.count("streamingHeightUpdate.skipped")
                         return
                     }
@@ -1113,7 +1105,7 @@ extension MessageTableRepresentable {
             guard let tableView, let scrollView else { return }
             guard let callback = onVisibleTopUserTurnChanged else { return }
 
-            var newTurnId: UUID? = nil
+            var newTurnId: UUID?
 
             if !blockIds.isEmpty {
                 let clip = scrollView.contentView
@@ -1143,8 +1135,7 @@ extension MessageTableRepresentable {
                     var forward = anchorRow + 1
                     while forward < blockIds.count {
                         if let block = blockLookup[blockIds[forward]],
-                            case .userMessage = block.kind
-                        {
+                            case .userMessage = block.kind {
                             newTurnId = block.turnId
                             break
                         }

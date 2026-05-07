@@ -28,8 +28,7 @@ public struct NotchScreenMetrics: Equatable {
         var hasNotch = false
 
         if let topLeft = screen.auxiliaryTopLeftArea?.width,
-            let topRight = screen.auxiliaryTopRightArea?.width
-        {
+            let topRight = screen.auxiliaryTopRightArea?.width {
             width = screen.frame.width - topLeft - topRight + 4
             hasNotch = true
         }
@@ -72,7 +71,7 @@ public final class NotchWindowController: NSObject, ObservableObject {
     /// Panel height – tall enough for the largest expanded state.
     private static let panelHeight: CGFloat = 500
 
-    private override init() {
+    override private init() {
         super.init()
     }
 
@@ -154,6 +153,7 @@ public final class NotchWindowController: NSObject, ObservableObject {
 
     /// Teardown the notch window.
     public func teardown() {
+        // swiftlint:disable:next notification_center_detachment
         NotificationCenter.default.removeObserver(self)
         cancellables.removeAll()
         notchPanel?.close()
@@ -173,8 +173,7 @@ public final class NotchWindowController: NSObject, ObservableObject {
         let targetScreen: NSScreen
         if let windowId = windowId,
             let chatWindow = ChatWindowManager.shared.getNSWindow(id: windowId),
-            let windowScreen = chatWindow.screen
-        {
+            let windowScreen = chatWindow.screen {
             targetScreen = windowScreen
         } else {
             targetScreen = NSScreen.main ?? NSScreen.screens.first!

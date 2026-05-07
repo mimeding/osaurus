@@ -18,36 +18,35 @@ import Testing
 struct SandboxInstallLockTests {
 
     /// Two `serialize(agentName:)` calls on the same key run one after
-    /// the other: the second body must not start before the first
-    /// finishes. We assert that by recording the pre/post timestamps
-    /// of each body and checking the second's start is ≥ the first's
-    /// end.
+    /// the other: the second body must not start while the first body is
+    /// still inside the lock.
     @Test
     func sameAgent_runsSequentially() async throws {
         let lock = SandboxInstallLock()
-        let timeline = ActorTimeline()
+        let gate = SameAgentGate()
         let agentName = "agent-A"
 
-        // Kick off two operations concurrently. Both want the same lock.
-        // The second one MUST wait for the first to finish.
-        async let first: Void = lock.serialize(agentName: agentName) {
-            await timeline.markStart("first")
-            try? await Task.sleep(nanoseconds: 50_000_000)  // 50ms
-            await timeline.markEnd("first")
+        let first = Task {
+            try await lock.serialize(agentName: agentName) {
+                await gate.markFirstStarted()
+                await gate.waitForRelease()
+            }
         }
-        async let second: Void = lock.serialize(agentName: agentName) {
-            await timeline.markStart("second")
-            try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
-            await timeline.markEnd("second")
-        }
-        _ = try await (first, second)
 
-        let firstEnd = try #require(await timeline.endOf("first"))
-        let secondStart = try #require(await timeline.startOf("second"))
-        #expect(
-            secondStart >= firstEnd,
-            "second op started before first finished — serialization broken"
-        )
+        await gate.waitUntilFirstStarted()
+
+        let second = Task {
+            try await lock.serialize(agentName: agentName) {
+                await gate.markSecondStarted()
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 20_000_000) // Give a broken lock time to admit the second body.
+        #expect(await !gate.hasSecondStarted, "second op started while first still held the lock")
+
+        await gate.releaseFirst()
+        _ = try await (first.value, second.value)
+        #expect(await gate.hasSecondStarted, "second op never ran after first released the lock")
     }
 
     /// Two `serialize(agentName:)` calls on DIFFERENT keys must run
@@ -120,17 +119,48 @@ struct SandboxInstallLockTests {
 
 // MARK: - Test helpers
 
-/// Tiny actor that records start/end Dates for named operations. Lets
-/// the sequential-ordering assertion above check the timeline without
-/// fighting Sendable semantics on a mutable struct.
-private actor ActorTimeline {
-    private var starts: [String: Date] = [:]
-    private var ends: [String: Date] = [:]
+/// Coordinates the same-agent serialization test without relying on
+/// `async let` scheduling order or wall-clock timestamp comparisons.
+private actor SameAgentGate {
+    private var firstStarted = false
+    private var secondStarted = false
+    private var released = false
+    private var firstStartedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func markStart(_ key: String) { starts[key] = Date() }
-    func markEnd(_ key: String) { ends[key] = Date() }
-    func startOf(_ key: String) -> Date? { starts[key] }
-    func endOf(_ key: String) -> Date? { ends[key] }
+    var hasSecondStarted: Bool { secondStarted }
+
+    func markFirstStarted() {
+        firstStarted = true
+        let waiters = firstStartedWaiters
+        firstStartedWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func waitUntilFirstStarted() async {
+        if firstStarted { return }
+        await withCheckedContinuation { continuation in
+            firstStartedWaiters.append(continuation)
+        }
+    }
+
+    func waitForRelease() async {
+        if released { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func releaseFirst() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func markSecondStarted() {
+        secondStarted = true
+    }
 }
 
 /// One-shot Sendable bool flag. Lets a `@Sendable` closure mark

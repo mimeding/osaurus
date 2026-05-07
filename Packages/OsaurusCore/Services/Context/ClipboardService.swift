@@ -107,8 +107,7 @@ public final class ClipboardService: ObservableObject {
             return .image(imageData)
         }
         if let tiffData = pb.data(forType: .tiff), let nsImage = NSImage(data: tiffData),
-            let pngData = nsImage.pngData()
-        {
+            let pngData = nsImage.pngData() {
             return .image(pngData)
         }
 

@@ -683,8 +683,7 @@ extension Skill {
 
         let createdAt: Date
         if let dateString = frontmatter["createdAt"] as? String,
-            let parsed = dateFormatter.date(from: dateString)
-        {
+            let parsed = dateFormatter.date(from: dateString) {
             createdAt = parsed
         } else {
             createdAt = Date()
@@ -692,8 +691,7 @@ extension Skill {
 
         let updatedAt: Date
         if let dateString = frontmatter["updatedAt"] as? String,
-            let parsed = dateFormatter.date(from: dateString)
-        {
+            let parsed = dateFormatter.date(from: dateString) {
             updatedAt = parsed
         } else {
             updatedAt = Date()

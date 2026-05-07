@@ -9,9 +9,9 @@ import Foundation
 
 /// Appearance mode setting for the app
 public enum AppearanceMode: String, Codable, CaseIterable, Sendable {
-    case system = "system"
-    case light = "light"
-    case dark = "dark"
+    case system
+    case light
+    case dark
 
     public var displayName: String {
         switch self {

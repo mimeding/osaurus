@@ -106,7 +106,7 @@ class SystemMonitorService: ObservableObject {
 
             let userDiff = userTicks - previousUserTicks
             let systemDiff = systemTicks - previousSystemTicks
-            let _ = idleTicks - previousIdleTicks
+            _ = idleTicks - previousIdleTicks
             let niceDiff = niceTicks - previousNiceTicks
 
             let totalDiff = totalTicks - previousTotalTicks
@@ -128,7 +128,7 @@ class SystemMonitorService: ObservableObject {
             MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size
         )
 
-        let _ = withUnsafeMutablePointer(to: &info) {
+        _ = withUnsafeMutablePointer(to: &info) {
             $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
                 task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
             }
@@ -153,8 +153,8 @@ class SystemMonitorService: ObservableObject {
         let totalMemory = Double(ProcessInfo.processInfo.physicalMemory)
         let freeMemory = Double(vmInfo.free_count) * Double(pageSize)
         let inactiveMemory = Double(vmInfo.inactive_count) * Double(pageSize)
-        let _ = Double(vmInfo.wire_count) * Double(pageSize)
-        let _ = Double(vmInfo.compressor_page_count) * Double(pageSize)
+        _ = Double(vmInfo.wire_count) * Double(pageSize)
+        _ = Double(vmInfo.compressor_page_count) * Double(pageSize)
 
         let usedMemory = totalMemory - freeMemory - inactiveMemory
         let percentage = (usedMemory / totalMemory) * 100.0

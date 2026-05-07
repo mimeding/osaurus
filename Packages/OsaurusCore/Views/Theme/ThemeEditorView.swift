@@ -497,8 +497,7 @@ struct ThemeEditorView: View {
                     VStack(spacing: 12) {
                         if let imageData = editingTheme.background.imageData,
                             let data = Data(base64Encoded: imageData),
-                            let nsImage = NSImage(data: data)
-                        {
+                            let nsImage = NSImage(data: data) {
                             Image(nsImage: nsImage)
                                 .resizable()
                                 .aspectRatio(contentMode: .fill)
@@ -1067,7 +1066,7 @@ struct ThemeChatPreview: View {
     private var previewCodeBlock: some View {
         let themeProtocol = CustomizableTheme(config: theme)
         let sampleCode = "print(\"Hello, World!\")"
-        let _ = ensureHighlightrTheme(for: themeProtocol)
+        _ = ensureHighlightrTheme(for: themeProtocol)
         let bgColor = highlightrThemeBackgroundColor()
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -1122,8 +1121,7 @@ struct ThemeChatPreview: View {
             case .image:
                 if let imageData = theme.background.imageData,
                     let data = Data(base64Encoded: imageData),
-                    let nsImage = NSImage(data: data)
-                {
+                    let nsImage = NSImage(data: data) {
                     GeometryReader { geo in
                         imageView(nsImage: nsImage, fit: theme.background.imageFit ?? .fill, size: geo.size)
                             .opacity(theme.background.imageOpacity ?? 1.0)

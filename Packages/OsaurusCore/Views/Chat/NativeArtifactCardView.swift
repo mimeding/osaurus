@@ -205,8 +205,7 @@ final class NativeArtifactCardView: NSView {
             self.layoutSubtreeIfNeeded()
             var newH = max(self.fittingSize.height, 1)
             if !self.openInFinderButton.isHidden || !self.openInBrowserButton.isHidden,
-                let bound = self.boundArtifact
-            {
+                let bound = self.boundArtifact {
                 newH = max(newH, Self.minimumHeightWithFooterChrome(for: bound))
             }
             let oldH = self.cachedLayoutHeight
@@ -780,8 +779,7 @@ final class NativeArtifactCardView: NSView {
             self.layoutSubtreeIfNeeded()
             var newH = max(self.fittingSize.height, 1)
             if !self.openInFinderButton.isHidden || !self.openInBrowserButton.isHidden,
-                let bound = self.boundArtifact
-            {
+                let bound = self.boundArtifact {
                 newH = max(newH, Self.minimumHeightWithFooterChrome(for: bound))
             }
             self.cachedLayoutHeight = newH

@@ -96,8 +96,7 @@ public struct SchemaValidator {
             // Recurse into nested objects that declare their own properties.
             if case .string("object")? = propSchemaObj["type"],
                 case .object? = propSchemaObj["properties"],
-                let nested = value as? [String: Any]
-            {
+                let nested = value as? [String: Any] {
                 let inner = validateObject(nested, schemaObject: propSchemaObj)
                 if !inner.isValid { return inner }
             }
@@ -162,8 +161,7 @@ public struct SchemaValidator {
                     regex.firstMatch(
                         in: s,
                         range: NSRange(s.startIndex..., in: s)
-                    ) == nil
-                {
+                    ) == nil {
                     let label = key.map { " '\($0)'" } ?? ""
                     return .fail(
                         "Property\(label) does not match required pattern `\(pat)`.",
@@ -198,16 +196,14 @@ public struct SchemaValidator {
         // every element). Tuple-form `items: [schema, schema, ...]` is
         // not implemented — defer to the caller for that rarer shape.
         if case .object(let itemsSchema)? = schemaObject["items"],
-            let arr = value as? [Any]
-        {
+            let arr = value as? [Any] {
             for (idx, element) in arr.enumerated() {
                 let elementKey = key.map { "\($0)[\(idx)]" } ?? "[\(idx)]"
                 let res = validateValue(element, schemaObject: itemsSchema, key: elementKey)
                 if !res.isValid { return res }
                 if case .string("object")? = itemsSchema["type"],
                     case .object? = itemsSchema["properties"],
-                    let nested = element as? [String: Any]
-                {
+                    let nested = element as? [String: Any] {
                     let inner = validateObject(nested, schemaObject: itemsSchema)
                     if !inner.isValid { return inner }
                 }
@@ -339,8 +335,7 @@ public struct SchemaValidator {
         if value is [Any] { return true }
         if let s = value as? String,
             let data = s.data(using: .utf8),
-            (try? JSONSerialization.jsonObject(with: data)) is [Any]
-        {
+            (try? JSONSerialization.jsonObject(with: data)) is [Any] {
             return true
         }
         return false

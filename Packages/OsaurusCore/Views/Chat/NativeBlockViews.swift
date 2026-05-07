@@ -690,7 +690,7 @@ final class NativeCodeBlockView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         if let sub = super.hitTest(point) { return sub }
-        if NSPointInRect(point, bounds) { return self }
+        if bounds.contains(point) { return self }
         return nil
     }
 
@@ -709,7 +709,7 @@ final class NativeCodeBlockView: NSView {
     // MARK: State
 
     private var lastCode = ""
-    private var lastLang: String? = nil
+    private var lastLang: String?
     private var lastWidth: CGFloat = 0
     private var lastThemeId = ""
     private var copyResetTask: Task<Void, Never>?

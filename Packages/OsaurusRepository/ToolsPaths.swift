@@ -11,7 +11,7 @@ import Foundation
 public enum ToolsPaths {
     /// Optional root directory override for tests
     /// Note: nonisolated(unsafe) since this is only set during test setup before any concurrent access
-    public nonisolated(unsafe) static var overrideRoot: URL?
+    nonisolated(unsafe) public static var overrideRoot: URL?
 
     /// The root data directory for Osaurus: `~/.osaurus/`
     public static func root() -> URL {

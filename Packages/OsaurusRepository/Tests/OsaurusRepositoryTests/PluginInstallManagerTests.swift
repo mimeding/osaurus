@@ -45,8 +45,7 @@ final class PluginInstallManagerTests: XCTestCase {
     }
 
     private func makeVersionDir(pluginId: String, version: String, withReceipt: Bool = true) throws
-        -> URL
-    {
+        -> URL {
         let semver = SemanticVersion.parse(version)!
         let dir = PluginInstallManager.toolsVersionDirectory(pluginId: pluginId, version: semver)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

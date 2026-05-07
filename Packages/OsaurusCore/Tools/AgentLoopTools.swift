@@ -355,8 +355,7 @@ public final class ClarifyTool: OsaurusTool, @unchecked Sendable {
 
         let options: [String]
         if let raw = dict["options"], !(raw is NSNull),
-            let arr = ArgumentCoercion.stringArray(raw)
-        {
+            let arr = ArgumentCoercion.stringArray(raw) {
             // Cap defensively even if the tool already validated — the
             // intercept sees pre-validated args, but tests and other
             // call sites might not.

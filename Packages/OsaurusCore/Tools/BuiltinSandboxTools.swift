@@ -1995,8 +1995,7 @@ private struct SandboxInstallTool: OsaurusTool, @unchecked Sendable {
             agentName: SandboxInstallLock.apkSerializationKey
         ) {
             @Sendable func runAsRoot(_ cmd: String, timeout: TimeInterval) async throws
-                -> ContainerExecResult
-            {
+                -> ContainerExecResult {
                 try await SandboxToolCommandRunnerRegistry.shared.execAsRoot(
                     command: cmd,
                     timeout: timeout,
@@ -2092,8 +2091,7 @@ private struct SandboxPipInstallTool: OsaurusTool, @unchecked Sendable {
         let id = agentId, name = self.name, agent = agentName, root = home
         return try await SandboxInstallLock.shared.serialize(agentName: agentName) {
             @Sendable func runAsAgent(_ cmd: String, timeout: TimeInterval) async throws
-                -> ContainerExecResult
-            {
+                -> ContainerExecResult {
                 try await SandboxToolCommandRunnerRegistry.shared.execAsAgent(
                     agent,
                     command: cmd,
@@ -2214,8 +2212,7 @@ private struct SandboxNpmInstallTool: OsaurusTool, @unchecked Sendable {
         // (Pinned by `sandboxNpmInstall_bootstrapsPackageJsonAndUsesWorkdir`.)
         return try await SandboxInstallLock.shared.serialize(agentName: agentName) {
             @Sendable func runAsAgent(_ cmd: String, timeout: TimeInterval) async throws
-                -> ContainerExecResult
-            {
+                -> ContainerExecResult {
                 try await SandboxToolCommandRunnerRegistry.shared.exec(
                     user: "agent-\(agent)",
                     command: cmd,

@@ -76,8 +76,7 @@ struct VoiceView: View {
         .onAppear {
             // Honour an explicit cross-view request (e.g. from the chat speaker button).
             if let requested = managementState.voiceSubTabRequest,
-                let tab = VoiceTab(rawValue: requested)
-            {
+                let tab = VoiceTab(rawValue: requested) {
                 selectedTab = tab
                 managementState.voiceSubTabRequest = nil
             } else if isSetupComplete {

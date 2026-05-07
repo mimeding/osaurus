@@ -14,7 +14,7 @@ struct MarkdownMessageView: View {
     let text: String
     let baseWidth: CGFloat
     /// Optional cache key passed to SelectableTextView for width-aware height caching
-    var cacheKey: String? = nil
+    var cacheKey: String?
     /// Whether content is actively streaming - when true, uses lighter rendering for large content
     var isStreaming: Bool = false
 
@@ -642,7 +642,7 @@ func parseBlocks(_ input: String) -> [MessageBlock] {
         // or at minimum another pipe-delimited row. Tolerate blank lines between
         // rows and malformed separators (some small models emit `| :/| :---/|`).
         if trimmed.hasPrefix("|"), pipeCount(trimmed) >= 2 {
-            var nextIdx: Int? = nil
+            var nextIdx: Int?
             var j = i + 1
             while j < lines.count {
                 let lt = lines[j].trimmingWhitespace()
@@ -1112,7 +1112,7 @@ private func parseOrderedListItemWithIndent(_ line: Substring, trimmed: Substrin
     // Check for "." followed by whitespace (or ")" for alternate syntax)
     guard index > content.startIndex,
         index < content.endIndex,
-        (content[index] == "." || content[index] == ")")
+        content[index] == "." || content[index] == ")"
     else { return nil }
 
     let afterDot = content.index(after: index)

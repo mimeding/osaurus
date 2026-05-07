@@ -126,11 +126,9 @@ public final class AgentNameDetector {
 
         var matchedWords = 0
         for patternWord in patternWords {
-            for textWord in textWords {
-                if fuzzyMatch(String(patternWord), String(textWord)) {
-                    matchedWords += 1
-                    break
-                }
+            for textWord in textWords where fuzzyMatch(String(patternWord), String(textWord)) {
+                matchedWords += 1
+                break
             }
         }
 

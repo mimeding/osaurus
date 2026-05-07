@@ -241,10 +241,8 @@ actor HuggingFaceService {
         }
         // Check for common license identifiers directly in tags
         let knownLicenses = ["mit", "apache-2.0", "gpl-3.0", "cc-by-4.0", "cc-by-nc-4.0", "llama2", "llama3", "gemma"]
-        for tag in tags {
-            if knownLicenses.contains(tag.lowercased()) {
-                return tag
-            }
+        for tag in tags where knownLicenses.contains(tag.lowercased()) {
+            return tag
         }
         return nil
     }
@@ -281,8 +279,7 @@ actor HuggingFaceService {
             if f == "config.json" { hasConfig = true }
             if f.hasSuffix(".safetensors") { hasWeights = true }
             if f == "tokenizer.json" || f == "tokenizer.model" || f == "spiece.model" || f == "vocab.json"
-                || f == "vocab.txt"
-            {
+                || f == "vocab.txt" {
                 hasTokenizer = true
             }
         }

@@ -132,8 +132,7 @@ public final class TranscriptionCleanupService {
 
     // MARK: - Shared post-processing
 
-    private func postProcess(response: String, rawText: String, trimmed: String, start: Date, source: String) -> String
-    {
+    private func postProcess(response: String, rawText: String, trimmed: String, start: Date, source: String) -> String {
         let elapsed = Date().timeIntervalSince(start)
         debugLog(
             "[cleanup] \(source) response in \(String(format: "%.2f", elapsed))s (\(response.count) chars): \(response)"
@@ -154,8 +153,7 @@ public final class TranscriptionCleanupService {
             return rawText
         }
         if trimmed.count > 50,
-            Double(cleaned.count) / Double(trimmed.count) < Self.minHallucinationRatio
-        {
+            Double(cleaned.count) / Double(trimmed.count) < Self.minHallucinationRatio {
             debugLog(
                 "[cleanup] FALLBACK: hallucination guard (cleaned \(cleaned.count) / raw \(trimmed.count) = \(String(format: "%.2f", Double(cleaned.count) / Double(trimmed.count)))), using raw"
             )

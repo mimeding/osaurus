@@ -118,11 +118,11 @@ struct AgentPill: View {
     let activeAgentId: UUID
     let onSelectAgent: (UUID) -> Void
     var discoveredAgents: [DiscoveredAgent] = []
-    var onSelectDiscoveredAgent: ((DiscoveredAgent) -> Void)? = nil
-    var activeDiscoveredAgent: DiscoveredAgent? = nil
+    var onSelectDiscoveredAgent: ((DiscoveredAgent) -> Void)?
+    var activeDiscoveredAgent: DiscoveredAgent?
     var pairedRelayAgents: [PairedRelayAgent] = []
-    var onSelectRelayAgent: ((PairedRelayAgent) -> Void)? = nil
-    var activeRelayAgent: PairedRelayAgent? = nil
+    var onSelectRelayAgent: ((PairedRelayAgent) -> Void)?
+    var activeRelayAgent: PairedRelayAgent?
 
     @State private var isHovered = false
     @State private var isPopoverPresented = false

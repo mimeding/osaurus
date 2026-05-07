@@ -386,8 +386,7 @@ public final class GitHubSkillService: ObservableObject {
             }
 
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let defaultBranch = json["default_branch"] as? String
-            {
+                let defaultBranch = json["default_branch"] as? String {
                 return GitHubRepo(owner: repo.owner, name: repo.name, branch: defaultBranch)
             }
         } catch {

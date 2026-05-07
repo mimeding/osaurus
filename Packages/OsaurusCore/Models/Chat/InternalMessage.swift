@@ -19,9 +19,4 @@ public enum MessageRole: String, Codable, Sendable {
 struct Message: Codable, Sendable {
     let role: MessageRole
     let content: String
-
-    init(role: MessageRole, content: String) {
-        self.role = role
-        self.content = content
-    }
 }

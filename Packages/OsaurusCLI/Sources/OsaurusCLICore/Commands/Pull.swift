@@ -150,8 +150,7 @@ public struct PullCommand: Command {
         let baseDir: URL
         if let shared = UserDefaults(suiteName: "group.com.osaurus.shared"),
             let storedPath = shared.string(forKey: "modelsDirectoryPath"),
-            !storedPath.isEmpty
-        {
+            !storedPath.isEmpty {
             baseDir = URL(fileURLWithPath: storedPath, isDirectory: true)
         } else {
             baseDir = FileManager.default.homeDirectoryForCurrentUser
@@ -379,8 +378,7 @@ private final class CLIFileDownloader: NSObject, URLSessionDownloadDelegate, @un
         guard let cont, let dest else { return }
 
         if let http = downloadTask.response as? HTTPURLResponse,
-            !(200 ..< 300).contains(http.statusCode)
-        {
+            !(200 ..< 300).contains(http.statusCode) {
             cont.resume(
                 throwing: URLError(
                     .badServerResponse,

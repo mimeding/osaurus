@@ -932,31 +932,26 @@ public actor MemoryService {
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let data = trimmed.data(using: .utf8),
-            (try? JSONSerialization.jsonObject(with: data)) != nil
-        {
+            (try? JSONSerialization.jsonObject(with: data)) != nil {
             return data
         }
 
         let fencePattern = #"```(?:json)?\s*\n?([\s\S]*?)```"#
         if let regex = try? NSRegularExpression(pattern: fencePattern),
             let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
-            let contentRange = Range(match.range(at: 1), in: trimmed)
-        {
+            let contentRange = Range(match.range(at: 1), in: trimmed) {
             let jsonStr = String(trimmed[contentRange]).trimmingCharacters(in: .whitespacesAndNewlines)
             if let data = jsonStr.data(using: .utf8),
-                (try? JSONSerialization.jsonObject(with: data)) != nil
-            {
+                (try? JSONSerialization.jsonObject(with: data)) != nil {
                 return data
             }
         }
 
         if let openIdx = trimmed.firstIndex(of: "{"),
-            let closeIdx = trimmed.lastIndex(of: "}"), closeIdx > openIdx
-        {
+            let closeIdx = trimmed.lastIndex(of: "}"), closeIdx > openIdx {
             let jsonStr = String(trimmed[openIdx ... closeIdx])
             if let data = jsonStr.data(using: .utf8),
-                (try? JSONSerialization.jsonObject(with: data)) != nil
-            {
+                (try? JSONSerialization.jsonObject(with: data)) != nil {
                 return data
             }
         }

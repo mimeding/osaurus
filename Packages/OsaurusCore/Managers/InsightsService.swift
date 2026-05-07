@@ -210,7 +210,7 @@ extension InsightsService {
     /// tool definitions, multi-turn history) without truncation in the
     /// common case while still bounding the 500-entry ring buffer to a few
     /// hundred MB worst-case.
-    private nonisolated static let maxBodySize = 262_144
+    nonisolated private static let maxBodySize = 262_144
 
     /// Defense-in-depth credential redactors run on every logged body so a
     /// future caller that forgets to scrub a `/pair` response (or any other
@@ -218,7 +218,7 @@ extension InsightsService {
     /// the request log ring buffer. The regexes target the credential value
     /// itself and replace it with a marker — surrounding structure (JSON keys
     /// or header names) is preserved.
-    private nonisolated static let bearerTokenRegex: NSRegularExpression? = {
+    nonisolated private static let bearerTokenRegex: NSRegularExpression? = {
         // Match the token after a `Bearer` scheme (header or stringified header).
         try? NSRegularExpression(
             pattern: #"(?i)(bearer\s+)osk-[A-Za-z0-9._-]+"#,
@@ -226,7 +226,7 @@ extension InsightsService {
         )
     }()
 
-    private nonisolated static let oskValueRegex: NSRegularExpression? = {
+    nonisolated private static let oskValueRegex: NSRegularExpression? = {
         // Match osk-v1.<payload>.<sig> when it appears as a JSON string value.
         try? NSRegularExpression(
             pattern: #""osk-[A-Za-z0-9._-]+""#,
@@ -258,7 +258,7 @@ extension InsightsService {
         return redacted
     }
 
-    private nonisolated static func truncateBody(_ body: String?) -> String? {
+    nonisolated private static func truncateBody(_ body: String?) -> String? {
         guard let body else { return nil }
         let scrubbed = redactCredentials(body)
         guard scrubbed.count > maxBodySize else { return scrubbed }

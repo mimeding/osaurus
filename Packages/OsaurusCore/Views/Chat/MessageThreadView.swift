@@ -12,7 +12,7 @@ import SwiftUI
 struct MessageThreadView: View {
     let blocks: [ContentBlock]
     /// Optional precomputed group header map; falls back to local computation when nil.
-    var groupHeaderMap: [UUID: UUID]? = nil
+    var groupHeaderMap: [UUID: UUID]?
     let width: CGFloat
     let agentName: String
     let agentAvatar: String?
@@ -29,21 +29,21 @@ struct MessageThreadView: View {
 
     // Message action callbacks
     let onCopy: (UUID) -> Void
-    var onRegenerate: ((UUID) -> Void)? = nil
-    var onEdit: ((UUID) -> Void)? = nil
-    var onDelete: ((UUID) -> Void)? = nil
-    var onSpeak: ((UUID) -> Void)? = nil
+    var onRegenerate: ((UUID) -> Void)?
+    var onEdit: ((UUID) -> Void)?
+    var onDelete: ((UUID) -> Void)?
+    var onSpeak: ((UUID) -> Void)?
 
     // Inline editing state (optional)
-    var editingTurnId: UUID? = nil
-    var editText: Binding<String>? = nil
-    var onConfirmEdit: (() -> Void)? = nil
-    var onCancelEdit: (() -> Void)? = nil
-    var onUserImagePreview: ((String) -> Void)? = nil
+    var editingTurnId: UUID?
+    var editText: Binding<String>?
+    var onConfirmEdit: (() -> Void)?
+    var onCancelEdit: (() -> Void)?
+    var onUserImagePreview: ((String) -> Void)?
 
     // Minimap
-    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)? = nil
-    var scrollToTurnId: UUID? = nil
+    var onVisibleTopUserTurnChanged: ((UUID?) -> Void)?
+    var scrollToTurnId: UUID?
     var scrollToTurnTrigger: Int = 0
 
     @Environment(\.theme) private var theme
@@ -52,7 +52,7 @@ struct MessageThreadView: View {
         if let precomputed = groupHeaderMap { return precomputed }
 
         var map: [UUID: UUID] = [:]
-        var currentGroupHeaderId: UUID? = nil
+        var currentGroupHeaderId: UUID?
 
         for block in blocks {
             if case .groupSpacer = block.kind {

@@ -90,8 +90,7 @@ public enum PluginDisplayNameResolver {
     public static func displayName(for pluginId: String) -> String {
         if let manifestName = PluginManager.shared.loadedPlugin(for: pluginId)?
             .plugin.manifest.name,
-            !manifestName.isEmpty
-        {
+            !manifestName.isEmpty {
             return manifestName
         }
         if pluginId.hasPrefix("sandbox:") {

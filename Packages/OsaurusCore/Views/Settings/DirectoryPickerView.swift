@@ -114,8 +114,7 @@ struct DirectoryPickerView: View {
 
     private var directoryDisplayText: String {
         if directoryPicker.hasValidDirectory,
-            let selectedDirectory = directoryPicker.selectedDirectory
-        {
+            let selectedDirectory = directoryPicker.selectedDirectory {
             return selectedDirectory.path
         } else {
             // Show effective default (env override, old default if exists, else new default)

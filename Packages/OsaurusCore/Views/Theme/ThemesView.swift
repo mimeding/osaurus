@@ -916,8 +916,7 @@ struct ThemePreviewCard: View {
         case .image:
             if let imageData = theme.background.imageData,
                 let data = Data(base64Encoded: imageData),
-                let nsImage = NSImage(data: data)
-            {
+                let nsImage = NSImage(data: data) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)

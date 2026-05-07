@@ -12,14 +12,14 @@ struct ConfigurationView: View {
     @State private var tempExposeToNetwork: Bool = false
     @State private var tempStartAtLogin: Bool = false
     @State private var tempHideDockIcon: Bool = false
-    @State private var cliInstallMessage: String? = nil
+    @State private var cliInstallMessage: String?
     @State private var cliInstallSuccess: Bool = false
     @State private var hasAppeared = false
     @State private var successMessage: String?
     @State private var isResetting = false
 
     // Chat settings state
-    @State private var tempChatHotkey: Hotkey? = nil
+    @State private var tempChatHotkey: Hotkey?
     @State private var tempSystemPrompt: String = ""
     @State private var tempChatTemperature: String = ""
     @State private var tempChatMaxTokens: String = ""
@@ -1008,8 +1008,7 @@ struct ConfigurationView: View {
             // on macOS < 26, a disconnected remote model) with an
             // "(unavailable)" hint so the row isn't an unlabelled orphan.
             if !coreModelIdentifierBinding.wrappedValue.isEmpty,
-                !coreModelPickerItems.contains(where: { $0.id == coreModelIdentifierBinding.wrappedValue })
-            {
+                !coreModelPickerItems.contains(where: { $0.id == coreModelIdentifierBinding.wrappedValue }) {
                 Text("\(coreModelIdentifierBinding.wrappedValue) (unavailable)", bundle: .module)
                     .tag(coreModelIdentifierBinding.wrappedValue)
             }
@@ -1335,7 +1334,7 @@ private struct SettingsField<Content: View>: View {
     @ObservedObject private var themeManager = ThemeManager.shared
 
     let label: String
-    var hint: String? = nil
+    var hint: String?
     @ViewBuilder let content: () -> Content
 
     var body: some View {
@@ -1740,7 +1739,7 @@ private struct SettingsToggle: View {
 
     let title: String
     let description: String
-    var badge: String? = nil
+    var badge: String?
     @Binding var isOn: Bool
 
     var body: some View {
@@ -1889,8 +1888,7 @@ private struct VoiceSettingsSection: View {
             return "Loading model..."
         } else if speechService.isModelLoaded {
             if let modelId = speechService.loadedModelId,
-                let model = modelManager.availableModels.first(where: { $0.id == modelId })
-            {
+                let model = modelManager.availableModels.first(where: { $0.id == modelId }) {
                 return model.name
             }
             return "Model Loaded"

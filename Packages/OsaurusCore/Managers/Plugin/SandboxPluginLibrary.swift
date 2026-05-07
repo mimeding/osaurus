@@ -105,8 +105,7 @@ public final class SandboxPluginLibrary: ObservableObject {
 
             var modifiedAt: Date?
             if let data = try? Data(contentsOf: file),
-                let p = try? decoder.decode(SandboxPlugin.self, from: data)
-            {
+                let p = try? decoder.decode(SandboxPlugin.self, from: data) {
                 modifiedAt = p.modifiedAt
             }
             entries.append(PluginVersionEntry(version: versionNum, modifiedAt: modifiedAt))
@@ -136,8 +135,7 @@ public final class SandboxPluginLibrary: ObservableObject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let restored = try? decoder.decode(SandboxPlugin.self, from: data),
-            let index = plugins.firstIndex(where: { $0.id == id })
-        {
+            let index = plugins.firstIndex(where: { $0.id == id }) {
             plugins[index] = restored
         }
     }
@@ -228,8 +226,7 @@ public final class SandboxPluginLibrary: ObservableObject {
         existing.version = "1"
         if existing.modifiedAt == nil,
             let attrs = try? fm.attributesOfItem(atPath: file.path),
-            let modDate = attrs[.modificationDate] as? Date
-        {
+            let modDate = attrs[.modificationDate] as? Date {
             existing.modifiedAt = modDate
         }
 

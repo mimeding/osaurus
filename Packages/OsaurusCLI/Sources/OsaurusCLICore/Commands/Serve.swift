@@ -12,7 +12,7 @@ public struct ServeCommand: Command {
 
     public static func execute(args: [String]) async {
         // Parse optional --port argument
-        var desiredPort: Int? = nil
+        var desiredPort: Int?
         var expose: Bool = false
         var assumeYes: Bool = false
         var i = 0
@@ -39,7 +39,7 @@ public struct ServeCommand: Command {
             let warning = """
                 WARNING: Exposing Osaurus to the local network will allow other devices on your LAN
                 to connect to your server. Make sure you trust your network and understand the risks.
-                Proceed with exposure? [y/N]: 
+                Proceed with exposure? [y/N]:
                 """
             fputs(warning, stderr)
             fflush(stderr)

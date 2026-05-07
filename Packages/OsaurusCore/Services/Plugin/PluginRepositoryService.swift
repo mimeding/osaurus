@@ -246,7 +246,7 @@ final class PluginRepositoryService: ObservableObject {
             license: spec.license,
             capabilities: spec.capabilities,
             installedVersion: InstalledPluginsStore.shared.latestInstalledVersion(pluginId: spec.plugin_id),
-            latestVersion: spec.versions.map(\.version).sorted(by: >).first,
+            latestVersion: spec.versions.map(\.version).max(),
             loadError: PluginManager.shared.loadError(for: spec.plugin_id)
         )
     }

@@ -291,8 +291,7 @@ public enum ToolEnvelope {
             withJSONObject: dict,
             options: [.sortedKeys]
         ),
-            let json = String(data: data, encoding: .utf8)
-        {
+            let json = String(data: data, encoding: .utf8) {
             return json
         }
         // Hand-built fallback so we never return malformed output if the
@@ -310,8 +309,7 @@ public enum ToolEnvelope {
             withJSONObject: dict,
             options: [.sortedKeys]
         ),
-            let json = String(data: data, encoding: .utf8)
-        {
+            let json = String(data: data, encoding: .utf8) {
             return json
         }
         // Fallback should never trigger for well-typed inputs; if it does,

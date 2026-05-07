@@ -27,19 +27,19 @@ struct CellRenderingContext {
     let onToggleExpand: (String) -> Void
     /// Called by native views after they've measured their own height.
     /// Coordinator updates heightCache and calls noteHeightOfRows if delta > 2pt.
-    var onHeightMeasured: ((CGFloat, String) -> Void)? = nil
+    var onHeightMeasured: ((CGFloat, String) -> Void)?
     var isTurnHovered: Bool = false
-    var editingTurnId: UUID? = nil
-    var editText: (() -> String, (String) -> Void)? = nil
-    var onConfirmEdit: (() -> Void)? = nil
-    var onCancelEdit: (() -> Void)? = nil
-    var onCopy: ((UUID) -> Void)? = nil
-    var onRegenerate: ((UUID) -> Void)? = nil
-    var onEdit: ((UUID) -> Void)? = nil
-    var onDelete: ((UUID) -> Void)? = nil
-    var onSpeak: ((UUID) -> Void)? = nil
+    var editingTurnId: UUID?
+    var editText: (() -> String, (String) -> Void)?
+    var onConfirmEdit: (() -> Void)?
+    var onCancelEdit: (() -> Void)?
+    var onCopy: ((UUID) -> Void)?
+    var onRegenerate: ((UUID) -> Void)?
+    var onEdit: ((UUID) -> Void)?
+    var onDelete: ((UUID) -> Void)?
+    var onSpeak: ((UUID) -> Void)?
     /// attachment or shared-artifact id string → full screen preview from ChatView
-    var onUserImagePreview: ((String) -> Void)? = nil
+    var onUserImagePreview: ((String) -> Void)?
 }
 
 // MARK: - Cell-Isolated ExpandedBlocksStore Proxy
@@ -1091,10 +1091,6 @@ final class NativeMessageCellView: NSTableCellView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    override func layout() {
-        super.layout()
-    }
-
     /// Row height from Auto Layout — avoids drift from hand-summed constants vs. actual constraints.
     /// AppKit `NSView` uses `fittingSize` (UIKit’s `systemLayoutSizeFitting` is not available here).
     /// Table view still uses `heightOfRow:` + cache (see MessageTableRepresentable); this only feeds accurate measurements.
@@ -1394,7 +1390,7 @@ final class NativeMessageCellView: NSTableCellView {
         }
         let tv = nativeThinkingView!
         let thinkingLen: Int?
-        if case .thinking(_, _, _) = block.kind { thinkingLen = text.count } else { thinkingLen = nil }
+        if case .thinking = block.kind { thinkingLen = text.count } else { thinkingLen = nil }
 
         let isExpanded = context.expandedIds.contains(block.id)
         tv.configure(
@@ -1644,8 +1640,7 @@ final class NativeMessageCellView: NSTableCellView {
         }
 
         if wantsInlineEdit, let editPair = context.editText, let onConfirm = context.onConfirmEdit,
-            let onCancel = context.onCancelEdit, let ev = userInlineEditView
-        {
+            let onCancel = context.onCancelEdit, let ev = userInlineEditView {
             let getT = editPair.0
             let setT = editPair.1
             ev.configure(

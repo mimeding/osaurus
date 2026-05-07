@@ -14,8 +14,8 @@
 import Foundation
 import OsaurusRepository
 
-private nonisolated(unsafe) var devProxyConfigFile: URL?
-private nonisolated(unsafe) var signalSource: DispatchSourceSignal?
+nonisolated(unsafe) private var devProxyConfigFile: URL?
+nonisolated(unsafe) private var signalSource: DispatchSourceSignal?
 
 public struct ToolsDev {
 
@@ -194,7 +194,7 @@ public struct ToolsDev {
                     at: pluginDir,
                     includingPropertiesForKeys: nil,
                     options: .skipsHiddenFiles
-                ).filter(\.hasDirectoryPath).first
+                ).first(where: \.hasDirectoryPath)
             }
             guard let dir = versionDir else { return nil }
 
@@ -370,8 +370,7 @@ public struct ToolsDev {
 
         for case let url as URL in enumerator {
             if let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-                let mtime = values.contentModificationDate, mtime > latest
-            {
+                let mtime = values.contentModificationDate, mtime > latest {
                 latest = mtime
             }
         }
@@ -385,8 +384,7 @@ public struct ToolsDev {
         for name in companions {
             let url = cwd.appendingPathComponent(name)
             if let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-                let mtime = values.contentModificationDate, mtime > latest
-            {
+                let mtime = values.contentModificationDate, mtime > latest {
                 latest = mtime
             }
         }

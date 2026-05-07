@@ -35,7 +35,7 @@ public enum PromptItem: Identifiable {
     case secret(SecretPromptState)
     case clarify(ClarifyPromptState)
 
-    public nonisolated var id: ObjectIdentifier {
+    nonisolated public var id: ObjectIdentifier {
         switch self {
         case .secret(let s): return ObjectIdentifier(s)
         case .clarify(let c): return ObjectIdentifier(c)

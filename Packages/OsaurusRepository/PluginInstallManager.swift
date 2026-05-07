@@ -385,10 +385,8 @@ public final class PluginInstallManager: @unchecked Sendable {
             return nil
         }
         let target = filename.lowercased()
-        for case let fileURL as URL in enumerator {
-            if fileURL.lastPathComponent.lowercased() == target {
-                return fileURL
-            }
+        for case let fileURL as URL in enumerator where fileURL.lastPathComponent.lowercased() == target {
+            return fileURL
         }
         return nil
     }
@@ -406,10 +404,8 @@ public final class PluginInstallManager: @unchecked Sendable {
             return []
         }
         var results: [URL] = []
-        for case let fileURL as URL in enumerator {
-            if fileURL.lastPathComponent.uppercased() == "SKILL.MD" {
-                results.append(fileURL)
-            }
+        for case let fileURL as URL in enumerator where fileURL.lastPathComponent.uppercased() == "SKILL.MD" {
+            results.append(fileURL)
         }
         return results
     }
@@ -425,10 +421,8 @@ public final class PluginInstallManager: @unchecked Sendable {
         else {
             return nil
         }
-        for case let fileURL as URL in enumerator {
-            if fileURL.pathExtension == "dylib" {
-                return fileURL
-            }
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "dylib" {
+            return fileURL
         }
         return nil
     }

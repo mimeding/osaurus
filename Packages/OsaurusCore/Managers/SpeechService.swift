@@ -153,8 +153,7 @@ public final class AudioInputManager: ObservableObject {
         }
 
         if let selectedId = selectedDeviceId,
-            !availableDevices.contains(where: { $0.id == selectedId })
-        {
+            !availableDevices.contains(where: { $0.id == selectedId }) {
             selectedDeviceId = nil
         }
     }
@@ -351,7 +350,7 @@ public final class SystemAudioCaptureManager: NSObject, ObservableObject {
     private var stream: SCStream?
     private var streamOutput: SystemAudioStreamOutput?
 
-    private override init() {
+    override private init() {
         super.init()
     }
 
@@ -449,11 +448,11 @@ public final class SystemAudioCaptureManager: NSObject, ObservableObject {
         print("[SystemAudioCaptureManager] Stopped capturing system audio")
     }
 
-    public nonisolated func getAndClearSamples() -> [Float] {
+    nonisolated public func getAndClearSamples() -> [Float] {
         sampleBuffer.getAndClear()
     }
 
-    private nonisolated func appendSamples(_ samples: [Float]) {
+    nonisolated private func appendSamples(_ samples: [Float]) {
         sampleBuffer.append(samples)
     }
 }
@@ -461,7 +460,7 @@ public final class SystemAudioCaptureManager: NSObject, ObservableObject {
 // MARK: - SCStreamDelegate
 
 extension SystemAudioCaptureManager: SCStreamDelegate {
-    public nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
+    nonisolated public func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("[SystemAudioCaptureManager] Stream stopped with error: \(error)")
         Task { @MainActor in
             self.isCapturing = false
@@ -564,7 +563,7 @@ public final class SpeechService: ObservableObject {
     // MARK: - Private Properties
 
     private var sendableAsrManager: SendableAsrManager?
-    private nonisolated(unsafe) var vadManager: VadManager?
+    nonisolated(unsafe) private var vadManager: VadManager?
 
     private var activeInputDeviceId: String?
     private var activeInputSource: AudioInputSource?
@@ -797,8 +796,7 @@ public final class SpeechService: ObservableObject {
         if let engine = audioEngine, engine.isRunning,
             inputSource == activeInputSource,
             selectedId == activeInputDeviceId,
-            activeTapFormat != nil
-        {
+            activeTapFormat != nil {
             print("[SpeechService] Reusing active audio engine for handoff")
             reuseEngine = true
         } else {
@@ -842,7 +840,7 @@ public final class SpeechService: ObservableObject {
         print("[SpeechService]   - Sensitivity: \(config.sensitivity)")
 
         if inputSource == .microphone {
-            var targetDeviceId: AudioDeviceID? = nil
+            var targetDeviceId: AudioDeviceID?
             if let selectedId {
                 targetDeviceId = AudioInputManager.shared.getAudioDeviceId(for: selectedId)
                 if targetDeviceId == nil {
@@ -1025,7 +1023,7 @@ public final class SpeechService: ObservableObject {
         let bufferRef = audioBuffer
         systemAudioPollingTask = Task { @MainActor [weak self] in
             print("[SpeechService] Started system audio polling")
-            while let _ = self, bufferRef.isActive {
+            while self != nil, bufferRef.isActive {
                 let samples = SystemAudioCaptureManager.shared.getAndClearSamples()
                 if !samples.isEmpty {
                     bufferRef.append(samples)
@@ -1246,7 +1244,7 @@ public final class SpeechService: ObservableObject {
 
     // MARK: - Audio Device Helpers
 
-    private nonisolated static func setInputDevice(_ deviceId: AudioDeviceID, for inputNode: AVAudioInputNode) {
+    nonisolated private static func setInputDevice(_ deviceId: AudioDeviceID, for inputNode: AVAudioInputNode) {
         _ = inputNode.inputFormat(forBus: 0)
 
         guard let audioUnit = inputNode.audioUnit else {

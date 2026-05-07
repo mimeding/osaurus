@@ -59,7 +59,7 @@ private struct OnboardingFieldLabel: View {
 struct OnboardingSecureField: View {
     let placeholder: String
     @Binding var text: String
-    var label: String? = nil
+    var label: String?
 
     @Environment(\.theme) private var theme
     @FocusState private var isFocused: Bool

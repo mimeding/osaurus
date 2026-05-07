@@ -107,7 +107,7 @@ final class MCPServerManager {
             }()
             let argsJSON: String = {
                 if let d = argsData {
-                    return String(decoding: d, as: UTF8.self)
+                    return String(bytes: d, encoding: .utf8) ?? ""
                 }
                 return "{}"
             }()

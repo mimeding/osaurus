@@ -47,8 +47,7 @@ extension PluginHostContext {
     @MainActor
     private static func pluginDisplayName(for pluginId: String) async -> String {
         if let manifestName = PluginManager.shared.loadedPlugin(for: pluginId)?.plugin
-            .manifest.name, !manifestName.isEmpty
-        {
+            .manifest.name, !manifestName.isEmpty {
             return manifestName
         }
         return pluginId

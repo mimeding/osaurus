@@ -789,7 +789,7 @@ struct AgentDetailView: View {
     @State private var pluginInstructionsMap: [String: String] = [:]
     @State private var disableTools: Bool = false
     @State private var disableMemory: Bool = false
-    @State private var avatar: String? = nil
+    @State private var avatar: String?
     /// Drives the title-bar agent picker popover. Tapping the avatar / name in the
     /// header bar reveals the list of other custom agents so the user can jump
     /// between them without bouncing back to the Agents grid every time.
@@ -1917,8 +1917,7 @@ struct AgentDetailView: View {
     }
 
     private func featureToggleRow(title: LocalizedStringKey, subtitle: LocalizedStringKey, isOn: Binding<Bool>)
-        -> some View
-    {
+        -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title, bundle: .module)
@@ -1991,8 +1990,7 @@ struct AgentDetailView: View {
                     if let current = pluginInstructionsMap[pid],
                         !manifestDefault.isEmpty,
                         current.trimmingCharacters(in: .whitespacesAndNewlines)
-                            != manifestDefault.trimmingCharacters(in: .whitespacesAndNewlines)
-                    {
+                            != manifestDefault.trimmingCharacters(in: .whitespacesAndNewlines) {
                         Button {
                             pluginInstructionsMap[pid] = manifestDefault
                             debouncedSave()
@@ -3475,7 +3473,7 @@ private struct AgentDetailSection<Content: View>: View {
 
     let title: String
     let icon: String
-    var subtitle: String? = nil
+    var subtitle: String?
     @ViewBuilder let content: () -> Content
 
     var body: some View {
@@ -3537,7 +3535,7 @@ private struct AgentEditorSheet: View {
     /// the suggested name in sync. Once the user types their own value, the
     /// name is theirs and presets stop touching it.
     @State private var nameUserEdited: Bool = false
-    @State private var selectedAvatar: String? = nil
+    @State private var selectedAvatar: String?
     @State private var systemPrompt: String = ""
     @State private var selectedModel: String?
     @State private var pickerItems: [ModelPickerItem] = []

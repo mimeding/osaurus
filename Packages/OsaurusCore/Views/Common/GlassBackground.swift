@@ -31,10 +31,10 @@ final class GlassContainerView: NSView {
     private var _lastHasCustomCorners = false
     private var _lastCornerRadius: CGFloat = -1
     private var _lastMaskBounds: CGRect = .zero
-    private var _lastTopLeading: CGFloat? = nil
-    private var _lastBottomLeading: CGFloat? = nil
-    private var _lastTopTrailing: CGFloat? = nil
-    private var _lastBottomTrailing: CGFloat? = nil
+    private var _lastTopLeading: CGFloat?
+    private var _lastBottomLeading: CGFloat?
+    private var _lastTopTrailing: CGFloat?
+    private var _lastBottomTrailing: CGFloat?
 
     init(baseGlassView: NSVisualEffectView, edgeLightingView: NSView, tintOverlayView: NSView) {
         self.baseGlassView = baseGlassView

@@ -194,8 +194,7 @@ extension MCPProviderTool {
         default:
             // Try to encode as JSON string
             if let jsonData = try? JSONSerialization.data(withJSONObject: value),
-                let jsonString = String(data: jsonData, encoding: .utf8)
-            {
+                let jsonString = String(data: jsonData, encoding: .utf8) {
                 return .string(jsonString)
             } else {
                 throw NSError(
@@ -255,8 +254,7 @@ extension MCPProviderTool {
 
         // Otherwise return JSON array
         if let jsonData = try? JSONSerialization.data(withJSONObject: results),
-            let jsonString = String(data: jsonData, encoding: .utf8)
-        {
+            let jsonString = String(data: jsonData, encoding: .utf8) {
             return jsonString
         }
 

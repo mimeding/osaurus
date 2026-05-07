@@ -177,7 +177,7 @@ public final class ToastWindowController: NSObject {
     private var hostingView: NSHostingView<ToastOverlayWindowContent>?
     private var cancellables = Set<AnyCancellable>()
 
-    private override init() {
+    override private init() {
         super.init()
     }
 
@@ -244,6 +244,7 @@ public final class ToastWindowController: NSObject {
 
     /// Teardown the toast window
     public func teardown() {
+        // swiftlint:disable:next notification_center_detachment
         NotificationCenter.default.removeObserver(self)
         cancellables.removeAll()
         toastPanel?.close()
@@ -263,8 +264,7 @@ public final class ToastWindowController: NSObject {
         let targetScreen: NSScreen
         if let windowId = windowId,
             let chatWindow = ChatWindowManager.shared.getNSWindow(id: windowId),
-            let windowScreen = chatWindow.screen
-        {
+            let windowScreen = chatWindow.screen {
             targetScreen = windowScreen
         } else {
             targetScreen = NSScreen.main ?? NSScreen.screens.first!

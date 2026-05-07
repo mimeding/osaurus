@@ -38,8 +38,8 @@ enum LocalReasoningCapability {
         )
     }
 
-    private static nonisolated let lock = NSLock()
-    private static nonisolated(unsafe) var cache: [String: Capability] = [:]
+    nonisolated private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: Capability] = [:]
 
     static func capability(forModelId modelId: String) -> Capability {
         let key = modelId.lowercased()
@@ -201,21 +201,18 @@ enum LocalReasoningCapability {
         let fm = FileManager.default
         let jinja = dir.appendingPathComponent("chat_template.jinja")
         if fm.fileExists(atPath: jinja.path),
-            let s = try? String(contentsOf: jinja, encoding: .utf8)
-        {
+            let s = try? String(contentsOf: jinja, encoding: .utf8) {
             return s
         }
         let tokenizerCfg = dir.appendingPathComponent("tokenizer_config.json")
         if fm.fileExists(atPath: tokenizerCfg.path),
             let data = try? Data(contentsOf: tokenizerCfg),
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        {
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let tmpl = obj["chat_template"] as? String { return tmpl }
             // HF sometimes ships an array form: [{"name": "default", "template": "..."}]
             if let arr = obj["chat_template"] as? [[String: Any]],
                 let first = arr.first,
-                let tmpl = first["template"] as? String
-            {
+                let tmpl = first["template"] as? String {
                 return tmpl
             }
         }

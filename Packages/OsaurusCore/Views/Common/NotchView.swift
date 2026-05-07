@@ -657,8 +657,7 @@ struct NotchView: View {
 
         for item in recent {
             if let cur = current,
-                cur.kind == item.kind, cur.title == item.title, cur.detail == item.detail
-            {
+                cur.kind == item.kind, cur.title == item.title, cur.detail == item.detail {
                 currentCount += 1
             } else {
                 flush()

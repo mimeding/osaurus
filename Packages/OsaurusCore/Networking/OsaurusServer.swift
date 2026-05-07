@@ -11,14 +11,13 @@ import NIOCore
 import NIOHTTP1
 import NIOPosix
 
-public actor OsaurusServer: Sendable {
+public actor OsaurusServer {
     public struct Config: Sendable {
         public var host: String
         public var port: Int
         public var agentIndex: UInt32?
         public var trustLoopback: Bool
-        public init(host: String = "127.0.0.1", port: Int = 1337, agentIndex: UInt32? = nil, trustLoopback: Bool = true)
-        {
+        public init(host: String = "127.0.0.1", port: Int = 1337, agentIndex: UInt32? = nil, trustLoopback: Bool = true) {
             self.host = host
             self.port = port
             self.agentIndex = agentIndex

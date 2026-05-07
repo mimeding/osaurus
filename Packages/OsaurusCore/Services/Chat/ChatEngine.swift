@@ -7,7 +7,7 @@
 
 import Foundation
 
-actor ChatEngine: Sendable, ChatEngineProtocol {
+actor ChatEngine: ChatEngineProtocol {
     private let services: [ModelService]
     private let installedModelsProvider: @Sendable () -> [String]
 
@@ -198,8 +198,7 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
                 withJSONObject: envelope,
                 options: [.prettyPrinted, .sortedKeys]
             ),
-                let s = String(data: data, encoding: .utf8)
-            {
+                let s = String(data: data, encoding: .utf8) {
                 return s
             }
         }
@@ -396,8 +395,8 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
             var outputTokenCount = 0
             var deltaCount = 0
             var finishReason: InferenceLog.FinishReason = .stop
-            var errorMsg: String? = nil
-            var toolInvocation: (name: String, args: String)? = nil
+            var errorMsg: String?
+            var toolInvocation: (name: String, args: String)?
             var lastDeltaTime = startTime
             // Accumulate the streamed assistant text so the Insights Response
             // tab can show what was produced. Only retained when logging is

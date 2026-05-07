@@ -423,8 +423,7 @@ enum AnthropicResponseContentBlock: Codable, Sendable {
     }
 
     static func toolUseBlock(id: String, name: String, input: [String: AnyCodableValue])
-        -> AnthropicResponseContentBlock
-    {
+        -> AnthropicResponseContentBlock {
         .toolUse(type: "tool_use", id: id, name: name, input: input)
     }
 }
@@ -892,7 +891,7 @@ extension AnthropicMessagesRequest {
         }
 
         // Convert tools
-        var openAITools: [Tool]? = nil
+        var openAITools: [Tool]?
         if let tools = tools {
             openAITools = tools.map { tool in
                 Tool(
@@ -907,7 +906,7 @@ extension AnthropicMessagesRequest {
         }
 
         // Convert tool_choice
-        var openAIToolChoice: ToolChoiceOption? = nil
+        var openAIToolChoice: ToolChoiceOption?
         if let choice = tool_choice {
             switch choice {
             case .auto:

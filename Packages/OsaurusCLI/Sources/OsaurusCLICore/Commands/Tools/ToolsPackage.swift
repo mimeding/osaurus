@@ -22,17 +22,14 @@ public struct ToolsPackage {
         let fm = FileManager.default
         var entries: [String] = []
 
-        for file in companionFiles {
-            if fm.fileExists(atPath: directory.appendingPathComponent(file).path) {
-                entries.append(file)
-            }
+        for file in companionFiles where fm.fileExists(atPath: directory.appendingPathComponent(file).path) {
+            entries.append(file)
         }
 
         for dirName in companionDirs {
             var isDir: ObjCBool = false
             if fm.fileExists(atPath: directory.appendingPathComponent(dirName).path, isDirectory: &isDir),
-                isDir.boolValue
-            {
+                isDir.boolValue {
                 entries.append(dirName)
             }
         }

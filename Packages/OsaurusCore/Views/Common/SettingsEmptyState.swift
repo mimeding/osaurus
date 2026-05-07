@@ -34,7 +34,7 @@ struct SettingsEmptyState: View {
     let subtitle: String
     let examples: [Example]
     let primaryAction: Action
-    var secondaryAction: Action? = nil
+    var secondaryAction: Action?
     let hasAppeared: Bool
 
     @State private var glowIntensity: CGFloat = 0.6

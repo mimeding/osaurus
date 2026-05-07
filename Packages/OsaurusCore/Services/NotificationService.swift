@@ -18,7 +18,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     private let categoryId = "OSU_MODEL_READY"
     private let actionOpenId = "OSU_OPEN_MODELS"
 
-    private override init() {
+    override private init() {
         super.init()
     }
 

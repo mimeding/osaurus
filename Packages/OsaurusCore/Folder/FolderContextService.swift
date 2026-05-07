@@ -13,7 +13,7 @@ import Foundation
 // Lives outside the @MainActor class so the lock and storage are never actor-isolated.
 // Concurrency safety is enforced manually via _folderRootPathLock.
 private let _folderRootPathLock = NSLock()
-private nonisolated(unsafe) var _folderCachedRootPath: URL?
+nonisolated(unsafe) private var _folderCachedRootPath: URL?
 
 /// Service for managing work folder context
 @MainActor
@@ -31,7 +31,7 @@ public final class FolderContextService: ObservableObject {
 
     /// Thread-safe accessor for the current folder root path.
     /// Reads a lock-protected cache so callers never need to hop to MainActor.
-    public nonisolated static var cachedRootPath: URL? {
+    nonisolated public static var cachedRootPath: URL? {
         _folderRootPathLock.withLock { _folderCachedRootPath }
     }
 

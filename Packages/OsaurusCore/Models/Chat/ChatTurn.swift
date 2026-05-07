@@ -152,15 +152,15 @@ final class ChatTurn: ObservableObject, Identifiable {
     /// File attachments (images and documents) for this turn
     @Published var attachments: [Attachment] = []
     /// Assistant-issued tool calls attached to this turn (OpenAI compatible)
-    @Published var toolCalls: [ToolCall]? = nil
+    @Published var toolCalls: [ToolCall]?
     /// For role==.tool messages, associates this result with the originating call id
-    var toolCallId: String? = nil
+    var toolCallId: String?
     /// Convenience map for UI to show tool results grouped under the assistant turn
     @Published var toolResults: [String: String] = [:]
     /// Tool name detected during streaming before the full invocation is ready.
-    var pendingToolName: String? = nil
+    var pendingToolName: String?
     /// Accumulated preview of tool arguments during streaming (tail-truncated)
-    var pendingToolArgPreview: String? = nil
+    var pendingToolArgPreview: String?
     /// Total bytes of tool arguments received during streaming
     var pendingToolArgSize: Int = 0
     /// Number of arg fragments received during streaming. Used by the chat
@@ -170,7 +170,7 @@ final class ChatTurn: ObservableObject, Identifiable {
     /// mid-stream. A fragment counter makes the throttle predictable.
     var pendingToolArgFragmentCount: Int = 0
     /// Capabilities selected by preflight search (ephemeral, not persisted)
-    var preflightCapabilities: [PreflightCapabilityItem]? = nil
+    var preflightCapabilities: [PreflightCapabilityItem]?
 
     // MARK: - Generation Benchmarks (ephemeral, not persisted)
 

@@ -691,8 +691,7 @@ public actor StorageMigrator {
                 // pre-encryption backup as a last resort.
                 if !fm.fileExists(atPath: plaintextURL.path),
                     let src = backupIndex[plaintextURL.lastPathComponent],
-                    let _ = try? fm.copyItem(at: src, to: plaintextURL)
-                {
+                    (try? fm.copyItem(at: src, to: plaintextURL)) != nil {
                     try? fm.removeItem(at: url)
                     restored += 1
                     log.warning(

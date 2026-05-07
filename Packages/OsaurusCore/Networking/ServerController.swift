@@ -262,12 +262,9 @@ final class ServerController: ObservableObject {
     // MARK: - Port Probe (Network-based, concurrency-safe)
 
     private func isAnyListenerActive(on hosts: [String], port: Int, timeout: TimeInterval) async
-        -> Bool
-    {
-        for host in hosts {
-            if await isListenerActive(host: host, port: port, timeout: timeout) {
-                return true
-            }
+        -> Bool {
+        for host in hosts where await isListenerActive(host: host, port: port, timeout: timeout) {
+            return true
         }
         return false
     }
@@ -280,7 +277,7 @@ final class ServerController: ObservableObject {
             connection.stateUpdateHandler = { state in
                 continuation.yield(state)
                 switch state {
-                case .ready, .failed(_), .cancelled:
+                case .ready, .failed, .cancelled:
                     continuation.finish()
                     // Avoid further callbacks
                     connection.stateUpdateHandler = nil
@@ -299,7 +296,7 @@ final class ServerController: ObservableObject {
                     case .ready:
                         connection.cancel()
                         return true
-                    case .failed(_), .cancelled:
+                    case .failed, .cancelled:
                         return false
                     default:
                         break
@@ -357,7 +354,7 @@ final class ServerController: ObservableObject {
                     ) == 0 {
                         // Trim at NUL terminator before decoding to avoid deprecated cString initializer.
                         let nulTrimmed = hostname.prefix { $0 != 0 }
-                        let ip = String(decoding: nulTrimmed.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                        let ip = String(bytes: nulTrimmed.map { UInt8(bitPattern: $0) }, encoding: .utf8) ?? ""
                         let name = String(cString: ptr.pointee.ifa_name)
                         if name.starts(with: "en") {  // en0, en1, etc. are common for Wi-Fi/Ethernet on macOS
                             address = ip

@@ -826,13 +826,11 @@ extension ModelPickerTableRepresentable {
                 highlightedIndex = offset > 0 ? 0 : flatModelIds.count - 1
             }
             if let old = oldIndex, old < flatModelIds.count,
-                let rowIdx = modelIdToRowIndex[flatModelIds[old]]
-            {
+                let rowIdx = modelIdToRowIndex[flatModelIds[old]] {
                 reconfigureCell(at: rowIdx)
             }
             if let new = highlightedIndex, new < flatModelIds.count,
-                let rowIdx = modelIdToRowIndex[flatModelIds[new]]
-            {
+                let rowIdx = modelIdToRowIndex[flatModelIds[new]] {
                 reconfigureCell(at: rowIdx)
                 tableView?.scrollRowToVisible(rowIdx)
             }

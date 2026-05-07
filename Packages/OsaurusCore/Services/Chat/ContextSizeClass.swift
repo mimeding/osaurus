@@ -158,8 +158,7 @@ public enum ContextSizeResolver {
         // to call it.
         let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.caseInsensitiveCompare("foundation") == .orderedSame
-            || trimmed.caseInsensitiveCompare("default") == .orderedSame
-        {
+            || trimmed.caseInsensitiveCompare("default") == .orderedSame {
             return ContextWindowInfo(sizeClass: .tiny, contextLength: tinyCeiling)
         }
 

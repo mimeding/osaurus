@@ -185,8 +185,7 @@ final class StreamingDeltaProcessor {
 
         let timeSinceSync = now.timeIntervalSince(lastSyncTime) * 1000
         if (syncCount == 0 && hasPendingContent)
-            || (timeSinceSync >= syncIntervalMs && hasPendingContent)
-        {
+            || (timeSinceSync >= syncIntervalMs && hasPendingContent) {
             syncToTurn()
         }
     }

@@ -139,8 +139,7 @@ public struct ShowCommand: Command {
             if http.statusCode != 200 {
                 // Try to parse error message
                 if let errorResp = try? JSONDecoder().decode(ErrorResponse.self, from: data),
-                    let message = errorResp.error?.message
-                {
+                    let message = errorResp.error?.message {
                     fputs("Error: \(message)\n", stderr)
                 } else {
                     fputs("Failed to get model info (status \(http.statusCode))\n", stderr)

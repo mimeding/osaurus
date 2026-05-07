@@ -128,9 +128,8 @@ enum StreamingMarkdownBalancer {
         // Ordered: digits followed by `.` or `)`, e.g. `1.`, `12)`.
         if trimmed.count >= 2,
             let last = trimmed.last,
-            (last == "." || last == ")"),
-            trimmed.dropLast().allSatisfy({ $0.isNumber })
-        {
+            last == "." || last == ")",
+            trimmed.dropLast().allSatisfy({ $0.isNumber }) {
             return true
         }
         return false

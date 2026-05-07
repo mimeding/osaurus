@@ -18,7 +18,7 @@ struct TableView: View {
         Grid(horizontalSpacing: 1, verticalSpacing: 1) {
             // Headers
             GridRow(alignment: .top) {
-                ForEach(Array(headers.enumerated()), id: \.offset) { index, header in
+                ForEach(Array(headers.enumerated()), id: \.offset) { _, header in
                     TableCell(
                         text: header,
                         isHeader: true,
@@ -30,7 +30,7 @@ struct TableView: View {
             // Rows
             ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
                 GridRow(alignment: .top) {
-                    ForEach(Array(row.enumerated()), id: \.offset) { colIndex, cell in
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
                         TableCell(
                             text: cell,
                             isHeader: false,

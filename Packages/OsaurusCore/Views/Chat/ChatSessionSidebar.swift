@@ -22,7 +22,7 @@ struct ChatSessionSidebar: View {
     let onDelete: (UUID) -> Void
     let onRename: (UUID, String) -> Void
     /// Optional callback for opening a session in a new window
-    var onOpenInNewWindow: ((ChatSessionData) -> Void)? = nil
+    var onOpenInNewWindow: ((ChatSessionData) -> Void)?
 
     @Environment(\.theme) private var theme
     @ObservedObject private var agentManager = AgentManager.shared
@@ -329,7 +329,7 @@ private struct SessionRow: View {
     let onCancelRename: () -> Void
     let onDelete: () -> Void
     /// Optional callback for opening in a new window
-    var onOpenInNewWindow: (() -> Void)? = nil
+    var onOpenInNewWindow: (() -> Void)?
 
     @Environment(\.theme) private var theme
     @State private var isHovered = false
@@ -461,8 +461,7 @@ private struct SessionRow: View {
             parts.append(origin)
         }
         if let key = session.externalSessionKey,
-            !key.trimmingCharacters(in: .whitespaces).isEmpty
-        {
+            !key.trimmingCharacters(in: .whitespaces).isEmpty {
             // Truncate noisy external keys (e.g. long Telegram chat ids)
             // so the row doesn't overflow horizontally.
             let trimmed = key.count > 14 ? "\(key.prefix(12))…" : key

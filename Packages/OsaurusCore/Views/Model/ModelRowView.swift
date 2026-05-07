@@ -423,8 +423,7 @@ enum ModelCardGradient {
 /// - Returns: Repository name in "organization/model" format, or the full URL if parsing fails
 func repositoryName(from urlString: String) -> String {
     if let url = URL(string: urlString),
-        url.host == "huggingface.co"
-    {
+        url.host == "huggingface.co" {
         let pathComponents = url.pathComponents.filter { $0 != "/" }
         if pathComponents.count >= 2 {
             return "\(pathComponents[0])/\(pathComponents[1])"

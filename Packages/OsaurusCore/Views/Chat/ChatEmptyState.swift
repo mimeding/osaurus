@@ -21,11 +21,11 @@ struct ChatEmptyState: View {
     let onSelectAgent: (UUID) -> Void
     let onOpenOnboarding: (() -> Void)?
     var discoveredAgents: [DiscoveredAgent] = []
-    var onSelectDiscoveredAgent: ((DiscoveredAgent) -> Void)? = nil
-    var activeDiscoveredAgent: DiscoveredAgent? = nil
+    var onSelectDiscoveredAgent: ((DiscoveredAgent) -> Void)?
+    var activeDiscoveredAgent: DiscoveredAgent?
     var pairedRelayAgents: [PairedRelayAgent] = []
-    var onSelectRelayAgent: ((PairedRelayAgent) -> Void)? = nil
-    var activeRelayAgent: PairedRelayAgent? = nil
+    var onSelectRelayAgent: ((PairedRelayAgent) -> Void)?
+    var activeRelayAgent: PairedRelayAgent?
 
     @State private var hasAppeared = false
     @Environment(\.theme) private var theme

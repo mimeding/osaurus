@@ -22,7 +22,7 @@ public struct ToolsUpgrade {
         var failures = 0
         for pid in pluginIds {
             guard let spec = specs.first(where: { $0.plugin_id == pid }) else { continue }
-            let latest = spec.versions.map(\.version).sorted(by: >).first
+            let latest = spec.versions.map(\.version).max()
             let installed = InstalledPluginsStore.shared.latestInstalledVersion(pluginId: pid)
             if let latest, installed == nil || latest > installed! {
                 do {

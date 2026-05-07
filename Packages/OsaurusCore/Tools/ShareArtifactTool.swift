@@ -113,8 +113,7 @@ public struct ShareArtifactTool: OsaurusTool {
         let startToken = "---SHARED_ARTIFACT_START---"
         let endToken = "---SHARED_ARTIFACT_END---"
         if let rawContent,
-            rawContent.contains(startToken) || rawContent.contains(endToken)
-        {
+            rawContent.contains(startToken) || rawContent.contains(endToken) {
             return ToolEnvelope.failure(
                 kind: .invalidArgs,
                 message:
@@ -152,8 +151,7 @@ public struct ShareArtifactTool: OsaurusTool {
 
         let metadataJSON: String
         if let jsonData = try? JSONSerialization.data(withJSONObject: metadataDict),
-            let jsonStr = String(data: jsonData, encoding: .utf8)
-        {
+            let jsonStr = String(data: jsonData, encoding: .utf8) {
             metadataJSON = jsonStr
         } else {
             metadataJSON = "{}"

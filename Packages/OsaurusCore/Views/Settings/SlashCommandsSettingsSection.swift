@@ -15,7 +15,7 @@ struct SlashCommandsSettingsSection: View {
     private var registry = SlashCommandRegistry.shared
 
     @State private var showAddSheet = false
-    @State private var editingCommand: SlashCommand? = nil
+    @State private var editingCommand: SlashCommand?
 
     private var theme: ThemeProtocol { themeManager.currentTheme }
 
@@ -198,7 +198,7 @@ struct SlashCommandEditorSheet: View {
     @State private var description: String = ""
     @State private var template: String = ""
     @State private var icon: String = "text.bubble"
-    @State private var nameError: String? = nil
+    @State private var nameError: String?
 
     private var theme: ThemeProtocol { themeManager.currentTheme }
     private var isEditing: Bool { command != nil }

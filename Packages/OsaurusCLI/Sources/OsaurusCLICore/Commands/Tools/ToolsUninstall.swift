@@ -44,8 +44,7 @@ public struct ToolsUninstall {
                                 .appendingPathComponent("receipt.json")
 
                             if let data = try? Data(contentsOf: receiptURL),
-                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                            {
+                                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                                 let pluginId = (obj["plugin_id"] as? String) ?? ""
                                 if pluginId == target {
                                     dirToRemove = pluginDir

@@ -103,8 +103,7 @@ private final class HostAPIBridgeHandler: ChannelInboundHandler, RemovableChanne
             // HTTP server: refuse before allocating into the body buffer.
             if let lengthStr = head.headers.first(name: "Content-Length"),
                 let length = Int(lengthStr),
-                length > Self.maxBodyBytes
-            {
+                length > Self.maxBodyBytes {
                 rejectTooLarge(context: context, head: head, declared: length)
                 return
             }
@@ -181,8 +180,7 @@ private final class HostAPIBridgeHandler: ChannelInboundHandler, RemovableChanne
         Task {
             let response: BridgeResponse
             if let token = bearerToken,
-                let identity = await SandboxBridgeTokenStore.shared.resolve(token: token)
-            {
+                let identity = await SandboxBridgeTokenStore.shared.resolve(token: token) {
                 response = await handler.value.routeRequest(
                     method: method,
                     path: path,
@@ -358,8 +356,7 @@ private final class HostAPIBridgeHandler: ChannelInboundHandler, RemovableChanne
                 OsaurusPaths.ensureExistsSilent(configDir)
                 var dict: [String: String] = [:]
                 if let data = try? Data(contentsOf: configFile),
-                    let existing = try? JSONSerialization.jsonObject(with: data) as? [String: String]
-                {
+                    let existing = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
                     dict = existing
                 }
                 dict[key] = value
@@ -473,8 +470,7 @@ private final class HostAPIBridgeHandler: ChannelInboundHandler, RemovableChanne
         // silently dispatch into the wrong agent.
         if let claimed = parsed["agent_id"] as? String,
             !claimed.isEmpty,
-            claimed.lowercased() != identity.agentId.uuidString.lowercased()
-        {
+            claimed.lowercased() != identity.agentId.uuidString.lowercased() {
             return .error(403, "agent_id in body does not match token-bound identity")
         }
 
@@ -529,8 +525,7 @@ private final class HostAPIBridgeHandler: ChannelInboundHandler, RemovableChanne
                 ]
             }
             if let data = try? JSONSerialization.data(withJSONObject: ["results": entries]),
-                let json = String(data: data, encoding: .utf8)
-            {
+                let json = String(data: data, encoding: .utf8) {
                 return .ok(json)
             }
             return .ok("{\"results\":[]}")
@@ -580,8 +575,7 @@ private final class HostAPIBridgeHandler: ChannelInboundHandler, RemovableChanne
         let payloadStr: String
         if let payloadDict = payload {
             if let data = try? JSONSerialization.data(withJSONObject: payloadDict),
-                let str = String(data: data, encoding: .utf8)
-            {
+                let str = String(data: data, encoding: .utf8) {
                 payloadStr = str
             } else {
                 payloadStr = "{}"

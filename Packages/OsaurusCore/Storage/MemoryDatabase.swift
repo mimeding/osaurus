@@ -1077,7 +1077,7 @@ public final class MemoryDatabase: @unchecked Sendable {
 
     public func bumpPinnedFactUsage(ids: [String]) throws {
         guard !ids.isEmpty else { return }
-        let placeholders = ids.enumerated().map { "?\($0.offset + 1)" }.joined(separator: ",")
+        let placeholders = ids.indices.map { "?\($0 + 1)" }.joined(separator: ",")
         _ = try executeUpdate(
             """
             UPDATE pinned_facts
@@ -1152,7 +1152,7 @@ public final class MemoryDatabase: @unchecked Sendable {
 
     public func loadPinnedFactsByIds(_ ids: [String]) throws -> [PinnedFact] {
         guard !ids.isEmpty else { return [] }
-        let placeholders = ids.enumerated().map { "?\($0.offset + 1)" }.joined(separator: ",")
+        let placeholders = ids.indices.map { "?\($0 + 1)" }.joined(separator: ",")
         let sql = """
             SELECT \(Self.pinnedColumns)
             FROM pinned_facts
@@ -1441,7 +1441,7 @@ public final class MemoryDatabase: @unchecked Sendable {
 
     public func loadEpisodesByIds(_ ids: [Int]) throws -> [Episode] {
         guard !ids.isEmpty else { return [] }
-        let placeholders = ids.enumerated().map { "?\($0.offset + 1)" }.joined(separator: ",")
+        let placeholders = ids.indices.map { "?\($0 + 1)" }.joined(separator: ",")
         let sql = """
             SELECT \(Self.episodeColumns) FROM episodes
             WHERE status = 'active' AND id IN (\(placeholders))

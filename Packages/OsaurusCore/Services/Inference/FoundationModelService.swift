@@ -117,8 +117,7 @@ actor FoundationModelService: ToolCapableService {
                             }
                             var current = snapshot.content
                             if !stopSequences.isEmpty,
-                                let r = stopSequences.compactMap({ current.range(of: $0)?.lowerBound }).first
-                            {
+                                let r = stopSequences.compactMap({ current.range(of: $0)?.lowerBound }).first {
                                 current = String(current[..<r])
                             }
                             let delta: String
@@ -267,8 +266,7 @@ actor FoundationModelService: ToolCapableService {
                             }
                             var current = snapshot.content
                             if !stopSequences.isEmpty,
-                                let r = stopSequences.compactMap({ current.range(of: $0)?.lowerBound }).first
-                            {
+                                let r = stopSequences.compactMap({ current.range(of: $0)?.lowerBound }).first {
                                 current = String(current[..<r])
                             }
                             let delta: String
@@ -325,8 +323,8 @@ actor FoundationModelService: ToolCapableService {
     /// FoundationModels path with `visionUnsupported` instead of silently
     /// dropping images at the prompt builder.
     nonisolated static func hasImageContent(_ messages: [ChatMessage]) -> Bool {
-        for msg in messages {
-            if !msg.imageUrls.isEmpty { return true }
+        for msg in messages where !msg.imageUrls.isEmpty {
+            return true
         }
         return false
     }
@@ -397,8 +395,7 @@ actor FoundationModelService: ToolCapableService {
             case .object(let dict):
                 // enum of strings
                 if case .array(let enumVals)? = dict["enum"],
-                    case .string = enumVals.first
-                {
+                    case .string = enumVals.first {
                     let choices: [String] = enumVals.compactMap { v in
                         if case .string(let s) = v { return s } else { return nil }
                     }
@@ -410,7 +407,7 @@ actor FoundationModelService: ToolCapableService {
                 }
 
                 // type can be string or array
-                var typeString: String? = nil
+                var typeString: String?
                 if let t = dict["type"] {
                     switch t {
                     case .string(let s): typeString = s
@@ -437,8 +434,7 @@ actor FoundationModelService: ToolCapableService {
                     return DynamicGenerationSchema(type: Bool.self)
                 case "array":
                     if let items = dict["items"],
-                        let itemSchema = dynamicSchema(from: items, name: name + "Item")
-                    {
+                        let itemSchema = dynamicSchema(from: items, name: name + "Item") {
                         let minItems = jsonIntOrNil(dict["minItems"])
                         let maxItems = jsonIntOrNil(dict["maxItems"])
                         return DynamicGenerationSchema(
@@ -453,7 +449,9 @@ actor FoundationModelService: ToolCapableService {
                         minimumElements: nil,
                         maximumElements: nil
                     )
-                case "object": fallthrough
+                case "object":
+                    _ = ()
+                    fallthrough
                 default:
                     // Build object properties
                     var required: Set<String> = []

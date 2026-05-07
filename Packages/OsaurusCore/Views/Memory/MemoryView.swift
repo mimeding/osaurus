@@ -534,9 +534,7 @@ struct MemoryView: View {
 
                             ScrollView {
                                 VStack(alignment: .leading, spacing: 0) {
-                                    ForEach(Array(defaultAgentEpisodes.enumerated()), id: \.element.id) {
-                                        index,
-                                        episode in
+                                    ForEach(Array(defaultAgentEpisodes.enumerated()), id: \.element.id) { index, episode in
                                         if index > 0 {
                                             Divider().opacity(0.5)
                                         }

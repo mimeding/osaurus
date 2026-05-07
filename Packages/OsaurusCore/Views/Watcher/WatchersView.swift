@@ -65,9 +65,7 @@ struct WatchersView: View {
                             ],
                             spacing: 20
                         ) {
-                            ForEach(Array(watcherManager.watchers.enumerated()), id: \.element.id) {
-                                index,
-                                watcher in
+                            ForEach(Array(watcherManager.watchers.enumerated()), id: \.element.id) { index, watcher in
                                 WatcherCard(
                                     watcher: watcher,
                                     isRunning: watcherManager.isRunning(watcher.id),
@@ -479,7 +477,7 @@ struct WatcherEditorSheet: View {
     let mode: Mode
     let onSave: (Watcher) -> Void
     let onCancel: () -> Void
-    var initialAgentId: UUID? = nil
+    var initialAgentId: UUID?
 
     @State private var name = ""
     @State private var instructions = ""

@@ -41,8 +41,7 @@ public struct ToolsList {
                         .appendingPathComponent("receipt.json")
 
                     if let data = try? Data(contentsOf: receiptURL),
-                        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                    {
+                        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         let pluginId = (obj["plugin_id"] as? String) ?? entry
                         let version = (obj["version"] as? String) ?? versionName
                         print("\(pluginId)  version=\(version)")

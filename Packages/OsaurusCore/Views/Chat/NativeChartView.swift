@@ -254,8 +254,7 @@ final class NativeChartView: NSView {
             model.categories(categories)
         }
         if let stacking = spec.stacking,
-            let stackingType = AAChartStackingType(rawValue: stacking)
-        {
+            let stackingType = AAChartStackingType(rawValue: stacking) {
             model.stacking(stackingType)
         }
         if let colors = spec.colorsTheme {

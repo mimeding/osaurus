@@ -70,8 +70,8 @@ struct ToolConfiguration: Codable, Equatable, Sendable {
     func hasGrants(for name: String, requirements: [String]) -> Bool {
         guard !requirements.isEmpty else { return true }
         let granted = grants[name] ?? [:]
-        for req in requirements {
-            if granted[req] != true { return false }
+        for req in requirements where granted[req] != true {
+            return false
         }
         return true
     }

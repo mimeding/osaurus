@@ -600,11 +600,11 @@
         public func info() async -> ContainerInfo {
             let currentStatus = refreshStatus()
             var users: [String] = []
-            var disk: String? = nil
-            var uptime: String? = nil
-            var memoryUsage: String? = nil
-            var cpuLoad: String? = nil
-            var processCount: Int? = nil
+            var disk: String?
+            var uptime: String?
+            var memoryUsage: String?
+            var cpuLoad: String?
+            var processCount: Int?
 
             if currentStatus.isRunning {
                 if let result = try? await exec(command: "awk -F: '$3 >= 1000 && $3 < 65534 {print $1}' /etc/passwd") {
@@ -1313,13 +1313,11 @@
         private static func friendlyError(from error: Error) -> Error {
             let nsError = error as NSError
             if nsError.domain == NSCocoaErrorDomain,
-                let message = startFailureHints.cocoa[nsError.code]
-            {
+                let message = startFailureHints.cocoa[nsError.code] {
                 return SandboxError.startFailed(message)
             }
             if nsError.domain == NSPOSIXErrorDomain,
-                let message = startFailureHints.posix[Int32(nsError.code)]
-            {
+                let message = startFailureHints.posix[Int32(nsError.code)] {
                 return SandboxError.startFailed(message)
             }
             let desc = String(describing: error)
@@ -1455,8 +1453,7 @@
             let lines = lock.withLock {
                 if !lineBuffer.isEmpty,
                     let s = String(data: lineBuffer, encoding: .utf8),
-                    !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                {
+                    !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     pendingLines.append(s)
                 }
                 lineBuffer.removeAll()
@@ -1480,8 +1477,7 @@
             var start = lineBuffer.startIndex
             for i in lineBuffer.indices where lineBuffer[i] == newline {
                 if i > start,
-                    let line = String(data: lineBuffer[start ..< i], encoding: .utf8)
-                {
+                    let line = String(data: lineBuffer[start ..< i], encoding: .utf8) {
                     pendingLines.append(line)
                 }
                 start = lineBuffer.index(after: i)

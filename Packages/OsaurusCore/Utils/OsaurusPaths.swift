@@ -13,7 +13,7 @@ import Foundation
 public enum OsaurusPaths {
     /// Optional root directory override for tests
     /// Note: nonisolated(unsafe) since this is only set during test setup before any concurrent access
-    public nonisolated(unsafe) static var overrideRoot: URL?
+    nonisolated(unsafe) public static var overrideRoot: URL?
 
     // MARK: - Root Directory
 
@@ -165,13 +165,11 @@ public enum OsaurusPaths {
         let url = URL(fileURLWithPath: path)
         let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey]
         if let values = try? url.resourceValues(forKeys: keys),
-            let capacity = values.volumeAvailableCapacityForImportantUsage
-        {
+            let capacity = values.volumeAvailableCapacityForImportantUsage {
             return capacity
         }
         if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path),
-            let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value
-        {
+            let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value {
             return free
         }
         return nil
@@ -184,13 +182,11 @@ public enum OsaurusPaths {
         let url = URL(fileURLWithPath: path)
         let keys: Set<URLResourceKey> = [.volumeTotalCapacityKey]
         if let values = try? url.resourceValues(forKeys: keys),
-            let capacity = values.volumeTotalCapacity
-        {
+            let capacity = values.volumeTotalCapacity {
             return Int64(capacity)
         }
         if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path),
-            let total = (attrs[.systemSize] as? NSNumber)?.int64Value
-        {
+            let total = (attrs[.systemSize] as? NSNumber)?.int64Value {
             return total
         }
         return nil

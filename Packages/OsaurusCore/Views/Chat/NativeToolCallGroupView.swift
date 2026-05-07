@@ -80,22 +80,19 @@ enum ToolCategory {
 
         // File operations
         if name.contains("file") || name.contains("read") || name.contains("write")
-            || name.contains("path") || name.contains("directory") || name.contains("folder")
-        {
+            || name.contains("path") || name.contains("directory") || name.contains("folder") {
             return .file
         }
 
         // Search operations
         if name.contains("search") || name.contains("find") || name.contains("query")
-            || name.contains("grep") || name.contains("lookup")
-        {
+            || name.contains("grep") || name.contains("lookup") {
             return .search
         }
 
         // Terminal/command operations
         if name.contains("terminal") || name.contains("command") || name.contains("exec")
-            || name.contains("shell") || name.contains("run") || name.contains("bash")
-        {
+            || name.contains("shell") || name.contains("run") || name.contains("bash") {
             return .terminal
         }
 
@@ -103,22 +100,19 @@ enum ToolCategory {
         if name.contains("http") || name.contains("api") || name.contains("fetch")
             || name.contains("request") || name.contains("url") || name.contains("web")
             || name.contains("thread") || name.contains("mailbox") || name.contains("mail")
-            || name.contains("messages")
-        {
+            || name.contains("messages") {
             return .network
         }
 
         // Database operations
         if name.contains("database") || name.contains("sql") || name.contains("db")
-            || name.contains("query") || name.contains("table")
-        {
+            || name.contains("query") || name.contains("table") {
             return .database
         }
 
         // Code operations
         if name.contains("code") || name.contains("edit") || name.contains("replace")
-            || name.contains("refactor") || name.contains("lint")
-        {
+            || name.contains("refactor") || name.contains("lint") {
             return .code
         }
 
@@ -185,8 +179,7 @@ enum PreviewGenerator {
 
         // Try to parse as JSON first
         if let data = trimmed.data(using: .utf8),
-            let json = try? JSONSerialization.jsonObject(with: data)
-        {
+            let json = try? JSONSerialization.jsonObject(with: data) {
 
             // Handle JSON array
             if let array = json as? [Any] {
@@ -866,8 +859,7 @@ final class NativeToolCallRowView: NSView {
         }
         if let payload = ToolEnvelope.successPayload(result) as? [String: Any],
             payload.count == 1,
-            let text = payload["text"] as? String
-        {
+            let text = payload["text"] as? String {
             return text
         }
         if let pretty = JSONFormatter.prettyPrintedJSONIfValid(trimmed) {

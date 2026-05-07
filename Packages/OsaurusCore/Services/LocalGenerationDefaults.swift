@@ -58,8 +58,8 @@ enum LocalGenerationDefaults {
         static let empty = Defaults()
     }
 
-    private static nonisolated let lock = NSLock()
-    private static nonisolated(unsafe) var cache: [String: Defaults] = [:]
+    nonisolated private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: Defaults] = [:]
 
     /// Resolve and cache the sampling defaults for `modelId`. The id may be
     /// either the short picker name or the full `ORG/REPO` identifier; both

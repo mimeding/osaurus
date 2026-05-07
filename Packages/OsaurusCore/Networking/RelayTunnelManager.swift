@@ -597,10 +597,8 @@ public final class RelayTunnelManager: ObservableObject {
         addressToAgentId.removeAll()
         pendingNonceHandler = nil
 
-        for id in configuration.enabledAgentIds {
-            if agentStatuses[id] != .disconnected {
-                agentStatuses[id] = .connecting
-            }
+        for id in configuration.enabledAgentIds where agentStatuses[id] != .disconnected {
+            agentStatuses[id] = .connecting
         }
 
         guard shouldReconnect else { return }

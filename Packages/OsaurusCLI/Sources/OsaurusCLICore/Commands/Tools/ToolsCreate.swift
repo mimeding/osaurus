@@ -396,21 +396,21 @@ public struct ToolsCreate {
 
             private var api: osr_plugin_api = {
                 var api = osr_plugin_api()
-                
+
                 api.free_string = { ptr in
                     if let p = ptr { free(UnsafeMutableRawPointer(mutating: p)) }
                 }
-                
+
                 api.`init` = {
                     let ctx = PluginContext()
                     return Unmanaged.passRetained(ctx).toOpaque()
                 }
-                
+
                 api.destroy = { ctxPtr in
                     guard let ctxPtr = ctxPtr else { return }
                     Unmanaged<PluginContext>.fromOpaque(ctxPtr).release()
                 }
-                
+
                 api.get_manifest = { ctxPtr in
                     let manifest = \\"\\"\\"
                     {
@@ -446,39 +446,39 @@ public struct ToolsCreate {
                     \\"\\"\\"
                     return makeCString(manifest)
                 }
-                
+
                 api.invoke = { ctxPtr, typePtr, idPtr, payloadPtr in
                     guard let ctxPtr = ctxPtr,
                           let typePtr = typePtr,
                           let idPtr = idPtr,
                           let payloadPtr = payloadPtr else { return nil }
-                    
+
                     let ctx = Unmanaged<PluginContext>.fromOpaque(ctxPtr).takeUnretainedValue()
                     let type = String(cString: typePtr)
                     let id = String(cString: idPtr)
                     let payload = String(cString: payloadPtr)
-                    
+
                     if type == "tool" && id == ctx.tool.name {
                          let result = ctx.tool.run(args: payload)
                          return makeCString(result)
                     }
-                    
+
                     return makeCString("{\\"error\\": \\"Unknown capability\\"}")
                 }
-                
+
                 api.version = 2
-                
+
                 api.handle_route = { ctxPtr, requestJsonPtr in
                     guard let requestJsonPtr = requestJsonPtr else { return nil }
                     let requestJson = String(cString: requestJsonPtr)
-                    
+
                     struct RouteRequest: Decodable { let route_id: String }
                     guard let data = requestJson.data(using: .utf8),
                           let req = try? JSONDecoder().decode(RouteRequest.self, from: data)
                     else {
                         return makeCString("{\\"status\\":400}")
                     }
-                    
+
                     switch req.route_id {
                     case "health":
                         let body: [String: Any] = ["ok": true]
@@ -498,11 +498,11 @@ public struct ToolsCreate {
                         return makeCString("{\\"status\\":404}")
                     }
                 }
-                
+
                 api.on_config_changed = { _, _, _ in }
-                
+
                 api.on_task_event = { _, _, _, _ in }
-                
+
                 return api
             }()
 
@@ -1351,7 +1351,7 @@ public struct ToolsCreate {
                 guard let taskIdPtr, let eventJsonPtr else { return }
                 let taskId = String(cString: taskIdPtr)
                 let eventJson = String(cString: eventJsonPtr)
-                
+
                 switch eventType {
                 case 4: // COMPLETED
                     hostAPI?.pointee.log?(1, makeCString("Task \\(taskId) completed: \\(eventJson)"))
@@ -1372,7 +1372,7 @@ public struct ToolsCreate {
             ) {
                 let task_id = read_c_str(task_id);
                 let event_json = read_c_str(event_json);
-                
+
                 match event_type {
                     4 => { // COMPLETED
                         if let Some(log) = (*HOST_API).log {
@@ -1399,22 +1399,22 @@ public struct ToolsCreate {
             private struct MyTool {
                 let name = "my_tool"  // Must match manifest id
                 let description = "What this tool does"
-                
+
                 struct Args: Decodable {
                     let inputParam: String
                     let optionalParam: String?
                 }
-                
+
                 func run(args: String) -> String {
                     // 1. Parse JSON input
                     guard let data = args.data(using: .utf8),
                           let input = try? JSONDecoder().decode(Args.self, from: data) else {
                         return "{\\"error\\": \\"Invalid arguments\\"}"
                     }
-                    
+
                     // 2. Execute tool logic
                     let result = processInput(input.inputParam)
-                    
+
                     // 3. Return JSON response
                     return "{\\"result\\": \\"\\(result)\\"}"
                 }
@@ -1431,10 +1431,10 @@ public struct ToolsCreate {
                         Ok(v) => v,
                         Err(_) => return r#"{"error": "Invalid arguments"}"#.to_string(),
                     };
-                    
+
                     // 2. Execute tool logic
                     let result = self.process_input(&input);
-                    
+
                     // 3. Return JSON response
                     format!(r#"{{"result": "{}"}}"#, result)
                 }
@@ -1493,7 +1493,7 @@ public struct ToolsCreate {
             ```swift
             api.invoke = { ctxPtr, typePtr, idPtr, payloadPtr in
                 // ... existing code ...
-                
+
                 if type == "tool" {
                     switch id {
                     case ctx.helloTool.name:
@@ -1504,7 +1504,7 @@ public struct ToolsCreate {
                         return makeCString("{\\"error\\": \\"Unknown tool\\"}")
                     }
                 }
-                
+
                 return makeCString("{\\"error\\": \\"Unknown capability\\"}")
             }
             ```
@@ -1512,7 +1512,7 @@ public struct ToolsCreate {
             ```rust
             extern "C" fn invoke(ctx: *mut c_void, type_ptr: *const c_char, id_ptr: *const c_char, payload_ptr: *const c_char) -> *const c_char {
                 // ... existing code ...
-                
+
                 if type_str == "tool" {
                     match id_str {
                         "hello_world" => make_c_string(&ctx.hello_tool.run(payload)),
@@ -1558,24 +1558,24 @@ public struct ToolsCreate {
             ```swift
             private struct MyAPITool {
                 let name = "call_api"
-                
+
                 struct Args: Decodable {
                     let query: String
                     let _secrets: [String: String]?  // Secrets injected by Osaurus
                 }
-                
+
                 func run(args: String) -> String {
                     guard let data = args.data(using: .utf8),
                           let input = try? JSONDecoder().decode(Args.self, from: data)
                     else {
                         return "{\\"error\\": \\"Invalid arguments\\"}"
                     }
-                    
+
                     // Get the API key
                     guard let apiKey = input._secrets?["api_key"] else {
                         return "{\\"error\\": \\"API key not configured\\"}"
                     }
-                    
+
                     // Use the API key in your request
                     let result = makeAPICall(apiKey: apiKey, query: input.query)
                     return "{\\"result\\": \\"\\(result)\\"}"
@@ -1590,18 +1590,18 @@ public struct ToolsCreate {
                     query: String,
                     _secrets: Option<HashMap<String, String>>,
                 }
-                
+
                 let input: Args = match serde_json::from_str(args) {
                     Ok(v) => v,
                     Err(_) => return r#"{"error": "Invalid arguments"}"#.to_string(),
                 };
-                
+
                 // Get the API key
                 let api_key = match input._secrets.as_ref().and_then(|s| s.get("api_key")) {
                     Some(key) => key,
                     None => return r#"{"error": "API key not configured"}"#.to_string(),
                 };
-                
+
                 // Use the API key
                 let result = self.make_api_call(api_key, &input.query);
                 format!(r#"{{"result": "{}"}}"#, result)
@@ -1649,23 +1649,23 @@ public struct ToolsCreate {
             ```swift
             private struct MyFileTool {
                 let name = "process_file"
-                
+
                 struct FolderContext: Decodable {
                     let working_directory: String
                 }
-                
+
                 struct Args: Decodable {
                     let path: String
                     let _context: FolderContext?  // Folder context injected by Osaurus
                 }
-                
+
                 func run(args: String) -> String {
                     guard let data = args.data(using: .utf8),
                           let input = try? JSONDecoder().decode(Args.self, from: data)
                     else {
                         return "{\\"error\\": \\"Invalid arguments\\"}"
                     }
-                    
+
                     // Resolve relative path using working directory
                     let absolutePath: String
                     if let workingDir = input._context?.working_directory {
@@ -1674,7 +1674,7 @@ public struct ToolsCreate {
                         // No folder context - assume absolute path or return error
                         absolutePath = input.path
                     }
-                    
+
                     // SECURITY: Validate path stays within working directory
                     if let workingDir = input._context?.working_directory {
                         let resolvedPath = URL(fileURLWithPath: absolutePath).standardized.path
@@ -1682,7 +1682,7 @@ public struct ToolsCreate {
                             return "{\\"error\\": \\"Path outside working directory\\"}"
                         }
                     }
-                    
+
                     // Process the file at absolutePath...
                     return "{\\"success\\": true}"
                 }
@@ -1695,24 +1695,24 @@ public struct ToolsCreate {
                 struct FolderContext {
                     working_directory: String,
                 }
-                
+
                 #[derive(Deserialize)]
                 struct Args {
                     path: String,
                     _context: Option<FolderContext>,
                 }
-                
+
                 let input: Args = match serde_json::from_str(args) {
                     Ok(v) => v,
                     Err(_) => return r#"{"error": "Invalid arguments"}"#.to_string(),
                 };
-                
+
                 // Resolve relative path
                 let absolute_path = match &input._context {
                     Some(ctx) => format!("{}/{}", ctx.working_directory, input.path),
                     None => input.path.clone(),
                 };
-                
+
                 // SECURITY: Validate path stays within working directory
                 if let Some(ctx) = &input._context {
                     let resolved = std::path::Path::new(&absolute_path).canonicalize();
@@ -1722,7 +1722,7 @@ public struct ToolsCreate {
                         }
                     }
                 }
-                
+
                 // Process the file...
                 r#"{"success": true}"#.to_string()
             }
@@ -1798,22 +1798,22 @@ public struct ToolsCreate {
                 guard let input = parseArgs(args) else {
                     return "{\\"error\\": \\"Invalid arguments\\"}"
                 }
-                
+
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/some-cli")
                 process.arguments = [input.flag, input.value]
-                
+
                 let pipe = Pipe()
                 process.standardOutput = pipe
                 process.standardError = pipe
-                
+
                 do {
                     try process.run()
                     process.waitUntilExit()
-                    
+
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: data, encoding: .utf8) ?? ""
-                    
+
                     if process.terminationStatus == 0 {
                         return "{\\"output\\": \\"\\(output.escapedForJSON)\\"}"
                     } else {
@@ -1831,11 +1831,11 @@ public struct ToolsCreate {
                     Ok(v) => v,
                     Err(_) => return r#"{"error": "Invalid arguments"}"#.to_string(),
                 };
-                
+
                 let output = std::process::Command::new("/usr/bin/some-cli")
                     .args(&[&input.flag, &input.value])
                     .output();
-                
+
                 match output {
                     Ok(out) if out.status.success() => {
                         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1861,11 +1861,11 @@ public struct ToolsCreate {
                 guard let input = parseArgs(args) else {
                     return "{\\"error\\": \\"Invalid arguments\\"}"
                 }
-                
+
                 guard let httpRequest = hostAPI?.pointee.http_request else {
                     return "{\\"error\\": \\"HTTP client not available\\"}"
                 }
-                
+
                 let body = (try? JSONEncoder().encode(input)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                 let request = "{\\"method\\":\\"POST\\",\\"url\\":\\"https://api.example.com/endpoint\\",\\"headers\\":{\\"Content-Type\\":\\"application/json\\"},\\"body\\":\\"\\(body.replacingOccurrences(of: "\\"", with: "\\\\\\""))\\",\\"timeout_ms\\":10000}"
                 let response = httpRequest(makeCString(request))
@@ -1881,13 +1881,13 @@ public struct ToolsCreate {
                     Ok(v) => v,
                     Err(_) => return r#"{"error": "Invalid arguments"}"#.to_string(),
                 };
-                
+
                 unsafe {
                     let http_request = match (*HOST_API).http_request {
                         Some(f) => f,
                         None => return r#"{"error": "HTTP client not available"}"#.to_string(),
                     };
-                    
+
                     let body = serde_json::to_string(&input).unwrap_or_default();
                     let req = serde_json::json!({
                         "method": "POST",

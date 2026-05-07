@@ -514,8 +514,7 @@ struct PluginConfigView: View {
             } else {
                 if let connectAction = field.connect_action,
                     connectAction.type == "oauth",
-                    let routeId = connectAction.url_route
-                {
+                    let routeId = connectAction.url_route {
                     Button {
                         let base = Self.resolveBaseURL(for: pluginId, agentId: agentId)
                         let url = URL(string: "\(base)/plugins/\(pluginId)/\(routeId)")!
@@ -572,16 +571,14 @@ struct PluginConfigView: View {
         for section in configSpec.sections {
             for field in section.fields {
                 if values[field.key] == nil, field.type != .readonly, field.type != .status,
-                    let val = ToolSecretsKeychain.getSecret(id: field.key, for: pluginId, agentId: agentId)
-                {
+                    let val = ToolSecretsKeychain.getSecret(id: field.key, for: pluginId, agentId: agentId) {
                     values[field.key] = val
                 }
                 if values[field.key] == nil, let def = field.default {
                     values[field.key] = def.stringValue
                 }
                 if let connKey = field.connected_when, values[connKey] == nil,
-                    let val = ToolSecretsKeychain.getSecret(id: connKey, for: pluginId, agentId: agentId)
-                {
+                    let val = ToolSecretsKeychain.getSecret(id: connKey, for: pluginId, agentId: agentId) {
                     values[connKey] = val
                 }
             }
@@ -596,10 +593,8 @@ struct PluginConfigView: View {
     private func saveConfig() {
         var hasErrors = false
         for section in configSpec.sections {
-            for field in section.fields {
-                if !validateField(key: field.key) {
-                    hasErrors = true
-                }
+            for field in section.fields where !validateField(key: field.key) {
+                hasErrors = true
             }
         }
         guard !hasErrors else { return }
@@ -651,8 +646,7 @@ struct PluginConfigView: View {
 
         if let pattern = validation.pattern,
             let regex = try? NSRegularExpression(pattern: pattern),
-            regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) == nil
-        {
+            regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) == nil {
             errors[key] = validation.pattern_hint ?? "Invalid format"
             return false
         }

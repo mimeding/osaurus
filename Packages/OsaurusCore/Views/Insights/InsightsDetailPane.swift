@@ -938,7 +938,7 @@ private struct DetailRow: View {
 
     let label: Text
     let value: String
-    var valueColor: Color? = nil
+    var valueColor: Color?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {

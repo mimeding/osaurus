@@ -65,9 +65,7 @@ public enum MLXErrorRecovery {
         }
 
         // C-convention closure: no captures (must match `@convention(c)`).
-        let handler: @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void = {
-            cMessage,
-            _ in
+        let handler: @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void = { cMessage, _ in
             let message = cMessage.map { String(cString: $0) } ?? "<nil>"
             MLXErrorRecovery.lock.withLock {
                 MLXErrorRecovery._lastError = message

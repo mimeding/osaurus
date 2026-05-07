@@ -296,8 +296,7 @@ private struct AddProviderFlow: View {
 
                     // Help section
                     if let preset = selectedPreset, preset.isKnown, !preset.consoleURL.isEmpty,
-                        preset != .openai || openAIAuthMode == .platformAPIKey
-                    {
+                        preset != .openai || openAIAuthMode == .platformAPIKey {
                         helpSection(for: preset)
                     }
 

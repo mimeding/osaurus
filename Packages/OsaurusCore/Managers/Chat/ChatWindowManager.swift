@@ -45,7 +45,7 @@ public final class ChatWindowManager: NSObject, ObservableObject {
     private var windowStates: [UUID: ChatWindowState] = [:]
     private var sessionCallbacks: [UUID: () -> Void] = [:]
 
-    private override init() {
+    override private init() {
         super.init()
     }
 

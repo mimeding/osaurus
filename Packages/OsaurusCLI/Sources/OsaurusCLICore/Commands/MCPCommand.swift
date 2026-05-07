@@ -52,8 +52,7 @@ public struct MCPCommand: Command {
                 fputs("[MCP] Tools fetched successfully\n", stderr)
                 let tools: [MCP.Tool]
                 if let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                    let arr = obj["tools"] as? [[String: Any]]
-                {
+                    let arr = obj["tools"] as? [[String: Any]] {
                     tools = arr.map { item in
                         let name = (item["name"] as? String) ?? ""
                         let description = (item["description"] as? String) ?? ""
@@ -103,7 +102,7 @@ public struct MCPCommand: Command {
 
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                    let message = String(decoding: data, as: UTF8.self)
+                    let message = String(bytes: data, encoding: .utf8) ?? ""
                     return .init(
                         content: [
                             .text("HTTP \(String(describing: (response as? HTTPURLResponse)?.statusCode)): \(message)")

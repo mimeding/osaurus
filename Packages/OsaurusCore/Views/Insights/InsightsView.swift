@@ -359,8 +359,7 @@ where
     Filter: Hashable,
     Filter: CaseIterable,
     Filter: RawRepresentable,
-    Filter.RawValue == String
-{
+    Filter.RawValue == String {
     @Binding var selection: Filter
     let tint: (Filter) -> Color
 

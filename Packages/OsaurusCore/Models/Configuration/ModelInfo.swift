@@ -251,8 +251,7 @@ extension ModelInfo {
         var repeatPenalty: Double?
 
         if let data = try? Data(contentsOf: generationConfigURL),
-            let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        {
+            let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             temperature = config["temperature"] as? Double
             topP = config["top_p"] as? Double
             topK = config["top_k"] as? Int

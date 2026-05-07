@@ -177,8 +177,7 @@ final class ModelDownloadService: ObservableObject {
                     let refusal = Self.storageRefusalMessage(
                         neededBytes: bytesToDownload,
                         freeBytes: freeBytes
-                    )
-                {
+                    ) {
                     await MainActor.run {
                         if self.downloadTokens[model.id] == token {
                             self.downloadStates[model.id] = .failed(error: refusal)
@@ -211,8 +210,7 @@ final class ModelDownloadService: ObservableObject {
                     let destination = model.localDirectory.appendingPathComponent(file.path)
 
                     let baseCompleted = completedFileBytes
-                    let onProgress: @Sendable (Int64, Int64) -> Void = {
-                        [weak self] bytesWritten, _ in
+                    let onProgress: @Sendable (Int64, Int64) -> Void = { [weak self] bytesWritten, _ in
                         Task { @MainActor [weak self] in
                             guard let self else { return }
                             self.updateDownloadProgress(
@@ -439,10 +437,9 @@ final class ModelDownloadService: ObservableObject {
         samples = samples.filter { now - $0.timestamp <= window }
         progressSamples[modelId] = samples
 
-        var speed: Double? = nil
+        var speed: Double?
         if let first = samples.first, let last = samples.last,
-            last.timestamp > first.timestamp
-        {
+            last.timestamp > first.timestamp {
             let bytesDelta = Double(last.completed - first.completed)
             let timeDelta = last.timestamp - first.timestamp
             if timeDelta > 0 { speed = max(0, bytesDelta / timeDelta) }
@@ -453,7 +450,7 @@ final class ModelDownloadService: ObservableObject {
             speed = lastKnownSpeed[modelId]
         }
 
-        var eta: Double? = nil
+        var eta: Double?
         if let speed, speed > 0, totalBytes > 0 {
             let remaining = Double(totalBytes - completedBytes)
             if remaining > 0 { eta = remaining / speed }
@@ -686,8 +683,7 @@ private final class DirectDownloader: NSObject, URLSessionDownloadDelegate, @unc
         guard let continuation, let destination else { return }
 
         if let http = downloadTask.response as? HTTPURLResponse,
-            !(200 ..< 300).contains(http.statusCode)
-        {
+            !(200 ..< 300).contains(http.statusCode) {
             continuation.resume(
                 throwing: URLError(
                     .badServerResponse,

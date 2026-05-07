@@ -23,7 +23,7 @@ final class PluginHostContext: @unchecked Sendable {
 
     // MARK: - Context Registry (thread-safe)
 
-    private nonisolated(unsafe) static var contexts: [String: PluginHostContext] = [:]
+    nonisolated(unsafe) private static var contexts: [String: PluginHostContext] = [:]
     private static let contextsLock = NSLock()
 
     static func getContext(for pluginId: String) -> PluginHostContext? {
@@ -540,8 +540,7 @@ final class PluginHostContext: @unchecked Sendable {
                 if let agentId = agentCtx?.agentId,
                     let agent = AgentManager.shared.agent(for: agentId),
                     let override = agent.pluginInstructions?[pid],
-                    !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                {
+                    !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     return override
                 }
                 return PluginManager.shared.loadedPlugin(for: pid)?.plugin.manifest.instructions
@@ -564,8 +563,7 @@ final class PluginHostContext: @unchecked Sendable {
         // Skills inject in BOTH modes — see the matching block in
         // `SystemPromptComposer.compose` for the full rationale.
         if !agentToolsOff,
-            let section = await SkillManager.shared.enabledSkillPromptSection(for: resolvedAgentId)
-        {
+            let section = await SkillManager.shared.enabledSkillPromptSection(for: resolvedAgentId) {
             SystemPromptComposer.appendSystemContent(section, into: &enriched.request.messages)
         }
 
@@ -648,8 +646,7 @@ final class PluginHostContext: @unchecked Sendable {
         var model = request.model
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed.caseInsensitiveCompare("default") == .orderedSame,
-            let agentModel = ctx.model, !agentModel.isEmpty
-        {
+            let agentModel = ctx.model, !agentModel.isEmpty {
             model = agentModel
         }
 
@@ -1077,8 +1074,7 @@ final class PluginHostContext: @unchecked Sendable {
 
                     if let calls = choice.message.tool_calls, !calls.isEmpty,
                         choice.finish_reason == "tool_calls",
-                        iteration < prep.options.maxIterations
-                    {
+                        iteration < prep.options.maxIterations {
                         // The non-streaming path already appends the full
                         // assistant message (with all tool_calls) once,
                         // then appends only the tool-result messages per call.
@@ -2247,7 +2243,7 @@ extension PluginHostContext {
     /// Serialize a dictionary to a JSON string. Falls back to "{}" on encoding failure.
     static func jsonString(_ dict: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: dict, options: []) else { return "{}" }
-        return String(decoding: data, as: UTF8.self)
+        return String(bytes: data, encoding: .utf8) ?? ""
     }
 
     /// Parse a JSON string back into a dictionary.
@@ -2292,7 +2288,7 @@ extension PluginHostContext {
     /// have TLS set. Protected by `fallbackLock` to avoid data races under
     /// concurrent execution. TLS (option 1) is the authoritative mechanism.
     private static let fallbackLock = NSLock()
-    private nonisolated(unsafe) static var _lastDispatchedPluginId: String?
+    nonisolated(unsafe) private static var _lastDispatchedPluginId: String?
 
     private static var lastDispatchedPluginId: String? {
         get { fallbackLock.withLock { _lastDispatchedPluginId } }

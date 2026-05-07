@@ -40,7 +40,7 @@ struct ToolPermissionView: View {
         else {
             return argumentsJSON
         }
-        return String(decoding: pretty, as: UTF8.self)
+        return String(bytes: pretty, encoding: .utf8) ?? ""
     }
 
     private var hasArguments: Bool {

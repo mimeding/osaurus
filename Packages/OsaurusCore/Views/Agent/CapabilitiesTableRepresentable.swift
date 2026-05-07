@@ -263,8 +263,8 @@ extension CapabilitiesTableRepresentable {
         // MARK: - Update Paths (Private)
 
         private func hasContentChanges(newLookup: [String: CapabilityRow]) -> Bool {
-            for id in rowIds {
-                if newLookup[id] != rowLookup[id] { return true }
+            for id in rowIds where newLookup[id] != rowLookup[id] {
+                return true
             }
             return false
         }
@@ -884,7 +884,7 @@ private struct TokenBadge: View {
 
 private struct SmallCapsuleBadge: View {
     let text: String
-    var icon: String? = nil
+    var icon: String?
 
     @Environment(\.theme) private var theme
 

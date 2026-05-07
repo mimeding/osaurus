@@ -71,13 +71,13 @@ struct ModelDownloadView: View {
     @State private var selectedTab: ModelListTab = .all
 
     /// Debounce task for the remote Hugging Face fetch.
-    @State private var searchDebounceTask: Task<Void, Never>? = nil
+    @State private var searchDebounceTask: Task<Void, Never>?
 
     /// Debounce task for the local filter / animation trigger.
-    @State private var localSearchDebounceTask: Task<Void, Never>? = nil
+    @State private var localSearchDebounceTask: Task<Void, Never>?
 
     /// Model to show in the detail sheet
-    @State private var modelToShowDetails: MLXModel? = nil
+    @State private var modelToShowDetails: MLXModel?
 
     /// Content has appeared (for entrance animation)
     @State private var hasAppeared = false
@@ -96,10 +96,10 @@ struct ModelDownloadView: View {
     // MARK: - Deep Link Support
 
     /// Optional model ID for deep linking (e.g., from URL schemes)
-    var deeplinkModelId: String? = nil
+    var deeplinkModelId: String?
 
     /// Optional file path for deep linking
-    var deeplinkFile: String? = nil
+    var deeplinkFile: String?
 
     var body: some View {
         // compute the grid lists once per body pass and thread them down
@@ -1379,7 +1379,7 @@ private struct HuggingFaceImportSheet: View {
     let onImported: (String) -> Void
 
     @State private var inputText: String = ""
-    @State private var errorMessage: String? = nil
+    @State private var errorMessage: String?
     @State private var isResolving = false
 
     private var trimmedInput: String {

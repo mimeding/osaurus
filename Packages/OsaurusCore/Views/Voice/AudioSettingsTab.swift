@@ -361,8 +361,7 @@ struct AudioSettingsTab: View {
 
     private var selectedDeviceName: String {
         if let selectedId = audioInputManager.selectedDeviceId,
-            let device = audioInputManager.availableDevices.first(where: { $0.id == selectedId })
-        {
+            let device = audioInputManager.availableDevices.first(where: { $0.id == selectedId }) {
             return device.name
         }
         return L("System Default")

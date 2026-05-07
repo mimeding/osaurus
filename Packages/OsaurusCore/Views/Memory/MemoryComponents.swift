@@ -246,7 +246,7 @@ struct MemorySectionCard<Trailing: View, Content: View>: View {
 
     let title: String
     let icon: String
-    var count: Int? = nil
+    var count: Int?
     let trailing: Trailing
     let content: Content
 

@@ -72,8 +72,7 @@ struct ToolsManagerView: View {
         .onReceive(NotificationCenter.default.publisher(for: .toolsListChanged)) { _ in
             reload()
         }
-        .onReceive(NotificationCenter.default.publisher(for: Foundation.Notification.Name.mcpProviderStatusChanged)) {
-            _ in
+        .onReceive(NotificationCenter.default.publisher(for: Foundation.Notification.Name.mcpProviderStatusChanged)) { _ in
             remoteProviderCount = providerManager.configuration.providers.count
             reload()
         }

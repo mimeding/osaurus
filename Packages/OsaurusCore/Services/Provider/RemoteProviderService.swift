@@ -463,8 +463,7 @@ public actor RemoteProviderService: ToolCapableService {
         // Decode the line as UTF-8. SSE field names and the optional space after
         // the colon are ASCII; lossy decoding is safe for any non-UTF-8 bytes
         // that would only appear inside the value portion.
-        // swiftlint:disable:next optional_data_string_conversion
-        let lineStr = String(decoding: line, as: UTF8.self)
+        let lineStr = String(bytes: line, encoding: .utf8) ?? ""
 
         // Comment line — entire line starts with ":" (no field name).
         if lineStr.first == ":" { return }
@@ -939,8 +938,7 @@ public actor RemoteProviderService: ToolCapableService {
 
         case "message_delta":
             if let deltaEvent = try? JSONDecoder().decode(MessageDeltaEvent.self, from: jsonData),
-                let stopReason = deltaEvent.delta.stop_reason
-            {
+                let stopReason = deltaEvent.delta.stop_reason {
                 state.lastFinishReason = stopReason
             }
 
@@ -983,8 +981,7 @@ public actor RemoteProviderService: ToolCapableService {
 
         case "response.output_item.added":
             if let addedEvent = try? JSONDecoder().decode(OutputItemAddedEvent.self, from: jsonData),
-                case .functionCall(let funcCall) = addedEvent.item
-            {
+                case .functionCall(let funcCall) = addedEvent.item {
                 let idx = addedEvent.output_index
                 state.accumulatedToolCalls[idx] = (
                     id: funcCall.call_id, name: funcCall.name, args: "", thoughtSignature: nil
@@ -1027,8 +1024,7 @@ public actor RemoteProviderService: ToolCapableService {
             // Final confirmed item — extract args from the completed function_call
             // when no `.delta` events landed first (common for short calls).
             if let doneEvent = try? JSONDecoder().decode(OutputItemDoneEvent.self, from: jsonData),
-                case .functionCall(let funcCall) = doneEvent.item
-            {
+                case .functionCall(let funcCall) = doneEvent.item {
                 let idx = doneEvent.output_index
                 var current =
                     state.accumulatedToolCalls[idx] ?? (
@@ -1099,16 +1095,14 @@ public actor RemoteProviderService: ToolCapableService {
         // it in the Think panel — without ever emitting `<think>` literals.
         if state.accumulatedToolCalls.isEmpty,
             let reasoning = chunk.choices.first?.delta.reasoning_content,
-            !reasoning.isEmpty
-        {
+            !reasoning.isEmpty {
             yield(StreamingReasoningHint.encode(reasoning))
         }
 
         // Only yield content if no tool calls have been detected, to avoid
         // function-call JSON leaking into the chat UI.
         if state.accumulatedToolCalls.isEmpty,
-            let delta = chunk.choices.first?.delta.content, !delta.isEmpty
-        {
+            let delta = chunk.choices.first?.delta.content, !delta.isEmpty {
             let (truncated, hitStop) = applyStopSequences(delta, stopSequences: state.stopSequences)
             state.recordYield(truncated)
             yield(truncated)
@@ -1161,8 +1155,7 @@ public actor RemoteProviderService: ToolCapableService {
                 let (name, args) = RemoteToolDetection.detectInlineToolCall(
                     in: state.accumulatedContent,
                     tools: tools
-                )
-            {
+                ) {
                 print("[Osaurus] Fallback: detected inline tool call '\(name)' in text")
                 continuation.finish(
                     throwing: ServiceToolInvocation(
@@ -1340,8 +1333,7 @@ public actor RemoteProviderService: ToolCapableService {
     private static func geminiArgsJSON(from args: [String: AnyCodableValue]?) -> String {
         let dict = (args ?? [:]).mapValues { $0.value }
         if let data = try? JSONSerialization.data(withJSONObject: dict),
-            let s = String(data: data, encoding: .utf8)
-        {
+            let s = String(data: data, encoding: .utf8) {
             return s
         }
         return "{}"
@@ -1477,8 +1469,7 @@ public actor RemoteProviderService: ToolCapableService {
 
         // Quick validation: try to parse as-is.
         if let data = trimmed.data(using: .utf8),
-            (try? JSONSerialization.jsonObject(with: data)) != nil
-        {
+            (try? JSONSerialization.jsonObject(with: data)) != nil {
             return ValidatedToolCallJSON(json: trimmed, wasRepaired: false)
         }
 
@@ -1549,8 +1540,7 @@ public actor RemoteProviderService: ToolCapableService {
 
         // Verify the repair worked
         if let data = repaired.data(using: .utf8),
-            (try? JSONSerialization.jsonObject(with: data)) != nil
-        {
+            (try? JSONSerialization.jsonObject(with: data)) != nil {
             print("[Osaurus] Repaired incomplete tool call JSON (\(json.count) -> \(repaired.count) chars)")
             return ValidatedToolCallJSON(json: repaired, wasRepaired: true)
         }
@@ -2063,8 +2053,7 @@ public actor RemoteProviderService: ToolCapableService {
 
             if let altRange = Range(match.range(at: 1), in: text),
                 let mimeRange = Range(match.range(at: 2), in: text),
-                let dataRange = Range(match.range(at: 3), in: text)
-            {
+                let dataRange = Range(match.range(at: 3), in: text) {
                 let altText = String(text[altRange])
                 let sig: String? =
                     altText.hasPrefix("image|ts:")
@@ -2272,8 +2261,7 @@ struct RemoteChatRequest: Encodable {
                         var input: [String: AnyCodableValue] = [:]
 
                         if let argsData = toolCall.function.arguments.data(using: .utf8),
-                            let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
-                        {
+                            let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
                             input = argsDict.mapValues { AnyCodableValue($0) }
                         }
 
@@ -2404,8 +2392,7 @@ struct RemoteChatRequest: Encodable {
                             // Parse data URLs: "data:<mimeType>;base64,<data>"
                             if url.hasPrefix("data:"),
                                 let semicolonIdx = url.firstIndex(of: ";"),
-                                let commaIdx = url.firstIndex(of: ",")
-                            {
+                                let commaIdx = url.firstIndex(of: ",") {
                                 let mimeType = String(url[url.index(url.startIndex, offsetBy: 5) ..< semicolonIdx])
                                 let base64Data = String(url[url.index(after: commaIdx)...])
                                 userParts.append(
@@ -2435,8 +2422,7 @@ struct RemoteChatRequest: Encodable {
                     for toolCall in toolCalls {
                         var args: [String: AnyCodableValue] = [:]
                         if let argsData = toolCall.function.arguments.data(using: .utf8),
-                            let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
-                        {
+                            let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
                             args = argsDict.mapValues { AnyCodableValue($0) }
                         }
                         parts.append(
@@ -2464,8 +2450,7 @@ struct RemoteChatRequest: Encodable {
 
                     // Try to parse the content as JSON first
                     if let data = content.data(using: .utf8),
-                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                    {
+                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         responseData = json.mapValues { AnyCodableValue($0) }
                     } else {
                         responseData["result"] = AnyCodableValue(content)
@@ -2539,8 +2524,7 @@ struct RemoteChatRequest: Encodable {
 
         var generationConfig: GeminiGenerationConfig?
         if temperature != nil || max_completion_tokens != nil || top_p != nil || stop != nil
-            || responseModalities != nil || imageConfig != nil
-        {
+            || responseModalities != nil || imageConfig != nil {
             generationConfig = GeminiGenerationConfig(
                 temperature: temperature.map { Double($0) },
                 maxOutputTokens: max_completion_tokens,
@@ -2789,8 +2773,7 @@ extension RemoteProviderService {
             if let (data, response) = try? await URLSession.shared.data(for: req),
                 let http = response as? HTTPURLResponse, http.statusCode < 400,
                 let parsed = try? JSONDecoder().decode(ModelsResponse.self, from: data),
-                !parsed.data.isEmpty
-            {
+                !parsed.data.isEmpty {
                 return parsed.data.map { $0.id }
             }
         }

@@ -34,8 +34,7 @@ enum RemoteToolDetection {
         // Fast path: Qwen-style <tool_call>...</tool_call> XML wrapper.
         if let openRange = window.range(of: "<tool_call>", options: .backwards),
             let closeRange = window.range(of: "</tool_call>", range: openRange.upperBound ..< window.endIndex),
-            openRange.upperBound <= closeRange.lowerBound
-        {
+            openRange.upperBound <= closeRange.lowerBound {
             let inner = String(window[openRange.upperBound ..< closeRange.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let (name, argsJSON) = extractToolCall(fromJSON: inner), toolNames.contains(name) {
@@ -46,13 +45,11 @@ enum RemoteToolDetection {
         // General path: search for a JSON object containing a known tool name field.
         for name in toolNames {
             if let range = window.range(of: #""name"\s*:\s*"\#(name)""#, options: [.regularExpression])
-                ?? window.range(of: #""tool_name"\s*:\s*"\#(name)""#, options: [.regularExpression])
-            {
+                ?? window.range(of: #""tool_name"\s*:\s*"\#(name)""#, options: [.regularExpression]) {
                 if let jsonRange = findEnclosingJSONObject(around: range.lowerBound, in: window) {
                     let candidate = String(window[jsonRange])
                     if let (detectedName, argsJSON) = extractToolCall(fromJSON: candidate),
-                        toolNames.contains(detectedName)
-                    {
+                        toolNames.contains(detectedName) {
                         return (detectedName, argsJSON)
                     }
                 }
@@ -119,8 +116,7 @@ enum RemoteToolDetection {
             if let argsString = function["arguments"] as? String { return (name, argsString) }
             if let argsObj = function["arguments"],
                 let argsData = try? JSONSerialization.data(withJSONObject: argsObj),
-                let argsJSON = String(data: argsData, encoding: .utf8)
-            {
+                let argsJSON = String(data: argsData, encoding: .utf8) {
                 return (name, argsJSON)
             }
         }
@@ -128,8 +124,7 @@ enum RemoteToolDetection {
             if let argsString = obj["arguments"] as? String { return (name, argsString) }
             if let argsObj = obj["arguments"],
                 let argsData = try? JSONSerialization.data(withJSONObject: argsObj),
-                let argsJSON = String(data: argsData, encoding: .utf8)
-            {
+                let argsJSON = String(data: argsData, encoding: .utf8) {
                 return (name, argsJSON)
             }
         }
@@ -137,8 +132,7 @@ enum RemoteToolDetection {
             if let argsString = obj["arguments"] as? String { return (name, argsString) }
             if let argsObj = obj["arguments"],
                 let argsData = try? JSONSerialization.data(withJSONObject: argsObj),
-                let argsJSON = String(data: argsData, encoding: .utf8)
-            {
+                let argsJSON = String(data: argsData, encoding: .utf8) {
                 return (name, argsJSON)
             }
         }

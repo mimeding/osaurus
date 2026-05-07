@@ -107,8 +107,7 @@ public enum ToolSecretsKeychain {
             if let account = item[kSecAttrAccount as String] as? String,
                 account.hasPrefix(accountPrefix),
                 let data = item[kSecValueData as String] as? Data,
-                let value = String(data: data, encoding: .utf8)
-            {
+                let value = String(data: data, encoding: .utf8) {
                 let secretId = String(account.dropFirst(accountPrefix.count))
                 secrets[secretId] = value
             }
@@ -118,8 +117,7 @@ public enum ToolSecretsKeychain {
     }
 
     public static func hasAllRequiredSecrets(specs: [PluginManifest.SecretSpec], for pluginId: String, agentId: UUID)
-        -> Bool
-    {
+        -> Bool {
         for spec in specs where spec.required {
             if !hasSecret(id: spec.id, for: pluginId, agentId: agentId) {
                 return false

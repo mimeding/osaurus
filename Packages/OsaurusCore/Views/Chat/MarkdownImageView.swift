@@ -380,7 +380,7 @@ struct ImageFullScreenView: View {
     let image: NSImage?
     let altText: String
     /// when set (e.g. overlay presentation), avoids `Environment.dismiss` and prevents sheet-driven window sizing on macOS
-    var onDismiss: (() -> Void)? = nil
+    var onDismiss: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme

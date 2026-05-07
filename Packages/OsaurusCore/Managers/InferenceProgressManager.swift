@@ -42,10 +42,10 @@ final class InferenceProgressManager: ObservableObject, @unchecked Sendable {
     /// Non-nil while a prefill is in progress.  Set to the prompt token count
     /// just before `prepareAndGenerate` is called; cleared as soon as the first
     /// generated token arrives (or on error / cancellation).
-    @MainActor @Published var prefillTokenCount: Int? = nil
+    @MainActor @Published var prefillTokenCount: Int?
 
     /// Wall-clock time when the current prefill started.
-    @MainActor @Published var prefillStartedAt: Date? = nil
+    @MainActor @Published var prefillStartedAt: Date?
 
     init() {}
 

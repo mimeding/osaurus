@@ -33,14 +33,14 @@ public final class ScheduleManager {
 
     /// The task that waits for the next scheduled execution
     @ObservationIgnored
-    private nonisolated(unsafe) var timerTask: Task<Void, Never>?
+    nonisolated(unsafe) private var timerTask: Task<Void, Never>?
 
     /// Active execution tasks
     private var executionTasks: [UUID: Task<Void, Never>] = [:]
 
     /// Observer for timezone changes
     @ObservationIgnored
-    private nonisolated(unsafe) var timezoneObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var timezoneObserver: NSObjectProtocol?
 
     // MARK: - Initialization
 
@@ -301,8 +301,7 @@ public final class ScheduleManager {
                 // Only run if lastRunAt is nil or the next run after lastRunAt is in the past
                 if let lastRun = schedule.lastRunAt {
                     if let nextAfterLast = schedule.frequency.nextRunDate(after: lastRun),
-                        nextAfterLast <= now
-                    {
+                        nextAfterLast <= now {
                         print("[Osaurus] Found missed recurring schedule: \(schedule.name)")
                         executeSchedule(schedule)
                     }

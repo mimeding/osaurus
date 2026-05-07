@@ -401,8 +401,7 @@ extension SharedArtifact {
     static func fromEnrichedToolResult(_ result: String) -> SharedArtifact? {
         let markerSource: String
         if let payload = ToolEnvelope.successPayload(result) as? [String: Any],
-            let text = payload["text"] as? String
-        {
+            let text = payload["text"] as? String {
             markerSource = text
         } else {
             markerSource = result
@@ -616,8 +615,7 @@ extension SharedArtifact {
 
         var inner = ""
         if let jsonData = try? JSONSerialization.data(withJSONObject: parsed.metadata),
-            let jsonStr = String(data: jsonData, encoding: .utf8)
-        {
+            let jsonStr = String(data: jsonData, encoding: .utf8) {
             inner = jsonStr
         }
         if !contentLines.isEmpty {

@@ -43,7 +43,7 @@ public final class WatcherManager {
 
     /// FSEvent stream reference (nonisolated so deinit can clean it up)
     @ObservationIgnored
-    private nonisolated(unsafe) var eventStream: FSEventStreamRef?
+    nonisolated(unsafe) private var eventStream: FSEventStreamRef?
 
     /// Per-watcher debounce tasks
     private var debouncers: [UUID: Task<Void, Never>] = [:]

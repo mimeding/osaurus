@@ -79,6 +79,6 @@ public final class PluginActivityManager: ObservableObject {
 
     /// Most-recently-started activity (for the compact notch indicator).
     public var topActivity: PluginActivityRecord? {
-        active.values.sorted { $0.startedAt > $1.startedAt }.first
+        active.values.max { $0.startedAt < $1.startedAt }
     }
 }

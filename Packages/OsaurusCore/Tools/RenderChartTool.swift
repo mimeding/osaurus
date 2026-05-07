@@ -176,7 +176,7 @@ struct RenderChartTool: OsaurusTool {
         }
 
         // Downsample if needed
-        var note: String? = nil
+        var note: String?
         var dataRows = rows
         if rows.count > Self.maxRows {
             dataRows = downsample(rows, to: Self.maxRows)
@@ -204,7 +204,7 @@ struct RenderChartTool: OsaurusTool {
                 }
             }
         }
-        var categories: [String]? = nil
+        var categories: [String]?
         if let xCol = resolvedXColumn, let xIdx = headers.firstIndex(of: xCol) {
             categories = dataRows.map { row in xIdx < row.count ? row[xIdx] : "" }
         }

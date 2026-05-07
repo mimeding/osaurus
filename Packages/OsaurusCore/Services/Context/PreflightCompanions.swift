@@ -197,8 +197,7 @@ enum PreflightCompanions {
     private static func pluginDisplayName(for pluginId: String) -> String {
         if let loaded = PluginManager.shared.loadedPlugin(for: pluginId),
             let display = loaded.plugin.manifest.name,
-            !display.isEmpty
-        {
+            !display.isEmpty {
             return display
         }
         return pluginId

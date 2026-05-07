@@ -201,8 +201,7 @@ struct WalkthroughBody: View {
                     // page feels rubbery rather than free.
                     let raw = value.translation.width
                     if (state.pageIndex == 0 && raw > 0)
-                        || (state.isLastPage && raw < 0)
-                    {
+                        || (state.isLastPage && raw < 0) {
                         dragOffset = raw / 3
                     } else {
                         dragOffset = raw

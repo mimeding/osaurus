@@ -53,7 +53,7 @@ public final class BonjourBrowser: NSObject, ObservableObject {
     /// Services currently being resolved, keyed by NetService name.
     private var resolvingServices: [String: NetService] = [:]
 
-    private override init() {
+    override private init() {
         super.init()
         startBrowsing()
     }

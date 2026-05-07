@@ -96,8 +96,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             // Reject before allocating the body buffer so a client lying
             // about Content-Length can't force a huge allocation up front.
             if let lengthStr = head.headers.first(name: "Content-Length"),
-                let length = Int(lengthStr)
-            {
+                let length = Int(lengthStr) {
                 if length > stateRef.value.bodyByteLimit {
                     rejectPayloadTooLarge(
                         context: context,
@@ -125,8 +124,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             // append so an oversize chunk never lands in our buffer.
             stateRef.value.bodyBytesSeen += buffer.readableBytes
             if stateRef.value.bodyBytesSeen > stateRef.value.bodyByteLimit,
-                let head = stateRef.value.requestHead
-            {
+                let head = stateRef.value.requestHead {
                 rejectPayloadTooLarge(
                     context: context,
                     head: head,
@@ -1461,8 +1459,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             // Send response
             context.write(NIOAny(HTTPServerResponsePart.head(responseHead)), promise: nil)
             context.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
-            context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete {
-                _ in
+            context.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete { _ in
                 ctx.value.close(promise: nil)
             }
         }
@@ -1505,8 +1502,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             headers.append(("Access-Control-Allow-Origin", "*"))
         } else if let origin,
             !origin.contains("\r"), !origin.contains("\n"),
-            configuration.allowedOrigins.contains(origin)
-        {
+            configuration.allowedOrigins.contains(origin) {
             headers.append(("Access-Control-Allow-Origin", origin))
             headers.append(("Vary", "Origin"))
         } else {
@@ -1615,7 +1611,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -1790,7 +1786,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -2000,7 +1996,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             // 5. Return the agent's address, the generated API key, and the permanence flag.
             let response = PairResponse(agentAddress: agentAddress, apiKey: fullKey, isPermanent: isPermanent)
             let json =
-                (try? JSONEncoder().encode(response)).map { String(decoding: $0, as: UTF8.self) }
+                (try? JSONEncoder().encode(response)).map { String(bytes: $0, encoding: .utf8) ?? "" }
                 ?? #"{"error":"Encoding failed"}"#
             // Never log the freshly minted key. The wire response still
             // contains it; the request log gets a redacted copy with the
@@ -2012,7 +2008,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 isPermanent: isPermanent
             )
             let redactedJson =
-                (try? JSONEncoder().encode(redactedResponse)).map { String(decoding: $0, as: UTF8.self) }
+                (try? JSONEncoder().encode(redactedResponse)).map { String(bytes: $0, encoding: .utf8) ?? "" }
                 ?? #"{"agentAddress":"<redacted>","apiKey":"<redacted>"}"#
 
             hop {
@@ -2062,7 +2058,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -2193,7 +2189,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         apiKey: apiKey
                     )
                     return (try? JSONEncoder().encode(body))
-                        .map { String(decoding: $0, as: UTF8.self) }
+                        .map { String(bytes: $0, encoding: .utf8) ?? "" }
                         ?? #"{"error":"Encoding failed"}"#
                 }
 
@@ -2287,7 +2283,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
             let response = AgentListResponse(agents: items)
             let json =
-                (try? JSONEncoder().encode(response)).map { String(decoding: $0, as: UTF8.self) } ?? #"{"agents":[]}"#
+                (try? JSONEncoder().encode(response)).map { String(bytes: $0, encoding: .utf8) ?? "" } ?? #"{"agents":[]}"#
 
             hop {
                 var headers = [("Content-Type", "application/json; charset=utf-8")]
@@ -2386,7 +2382,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 updated_at: formatter.string(from: agent.updatedAt)
             )
             let json =
-                (try? JSONEncoder().encode(item)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+                (try? JSONEncoder().encode(item)).map { String(bytes: $0, encoding: .utf8) ?? "" } ?? "{}"
 
             hop {
                 var headers = [("Content-Type", "application/json; charset=utf-8")]
@@ -2430,7 +2426,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -2775,7 +2771,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -2879,7 +2875,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 let pollUrl = "/v1/tasks/\(resolvedId)"
                 let resp: [String: Any] = ["id": resolvedId, "status": "running", "poll_url": pollUrl]
                 responseBody =
-                    (try? JSONSerialization.data(withJSONObject: resp)).flatMap { String(decoding: $0, as: UTF8.self) }
+                    (try? JSONSerialization.data(withJSONObject: resp)).flatMap { String(bytes: $0, encoding: .utf8) }
                     ?? "{}"
                 status = .accepted
             } else {
@@ -3060,7 +3056,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -3151,7 +3147,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -3198,7 +3194,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 let json: String
                 if ollamaFormat {
                     let response = OllamaEmbedResponse(model: EmbeddingService.modelName, embeddings: embeddings)
-                    json = (try? JSONEncoder().encode(response)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+                    json = (try? JSONEncoder().encode(response)).map { String(bytes: $0, encoding: .utf8) ?? "" } ?? "{}"
                 } else {
                     let objects = embeddings.enumerated().map { OpenAIEmbeddingObject(embedding: $1, index: $0) }
                     let tokenCount = texts.reduce(0) { $0 + $1.split(separator: " ").count }
@@ -3207,7 +3203,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         model: EmbeddingService.modelName,
                         usage: OpenAIEmbeddingUsage(prompt_tokens: tokenCount, total_tokens: tokenCount)
                     )
-                    json = (try? JSONEncoder().encode(response)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+                    json = (try? JSONEncoder().encode(response)).map { String(bytes: $0, encoding: .utf8) ?? "" } ?? "{}"
                 }
 
                 hop {
@@ -3273,7 +3269,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -3642,7 +3638,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     var headers: [(String, String)] = [("Content-Type", "application/json")]
                     headers.append(contentsOf: cors)
                     let headersCopy = headers
-                    let body = String(decoding: json, as: UTF8.self)
+                    let body = String(bytes: json, encoding: .utf8) ?? ""
                     hop {
                         var responseHead = HTTPResponseHead(version: head.version, status: .ok)
                         var buffer = ctx.value.channel.allocator.buffer(capacity: body.utf8.count)
@@ -3655,8 +3651,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         let c = ctx.value
                         c.write(NIOAny(HTTPServerResponsePart.head(responseHead)), promise: nil)
                         c.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
-                        c.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete {
-                            _ in
+                        c.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete { _ in
                             ctx.value.close(promise: nil)
                         }
                     }
@@ -3724,8 +3719,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         let c = ctx.value
                         c.write(NIOAny(HTTPServerResponsePart.head(responseHead)), promise: nil)
                         c.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
-                        c.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete {
-                            _ in
+                        c.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil as HTTPHeaders?))).whenComplete { _ in
                             ctx.value.close(promise: nil)
                         }
                     }
@@ -3756,7 +3750,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -4031,7 +4025,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 "inflight": inflightObj,
             ]
             let data = try? JSONSerialization.data(withJSONObject: obj)
-            let body = data.flatMap { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            let body = data.flatMap { String(bytes: $0, encoding: .utf8) } ?? "{}"
             let headers: [(String, String)] =
                 [("Content-Type", "application/json; charset=utf-8")]
                 + cors
@@ -4087,7 +4081,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             models.append(contentsOf: remoteModels)
 
             let response = ModelsResponse(data: models)
-            let json = (try? JSONEncoder().encode(response)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            let json = (try? JSONEncoder().encode(response)).map { String(bytes: $0, encoding: .utf8) ?? "" } ?? "{}"
 
             hop {
                 var headers = [("Content-Type", "application/json; charset=utf-8")]
@@ -4188,7 +4182,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             }
 
             let payload = ["models": models]
-            let json = (try? JSONEncoder().encode(payload)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            let json = (try? JSONEncoder().encode(payload)).map { String(bytes: $0, encoding: .utf8) ?? "" } ?? "{}"
 
             hop {
                 var headers = [("Content-Type", "application/json; charset=utf-8")]
@@ -4225,7 +4219,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -4305,7 +4299,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         ],
                     ]
                     let jsonData = (try? JSONSerialization.data(withJSONObject: response)) ?? Data("{}".utf8)
-                    let json = String(decoding: jsonData, as: UTF8.self)
+                    let json = String(bytes: jsonData, encoding: .utf8) ?? ""
                     hop {
                         var headers = [("Content-Type", "application/json; charset=utf-8")]
                         headers.append(contentsOf: cors)
@@ -4386,7 +4380,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
             let response = modelInfo.toShowResponse()
             let jsonData = (try? JSONEncoder().encode(response)) ?? Data("{}".utf8)
-            let json = String(decoding: jsonData, as: UTF8.self)
+            let json = String(bytes: jsonData, encoding: .utf8) ?? ""
 
             hop {
                 var headers = [("Content-Type", "application/json; charset=utf-8")]
@@ -4443,7 +4437,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             }
             let payload: [String: Any] = ["tools": tools]
             let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
-            let mcpToolsBody = String(decoding: data, as: UTF8.self)
+            let mcpToolsBody = String(bytes: data, encoding: .utf8) ?? ""
             hop {
                 var headers = [("Content-Type", "application/json; charset=utf-8")]
                 headers.append(contentsOf: cors)
@@ -4479,7 +4473,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -4515,10 +4509,10 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 case let s as String: try container.encode(s)
                 case let arr as [Any]:
                     let enc = try JSONSerialization.data(withJSONObject: arr, options: [])
-                    try container.encode(String(decoding: enc, as: UTF8.self))
+                    try container.encode(String(bytes: enc, encoding: .utf8) ?? "")
                 case let dict as [String: Any]:
                     let enc = try JSONSerialization.data(withJSONObject: dict, options: [])
-                    try container.encode(String(decoding: enc, as: UTF8.self))
+                    try container.encode(String(bytes: enc, encoding: .utf8) ?? "")
                 default:
                     try container.encodeNil()
                 }
@@ -4547,9 +4541,8 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
         let argsJSON: String = {
             if let a = req.arguments?.value,
-                let d = try? JSONSerialization.data(withJSONObject: a, options: [])
-            {
-                return String(decoding: d, as: UTF8.self)
+                let d = try? JSONSerialization.data(withJSONObject: a, options: []) {
+                return String(bytes: d, encoding: .utf8) ?? ""
             }
             return "{}"
         }()
@@ -4579,7 +4572,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                             "isError": true,
                         ]
                         let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
-                        let body = String(decoding: data, as: UTF8.self)
+                        let body = String(bytes: data, encoding: .utf8) ?? ""
                         hop {
                             var headers = [("Content-Type", "application/json; charset=utf-8")]
                             headers.append(contentsOf: cors)
@@ -4617,7 +4610,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     "isError": false,
                 ]
                 let d = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
-                let body = String(decoding: d, as: UTF8.self)
+                let body = String(bytes: d, encoding: .utf8) ?? ""
                 hop {
                     var headers = [("Content-Type", "application/json; charset=utf-8")]
                     headers.append(contentsOf: cors)
@@ -4651,7 +4644,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     "isError": true,
                 ]
                 let d = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
-                let body = String(decoding: d, as: UTF8.self)
+                let body = String(bytes: d, encoding: .utf8) ?? ""
                 hop {
                     var headers = [("Content-Type", "application/json; charset=utf-8")]
                     headers.append(contentsOf: cors)
@@ -4698,7 +4691,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -4708,7 +4701,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         guard let anthropicReq = try? JSONDecoder().decode(AnthropicMessagesRequest.self, from: data) else {
             let error = AnthropicError(message: "Invalid request format", errorType: "invalid_request_error")
             let errorJson =
-                (try? JSONEncoder().encode(error)).map { String(decoding: $0, as: UTF8.self) }
+                (try? JSONEncoder().encode(error)).map { String(bytes: $0, encoding: .utf8) ?? "" }
                 ?? #"{"type":"error","error":{"type":"invalid_request_error","message":"Invalid request format"}}"#
             var headers = [("Content-Type", "application/json; charset=utf-8")]
             headers.append(contentsOf: stateRef.value.corsHeaders)
@@ -4960,8 +4953,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         // Parse arguments JSON to dictionary
                         var inputDict: [String: AnyCodableValue] = [:]
                         if let argsData = toolCall.function.arguments.data(using: .utf8),
-                            let parsed = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
-                        {
+                            let parsed = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
                             inputDict = parsed.mapValues { AnyCodableValue($0) }
                         }
                         contentBlocks.append(
@@ -4991,7 +4983,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 var headers: [(String, String)] = [("Content-Type", "application/json")]
                 headers.append(contentsOf: cors)
                 let headersCopy = headers
-                let body = String(decoding: json, as: UTF8.self)
+                let body = String(bytes: json, encoding: .utf8) ?? ""
 
                 hop {
                     var responseHead = HTTPResponseHead(version: head.version, status: .ok)
@@ -5075,7 +5067,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 let errorResp = AnthropicError(message: error.localizedDescription, errorType: "api_error")
                 let errorJson =
                     (try? JSONEncoder().encode(errorResp))
-                    .map { String(decoding: $0, as: UTF8.self) }
+                    .map { String(bytes: $0, encoding: .utf8) ?? "" }
                     ?? #"{"type":"error","error":{"type":"api_error","message":"Internal error"}}"#
                 var headers: [(String, String)] = [("Content-Type", "application/json")]
                 headers.append(contentsOf: cors)
@@ -5237,12 +5229,12 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         response["duration"] = duration
                     }
                     let jsonData = try JSONSerialization.data(withJSONObject: response)
-                    responseBody = String(decoding: jsonData, as: UTF8.self)
+                    responseBody = String(bytes: jsonData, encoding: .utf8) ?? ""
                 } else {
                     // Default JSON format
                     let response = ["text": result.text]
                     let jsonData = try JSONEncoder().encode(response)
-                    responseBody = String(decoding: jsonData, as: UTF8.self)
+                    responseBody = String(bytes: jsonData, encoding: .utf8) ?? ""
                 }
 
                 hop {
@@ -5313,7 +5305,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             var bodyCopy = body
             let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
             data = Data(bytes)
-            requestBodyString = String(decoding: data, as: UTF8.self)
+            requestBodyString = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             data = Data()
             requestBodyString = nil
@@ -5323,7 +5315,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         guard let openResponsesReq = try? JSONDecoder().decode(OpenResponsesRequest.self, from: data) else {
             let error = OpenResponsesErrorResponse(code: "invalid_request_error", message: "Invalid request format")
             let errorJson =
-                (try? JSONEncoder().encode(error)).map { String(decoding: $0, as: UTF8.self) }
+                (try? JSONEncoder().encode(error)).map { String(bytes: $0, encoding: .utf8) ?? "" }
                 ?? #"{"error":{"type":"error","code":"invalid_request_error","message":"Invalid request format"}}"#
             var headers = [("Content-Type", "application/json; charset=utf-8")]
             headers.append(contentsOf: stateRef.value.corsHeaders)
@@ -5608,7 +5600,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             usage: OpenResponsesUsage(inputTokens: 0, outputTokens: 0)
         )
         return (try? JSONEncoder().encode(resp))
-            .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            .map { String(bytes: $0, encoding: .utf8) ?? "" } ?? "{}"
     }
 
     /// Build an Anthropic `tool_use` block for a single MLX-emitted
@@ -5619,8 +5611,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         let toolId = inv.toolCallId ?? Self.shortId(prefix: "toolu_")
         var inputDict: [String: AnyCodableValue] = [:]
         if let argsData = inv.jsonArguments.data(using: .utf8),
-            let parsed = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
-        {
+            let parsed = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
             inputDict = parsed.mapValues { AnyCodableValue($0) }
         }
         return AnthropicResponseContentBlock.toolUseBlock(
@@ -5646,7 +5637,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             usage: AnthropicUsage(inputTokens: 0, outputTokens: 0)
         )
         return (try? JSONEncoder().encode(resp))
-            .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            .map { String(bytes: $0, encoding: .utf8) ?? "" } ?? "{}"
     }
 
     /// Emit a complete Anthropic `tool_use` content block for a single
@@ -5780,7 +5771,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 var headers: [(String, String)] = [("Content-Type", "application/json")]
                 headers.append(contentsOf: cors)
                 let headersCopy = headers
-                let body = String(decoding: json, as: UTF8.self)
+                let body = String(bytes: json, encoding: .utf8) ?? ""
 
                 hop {
                     var responseHead = HTTPResponseHead(version: head.version, status: .ok)
@@ -5858,7 +5849,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 let errorResp = OpenResponsesErrorResponse(code: "api_error", message: error.localizedDescription)
                 let errorJson =
                     (try? JSONEncoder().encode(errorResp))
-                    .map { String(decoding: $0, as: UTF8.self) }
+                    .map { String(bytes: $0, encoding: .utf8) ?? "" }
                     ?? #"{"error":{"type":"error","code":"api_error","message":"Internal error"}}"#
                 var headers: [(String, String)] = [("Content-Type", "application/json")]
                 headers.append(contentsOf: cors)
@@ -5924,9 +5915,9 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
     private func parseMultipartFormData(data: Data, boundary: String) -> MultipartParseResult {
         var result = MultipartParseResult()
 
-        let boundaryData = ("--" + boundary).data(using: .utf8)!
-        let crlfData = "\r\n".data(using: .utf8)!
-        let doubleCrlfData = "\r\n\r\n".data(using: .utf8)!
+        let boundaryData = Data(("--" + boundary).utf8)
+        let crlfData = Data("\r\n".utf8)
+        let doubleCrlfData = Data("\r\n\r\n".utf8)
 
         // Split by boundary
         var ranges: [Range<Data.Index>] = []

@@ -22,7 +22,7 @@ public struct ToolsSearch {
             print("(no matches)")
         } else {
             for spec in filtered.sorted(by: { $0.plugin_id < $1.plugin_id }) {
-                let latest = spec.versions.map(\.version).sorted(by: >).first?.description ?? "-"
+                let latest = spec.versions.map(\.version).max()?.description ?? "-"
                 print("\(spec.plugin_id)\tlatest: \(latest)\t\(spec.name ?? "")")
             }
         }

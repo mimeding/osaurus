@@ -144,7 +144,7 @@ struct RollingTokenRate: Sendable {
     /// The denominator is floored at `min(windowSeconds, now - firstAt)` so
     /// a paused stream doesn't get penalised for the gap.
     func currentRate(at now: Date = Date()) -> Double? {
-        guard let firstAt, let _ = lastAt else { return nil }
+        guard let firstAt, lastAt != nil else { return nil }
         let elapsedFromFirst = now.timeIntervalSince(firstAt)
         guard elapsedFromFirst >= Self.warmupSeconds, totalTokens >= Self.warmupTokens
         else { return nil }

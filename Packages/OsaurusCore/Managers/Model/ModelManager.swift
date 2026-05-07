@@ -49,10 +49,10 @@ final class ModelManager: NSObject, ObservableObject {
         }
 
         var typeFilter: ModelTypeFilter = .all
-        var sizeCategory: SizeCategory? = nil
-        var family: String? = nil
-        var paramCategory: ParamCategory? = nil
-        var performance: PerformanceFilter? = nil
+        var sizeCategory: SizeCategory?
+        var family: String?
+        var paramCategory: ParamCategory?
+        var performance: PerformanceFilter?
 
         enum SizeCategory: String, CaseIterable, Identifiable {
             case small = "Small (<2 GB)"
@@ -209,7 +209,7 @@ final class ModelManager: NSObject, ObservableObject {
     }
 
     private var cancellables = Set<AnyCancellable>()
-    private var remoteSearchTask: Task<Void, Never>? = nil
+    private var remoteSearchTask: Task<Void, Never>?
 
     /// Test-only knob: when `true`, the constructor does NOT kick off the
     /// background OsaurusAI HF org fetch. Production code never sets this;
@@ -306,8 +306,7 @@ final class ModelManager: NSObject, ObservableObject {
 
         // If user pasted a direct HF URL or "org/repo", immediately surface it without requiring SDK allowlist
         if let directId = Self.parseHuggingFaceRepoId(from: query), !directId.isEmpty,
-            !findExistingModel(id: directId).found
-        {
+            !findExistingModel(id: directId).found {
             let probe = MLXModel(id: directId, name: "", description: "", downloadURL: "")
             let model = MLXModel(
                 id: directId,
@@ -1119,8 +1118,8 @@ extension ModelManager {
     /// (auto-fetched LLM entries fall back to post-download detection).
     fileprivate static func inferModelType(from tags: [String]?) -> String? {
         guard let tags else { return nil }
-        for tag in tags {
-            if VLMDetection.isVLM(modelType: tag) { return tag }
+        for tag in tags where VLMDetection.isVLM(modelType: tag) {
+            return tag
         }
         return nil
     }
@@ -1337,8 +1336,8 @@ extension ModelManager {
     }
 
     // MARK: - Local Models Cache (in-memory, cleared on app restart)
-    private static nonisolated let localModelsCacheLock = NSLock()
-    private static nonisolated(unsafe) var cachedLocalModels: [MLXModel]?
+    nonisolated private static let localModelsCacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedLocalModels: [MLXModel]?
 
     nonisolated static func invalidateLocalModelsCache() {
         localModelsCacheLock.lock()
@@ -1365,14 +1364,14 @@ extension ModelManager {
         return models
     }
 
-    private nonisolated static func scanLocalModels() -> [MLXModel] {
+    nonisolated private static func scanLocalModels() -> [MLXModel] {
         return scanLocalModels(at: DirectoryPickerService.effectiveModelsDirectory())
     }
 
     /// Internal entry point used by tests so they can supply a fixture root.
     /// Detects both the flat (`<root>/<modelDir>/`) and nested (`<root>/<org>/<repo>/`)
     /// layouts.
-    internal nonisolated static func scanLocalModels(at root: URL) -> [MLXModel] {
+    nonisolated internal static func scanLocalModels(at root: URL) -> [MLXModel] {
         let fm = FileManager.default
         guard
             let topEntries = try? fm.contentsOfDirectory(

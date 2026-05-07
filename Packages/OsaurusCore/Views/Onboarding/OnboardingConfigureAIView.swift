@@ -119,18 +119,18 @@ final class ConfigureAIState: ObservableObject {
     @Published var substateDirection: OnboardingDirection = .forward
 
     // Local
-    @Published var selectedModel: MLXModel? = nil
+    @Published var selectedModel: MLXModel?
     @Published var showDownloadError = false
     @Published var downloadErrorMessage = ""
 
     // API
     @Published var apiKey: String = ""
     @Published var openAIAuthMode: OpenAIProviderCredentialMode = .chatGPTSubscription
-    @Published var oauthTokens: RemoteProviderOAuthTokens? = nil
+    @Published var oauthTokens: RemoteProviderOAuthTokens?
     @Published var customForm = CustomProviderForm()
     @Published var isTesting = false
     @Published var isSaving = false
-    @Published var testResult: APITestResult? = nil
+    @Published var testResult: APITestResult?
 
     init() {
         let foundation = FoundationModelService.isDefaultModelAvailable()
