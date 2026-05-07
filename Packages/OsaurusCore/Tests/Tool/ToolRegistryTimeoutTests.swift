@@ -17,22 +17,27 @@ import Testing
 struct ToolRegistryTimeoutTests {
 
     /// Tool body that sleeps longer than the test timeout. Mirrors a
-    /// hung subprocess / blocked network call in production. Returns a
-    /// success envelope only if it somehow completes — that branch is
-    /// the failure signal for the test.
+    /// hung subprocess / blocked network call in production: it does
+    /// not observe Swift task cancellation, so implementations that
+    /// wait for a cancelled child to drain will still stall here.
+    /// Returns a success envelope only if it somehow completes — that
+    /// branch is the failure signal for the test.
     private struct SlowSleepTool: OsaurusTool {
-        static let sleepSeconds: TimeInterval = 8
+        static let sleepSeconds: TimeInterval = 10
         static let timeoutSeconds: TimeInterval = 0.5
         static let minimumTimeoutLeadSeconds: TimeInterval = 1
-        private static let sleepNanoseconds = UInt64(sleepSeconds * 1_000_000_000)
 
         let name: String = "test_slow_sleep"
-        let description: String = "Test fixture: sleeps 8 seconds, exceeding the test timeout."
+        let description: String = "Test fixture: sleeps 10 seconds, exceeding the test timeout."
         let parameters: JSONValue? = .object(["type": .string("object")])
 
         func execute(argumentsJSON: String) async throws -> String {
-            try await Task.sleep(nanoseconds: Self.sleepNanoseconds)
-            return ToolEnvelope.success(tool: name, text: "did not time out")
+            let toolName = name
+            return await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + Self.sleepSeconds) {
+                    continuation.resume(returning: ToolEnvelope.success(tool: toolName, text: "did not time out"))
+                }
+            }
         }
     }
 
