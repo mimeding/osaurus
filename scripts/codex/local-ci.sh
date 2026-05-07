@@ -6,6 +6,9 @@ cd "$ROOT"
 
 DERIVED_DATA_PATH="${OSAURUS_DERIVED_DATA_PATH:-$ROOT/build/CodexDerivedData}"
 APP_DESTINATION="${OSAURUS_APP_DESTINATION:-platform=macOS,arch=$(uname -m)}"
+SPM_CACHE="${OSAURUS_SPM_CACHE:-$ROOT/.spm-cache}"
+CORE_XCRESULT_PATH="${OSAURUS_CORE_XCRESULT_PATH:-$ROOT/build/CodexCoreTests.xcresult}"
+RUN_XCODE_CORE_TESTS="${OSAURUS_RUN_XCODE_CORE_TESTS:-1}"
 
 section() {
   printf '\n==> %s\n' "$1"
@@ -65,6 +68,38 @@ swift build --package-path Packages/OsaurusCore
 
 section "swift test OsaurusCore"
 swift test --package-path Packages/OsaurusCore
+
+if [[ "$RUN_XCODE_CORE_TESTS" == "1" ]]; then
+  section "resolve OsaurusCoreTests dependencies"
+  xcodebuild -resolvePackageDependencies \
+    -workspace osaurus.xcworkspace \
+    -scheme OsaurusCoreTests \
+    -derivedDataPath "$DERIVED_DATA_PATH" \
+    -clonedSourcePackagesDirPath "$SPM_CACHE" \
+    -quiet
+
+  section "xcodebuild test OsaurusCoreTests"
+  rm -rf "$CORE_XCRESULT_PATH"
+  run_xcodebuild test \
+    -workspace osaurus.xcworkspace \
+    -scheme OsaurusCoreTests \
+    -destination "$APP_DESTINATION" \
+    -derivedDataPath "$DERIVED_DATA_PATH" \
+    -disableAutomaticPackageResolution \
+    -clonedSourcePackagesDirPath "$SPM_CACHE" \
+    -resultBundlePath "$CORE_XCRESULT_PATH" \
+    -skipPackagePluginValidation \
+    -skipMacroValidation \
+    -enableCodeCoverage NO \
+    -test-timeouts-enabled YES \
+    -default-test-execution-time-allowance 60 \
+    -maximum-test-execution-time-allowance 120 \
+    COMPILER_INDEX_STORE_ENABLE=NO \
+    SWIFT_COMPILATION_MODE=incremental
+else
+  section "xcodebuild test OsaurusCoreTests"
+  printf 'Skipped because OSAURUS_RUN_XCODE_CORE_TESTS=%s\n' "$RUN_XCODE_CORE_TESTS"
+fi
 
 section "swift build app"
 run_xcodebuild build \

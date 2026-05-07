@@ -428,13 +428,10 @@ final class ToolRegistry: ObservableObject {
     /// tests can drive it with a small `timeoutSeconds` value without
     /// waiting for the full 120s production budget.
     ///
-    /// Each branch of the race converts thrown errors (including
-    /// `CancellationError` from the loser when we `cancelAll`) into a
-    /// structured `ToolEnvelope` *inside* its child task. That keeps
-    /// `withTaskGroup` non-throwing and prevents the cancelled sibling's
-    /// post-return throw from reaching the caller as the function's
-    /// error — historically the slow-tool case rethrew CancellationError
-    /// and stalled while the group drained.
+    /// The race uses unstructured tasks so the caller can return the
+    /// timeout envelope immediately instead of waiting for a cancelled
+    /// tool body to drain. The losing task is still cancelled, but a
+    /// non-cooperative tool body may keep unwinding in the background.
     nonisolated internal static func runToolBody(
         _ tool: OsaurusTool,
         argumentsJSON: String,
@@ -448,49 +445,52 @@ final class ToolRegistry: ObservableObject {
             tool: toolName,
             retryable: true
         )
-        // Sentinel returned by the cancelled loser branch so the
-        // consumer loop knows to ignore it. Cannot collide with any
-        // legitimate envelope because real envelopes are JSON.
-        let cancelledSentinel = "__osaurus_runToolBody_cancelled__"
+        let race = ToolBodyRaceResult()
+        let bodyTask = Task {
+            do {
+                let result = try await tool.execute(argumentsJSON: argumentsJSON)
+                await race.resolve(result)
+            } catch is CancellationError {
+                // Cancelled because the timeout branch won.
+            } catch {
+                await race.resolve(ToolEnvelope.fromError(error, tool: toolName))
+            }
+        }
+        let timeoutTask = Task {
+            let nanos = UInt64(max(0, timeoutSeconds) * 1_000_000_000)
+            do {
+                try await Task.sleep(nanoseconds: nanos)
+            } catch {
+                // Cancelled because the body branch won.
+                return
+            }
+            await race.resolve(timeoutEnvelope)
+        }
 
-        return await withTaskGroup(of: String.self) { group in
-            group.addTask {
-                do {
-                    return try await tool.execute(argumentsJSON: argumentsJSON)
-                } catch is CancellationError {
-                    return cancelledSentinel
-                } catch {
-                    return ToolEnvelope.fromError(error, tool: toolName)
-                }
-            }
-            group.addTask {
-                let nanos = UInt64(timeoutSeconds * 1_000_000_000)
-                do {
-                    try await Task.sleep(nanoseconds: nanos)
-                } catch {
-                    // Cancelled because the body finished first — yield
-                    // the sentinel so the caller's first non-sentinel
-                    // result wins.
-                    return cancelledSentinel
-                }
-                return timeoutEnvelope
-            }
+        let result = await race.wait()
+        bodyTask.cancel()
+        timeoutTask.cancel()
+        return result
+    }
 
-            // The first non-sentinel result is the winner; cancel the
-            // sibling and let `withTaskGroup` auto-drain on closure
-            // return. The drain is safe because every child branch
-            // converts its own errors into envelope strings — there
-            // are no uncaught throws to surface.
-            for await result in group {
-                if result == cancelledSentinel { continue }
-                group.cancelAll()
-                return result
+    private actor ToolBodyRaceResult {
+        private var value: String?
+        private var continuation: CheckedContinuation<String, Never>?
+
+        func wait() async -> String {
+            if let value {
+                return value
             }
-            return ToolEnvelope.failure(
-                kind: .executionError,
-                message: "Tool '\(toolName)' produced no result.",
-                tool: toolName
-            )
+            return await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+
+        func resolve(_ value: String) {
+            guard self.value == nil else { return }
+            self.value = value
+            continuation?.resume(returning: value)
+            continuation = nil
         }
     }
 
