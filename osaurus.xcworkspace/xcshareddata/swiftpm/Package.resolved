@@ -1,5 +1,5 @@
 {
-  "originHash" : "2b8c51e0f4bb988e1f78ce77703b6f6665e22a502866c002632abf979f47e522",
+  "originHash" : "3e4f43f8358b6fc258ece32dcb74914ec37518489d8320c9dbe33c0361fada1e",
   "pins" : [
     {
       "identity" : "aachartkit-swift",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/containerization.git",
       "state" : {
-        "revision" : "f1ee6f8b737ab8dffbd620bfa47283f6f0bc1822",
-        "version" : "0.31.0"
+        "revision" : "c519d5760970ac1da99a2816289d326e2525e9f6",
+        "version" : "0.32.0"
       }
     },
     {
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/orlandos-nl/IkigaJSON",
       "state" : {
-        "revision" : "2e90323a4543c1aaca01bc6e28e4c744c13811a2",
-        "version" : "2.4.3"
+        "revision" : "c0d8aa3eae43e1b5565d5b6b4e05e18664f1047e",
+        "version" : "2.4.4"
       }
     },
     {
@@ -166,8 +166,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-certificates.git",
       "state" : {
-        "revision" : "5aa1c0d1bc204908df47c2075bdbb39573d05e8d",
-        "version" : "1.19.0"
+        "revision" : "bde8ca32a096825dfce37467137c903418c1893d",
+        "version" : "1.19.1"
       }
     },
     {
@@ -328,8 +328,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/modelcontextprotocol/swift-sdk.git",
       "state" : {
-        "revision" : "6132fd4b5b4217ce4717c4775e4607f5c3120129",
-        "version" : "0.12.0"
+        "revision" : "a0ae212ebf6eab5f754c3129608bc5557637e605",
+        "version" : "0.12.1"
       }
     },
     {
