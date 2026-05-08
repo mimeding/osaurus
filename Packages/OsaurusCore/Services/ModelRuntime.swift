@@ -577,8 +577,7 @@ public actor ModelRuntime {
         // dispatches via `Qwen3Next.swift`. Same `ArraysCache` companion
         // pattern as the 3.5 / 3.6 family.
         if lower.contains("qwen3-next") || lower.contains("qwen3_next")
-            || lower.contains("qwen3next")
-        {
+            || lower.contains("qwen3next") {
             return true
         }
         // Bailing / Ling hybrid: Linear-Attn companion ArraysCache + MLA
@@ -609,8 +608,7 @@ public actor ModelRuntime {
             return true
         }
         if lower.contains("granite")
-            && (lower.contains("moe-hybrid") || lower.contains("moe_hybrid"))
-        {
+            && (lower.contains("moe-hybrid") || lower.contains("moe_hybrid")) {
             return true
         }
         // Falcon-H1 (falcon_h1 model_type) — TII hybrid Mamba+Attn. vmlx

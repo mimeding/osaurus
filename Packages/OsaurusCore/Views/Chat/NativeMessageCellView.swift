@@ -181,8 +181,7 @@ final class NativeHeaderView: NSView {
                 if let img = AvatarImageCache.shared.image(for: url) { return img }
             }
             if let avatar, !avatar.isEmpty,
-                let mascot = Bundle.module.image(forResource: "osaurus-avatar-\(avatar)")
-            {
+                let mascot = Bundle.module.image(forResource: "osaurus-avatar-\(avatar)") {
                 return mascot
             }
             return Self.monogramImage(

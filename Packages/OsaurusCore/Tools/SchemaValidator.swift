@@ -250,8 +250,7 @@ public struct SchemaValidator {
         // validator runs, but callers that bypass coercion (tests, ad-hoc
         // validation) still benefit from this lenient comparison.
         if let s = value as? String,
-            allowed.contains(where: { ($0 as? String)?.lowercased() == s.lowercased() })
-        {
+            allowed.contains(where: { ($0 as? String)?.lowercased() == s.lowercased() }) {
             return .ok()
         }
         let label = key.map { " '\($0)'" } ?? ""
@@ -480,7 +479,7 @@ public struct SchemaValidator {
             let nested = obj["properties"] as? [String: Any]
         else { return obj }
         let declared = Set(propsDict.keys)
-        guard !declared.intersection(Set(nested.keys)).isEmpty else { return obj }
+        guard !declared.isDisjoint(with: Set(nested.keys)) else { return obj }
         var out = obj
         out.removeValue(forKey: "properties")
         for (key, value) in nested where out[key] == nil {

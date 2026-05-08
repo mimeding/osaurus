@@ -333,8 +333,7 @@ final class TerminalDisplayView: NSView {
     private func startElapsedTimer(startedAt: Date) {
         elapsedTimer?.invalidate()
         elapsedLabel.stringValue = Self.formatElapsed(0)
-        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
-            [weak self] _ in
+        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
                 let secs = Date().timeIntervalSince(startedAt)

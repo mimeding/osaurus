@@ -47,7 +47,7 @@ public final class LiveExecSink: @unchecked Sendable {
     /// `nonisolated(unsafe)` so the `currentStatus()` accessor below
     /// can read `value` without an actor hop. `CurrentValueSubject` is
     /// thread-safe internally.
-    private nonisolated(unsafe) let statusSubject =
+    nonisolated(unsafe) private let statusSubject =
         CurrentValueSubject<LiveExecRegistry.LiveExecStatus, Never>(.running)
 
     /// Cap on the in-memory seed buffer. 1 MB is enough to render most

@@ -696,8 +696,7 @@ final class NativeToolCallRowView: NSView {
 
         // 1) Live path takes priority while a tool is actively running.
         if let entry = LiveExecRegistry.shared.currentEntries()[item.call.id],
-            entry.currentStatus() == .running
-        {
+            entry.currentStatus() == .running {
             tearDownResultSection()
             mountTerminalView(mode: .live(entry), theme: theme)
             return
@@ -708,8 +707,7 @@ final class NativeToolCallRowView: NSView {
         //    shell tools and error envelopes, which then fall through
         //    to the markdown path below.
         if let result = item.result,
-            let snapshot = TerminalSnapshot.from(toolResult: result, item: item)
-        {
+            let snapshot = TerminalSnapshot.from(toolResult: result, item: item) {
             tearDownResultSection()
             mountTerminalView(mode: .completed(snapshot), theme: theme)
             return

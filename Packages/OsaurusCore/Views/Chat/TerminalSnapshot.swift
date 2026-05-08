@@ -99,8 +99,7 @@ extension TerminalSnapshot {
         var command = ""
         if let data = item.call.function.arguments.data(using: .utf8),
             let args = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let cmd = args["command"] as? String
-        {
+            let cmd = args["command"] as? String {
             command = cmd
         }
 

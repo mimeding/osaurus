@@ -331,7 +331,7 @@ final class ToolRegistry: ObservableObject {
     /// wall-clock race. Cancellation still propagates: when the calling
     /// task is cancelled, the body's own `Task.isCancelled` checks (or
     /// the underlying process signals) tear it down.
-    internal nonisolated static func runToolBodyUntimed(
+    nonisolated internal static func runToolBodyUntimed(
         _ tool: OsaurusTool,
         argumentsJSON: String
     ) async throws -> String {

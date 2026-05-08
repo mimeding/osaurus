@@ -100,19 +100,19 @@ public actor LiveExecRegistry {
     /// `CurrentValueSubject` is thread-safe; `nonisolated(unsafe)` is
     /// the standard pattern for letting both the actor's mutating
     /// methods AND the `nonisolated` accessor below touch it.
-    private nonisolated(unsafe) let entriesSubject = CurrentValueSubject<[String: Entry], Never>([:])
+    nonisolated(unsafe) private let entriesSubject = CurrentValueSubject<[String: Entry], Never>([:])
 
     /// Live snapshot of every registered entry. The chat layer
     /// subscribes once and on each emission walks current tool-call
     /// items, attaching matching entries by `toolCallId`.
-    public nonisolated var entriesPublisher: AnyPublisher<[String: Entry], Never> {
+    nonisolated public var entriesPublisher: AnyPublisher<[String: Entry], Never> {
         entriesSubject.eraseToAnyPublisher()
     }
 
     /// Synchronous snapshot of the current entries. Lets a tool-call
     /// cell decide "live or static?" inline during `configure(item:)`
     /// without an actor hop. The underlying subject is thread-safe.
-    public nonisolated func currentEntries() -> [String: Entry] {
+    nonisolated public func currentEntries() -> [String: Entry] {
         entriesSubject.value
     }
 

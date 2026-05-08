@@ -43,7 +43,7 @@ struct AgentAvatarView: View {
     let diameter: CGFloat
     /// Optional user-supplied custom avatar image. When present, takes
     /// precedence over `mascotId` and the monogram fallback.
-    var customImageURL: URL? = nil
+    var customImageURL: URL?
     /// Font size for the monogram fallback. Callers tune this so the letter
     /// reads at the same visual weight as before per call site
     var monogramFontSize: CGFloat = 16

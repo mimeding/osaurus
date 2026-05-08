@@ -128,8 +128,7 @@ public enum AgentStore {
             if let existing = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
                 for f in existing
                 where f.deletingPathExtension().lastPathComponent == agentId.uuidString
-                    && f.lastPathComponent != filename
-                {
+                    && f.lastPathComponent != filename {
                     try? FileManager.default.removeItem(at: f)
                 }
             }

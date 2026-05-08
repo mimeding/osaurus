@@ -3329,8 +3329,7 @@ struct AgentDetailView: View {
         }
 
         if let existing = agentSecrets.first(where: { $0.id == entryId }),
-            !existing.isNew, existing.key != trimmedKey
-        {
+            !existing.isNew, existing.key != trimmedKey {
             AgentSecretsKeychain.deleteSecret(id: existing.key, agentId: agent.id)
         }
 
@@ -4178,7 +4177,7 @@ private struct ThemeOptionCard: View {
 
 // MARK: - Agent Secret Entry
 
-fileprivate struct AgentSecretEntry: Identifiable, Equatable {
+private struct AgentSecretEntry: Identifiable, Equatable {
     let id = UUID()
     var key: String
     var value: String
@@ -4187,7 +4186,7 @@ fileprivate struct AgentSecretEntry: Identifiable, Equatable {
 
 // MARK: - Agent Secret Row
 
-fileprivate struct AgentSecretRow: View {
+private struct AgentSecretRow: View {
     let entry: AgentSecretEntry
     let isEditing: Bool
     let theme: ThemeProtocol

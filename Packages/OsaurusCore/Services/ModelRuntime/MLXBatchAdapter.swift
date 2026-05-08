@@ -249,8 +249,7 @@ struct MLXBatchAdapter {
         modelName: String
     ) -> [String: any Sendable] {
         if ModelFamilyNames.isLingFamily(modelName)
-            || ModelFamilyNames.isZayaFamily(modelName)
-        {
+            || ModelFamilyNames.isZayaFamily(modelName) {
             return ["enable_thinking": false]
         }
         if let disableThinking = generation.modelOptions["disableThinking"]?.boolValue {
