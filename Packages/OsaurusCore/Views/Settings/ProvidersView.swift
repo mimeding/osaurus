@@ -526,11 +526,17 @@ private struct ProviderEditSheet: View {
                             )
 
                             MCPStyledTextField(
-                                label: "URL",
-                                placeholder: "https://mcp.example.com",
+                                label: "HTTP/SSE URL",
+                                placeholder: "https://mcp.example.com/sse",
                                 text: $url,
                                 isMonospaced: true
                             )
+
+                            if let urlValidationMessage {
+                                Text(verbatim: urlValidationMessage)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(themeManager.currentTheme.errorColor)
+                            }
 
                             MCPStyledSecureField(
                                 label: "Bearer Token",
@@ -875,6 +881,18 @@ private struct ProviderEditSheet: View {
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty
             && !url.trimmingCharacters(in: .whitespaces).isEmpty
+            && urlValidationMessage == nil
+    }
+
+    private var urlValidationMessage: String? {
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else { return nil }
+        do {
+            _ = try MCPProviderManager.validatedHTTPSEndpoint(from: trimmedURL)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     private func loadProvider() {

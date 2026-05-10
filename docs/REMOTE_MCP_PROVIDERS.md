@@ -2,13 +2,15 @@
 
 Remote MCP Providers allow you to connect Osaurus to external MCP (Model Context Protocol) servers, aggregating their tools into your Osaurus instance.
 
+Remote MCP Providers currently support HTTP/SSE endpoints only. Command-based stdio MCP servers, such as `python -m some_mcp.server`, are not supported as remote providers yet.
+
 ---
 
 ## Overview
 
 With Remote MCP Providers, you can:
 
-- Connect to any MCP server over HTTP/SSE
+- Connect to MCP servers exposed over HTTP/SSE
 - Automatically discover and register remote tools
 - Use remote tools alongside local plugins
 - Aggregate tools from multiple MCP servers
@@ -25,7 +27,7 @@ This is different from Remote Providers (which provide inference endpoints). Rem
 2. Click **Providers** in the sidebar
 3. Scroll to the **MCP Providers** section
 4. Click **Add MCP Provider**
-5. Enter the MCP server URL
+5. Enter the MCP server HTTP/SSE URL
 6. Configure authentication if required
 7. Click **Save**
 
@@ -38,7 +40,7 @@ This is different from Remote Providers (which provide inference endpoints). Rem
 | Setting     | Description                         |
 | ----------- | ----------------------------------- |
 | **Name**    | Display name for the provider       |
-| **URL**     | Full URL to the MCP server endpoint |
+| **URL**     | Full HTTP/SSE URL to the MCP server endpoint |
 | **Enabled** | Whether the provider is active      |
 
 ### Authentication
@@ -164,6 +166,12 @@ Before saving a provider, you can test the connection:
 - Verify the MCP server is running
 - Check the URL is correct (including protocol and port)
 - Ensure no firewall is blocking the connection
+
+**"Remote MCP providers support HTTP/SSE endpoints only"**
+
+- Use an `http://` or `https://` MCP endpoint, such as `https://mcp.example.com/sse`
+- Do not paste a local stdio command into the URL field
+- To expose Osaurus itself to a stdio MCP client, use `osaurus mcp` from that client configuration; this is separate from connecting Osaurus to remote providers
 
 **"Authentication failed"**
 

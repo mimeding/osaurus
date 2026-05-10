@@ -205,7 +205,7 @@ See [INFERENCE_RUNTIME.md](./INFERENCE_RUNTIME.md) for the full runtime architec
 
 ### Remote MCP Providers
 
-**Purpose:** Connect to external MCP servers and aggregate their tools.
+**Purpose:** Connect to external MCP servers over HTTP/SSE and aggregate their tools.
 
 **Components:**
 
@@ -220,6 +220,7 @@ See [INFERENCE_RUNTIME.md](./INFERENCE_RUNTIME.md) for the full runtime architec
 - Configurable discovery and execution timeouts
 - Tool namespacing (prefixed with provider name)
 - Streaming support (optional)
+- Command-based stdio providers are not supported by this remote-provider path yet
 
 ---
 

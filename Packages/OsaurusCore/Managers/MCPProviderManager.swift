@@ -323,9 +323,7 @@ public final class MCPProviderManager: ObservableObject {
 
     /// Test connection to a provider without persisting
     public func testConnection(url: String, token: String?, headers: [String: String]) async throws -> Int {
-        guard let endpoint = URL(string: url) else {
-            throw MCPProviderError.invalidURL
-        }
+        let endpoint = try Self.validatedHTTPSEndpoint(from: url)
 
         // Create temporary transport
         let configuration = URLSessionConfiguration.default
@@ -361,10 +359,22 @@ public final class MCPProviderManager: ObservableObject {
 
     // MARK: - Private Helpers
 
-    private func createTransport(for provider: MCPProvider) throws -> HTTPClientTransport {
-        guard let endpoint = URL(string: provider.url) else {
-            throw MCPProviderError.invalidURL
+    nonisolated public static func validatedHTTPSEndpoint(from url: String) throws -> URL {
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let endpoint = URL(string: trimmedURL),
+            let scheme = endpoint.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
+            let host = endpoint.host,
+            !host.isEmpty
+        else {
+            throw MCPProviderError.unsupportedTransport
         }
+        return endpoint
+    }
+
+    private func createTransport(for provider: MCPProvider) throws -> HTTPClientTransport {
+        let endpoint = try Self.validatedHTTPSEndpoint(from: provider.url)
 
         let urlConfig = URLSessionConfiguration.default
 
@@ -454,6 +464,7 @@ public enum MCPProviderError: LocalizedError {
     case providerDisabled
     case notConnected
     case invalidURL
+    case unsupportedTransport
     case timeout
     case toolExecutionFailed(String)
     case connectionFailed(String)
@@ -468,6 +479,8 @@ public enum MCPProviderError: LocalizedError {
             return "Not connected to provider"
         case .invalidURL:
             return "Invalid server URL"
+        case .unsupportedTransport:
+            return "Remote MCP providers support HTTP/SSE endpoints only. Command-based stdio servers are not supported yet."
         case .timeout:
             return "Request timed out"
         case .toolExecutionFailed(let message):

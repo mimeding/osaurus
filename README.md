@@ -139,7 +139,7 @@ Osaurus is a full MCP (Model Context Protocol) server. Give any MCP-compatible c
 }
 ```
 
-Also an MCP client -- aggregate tools from remote MCP servers into Osaurus. See the [Remote MCP Providers Guide](docs/REMOTE_MCP_PROVIDERS.md) for details.
+Also an HTTP/SSE MCP client -- aggregate tools from remote MCP servers into Osaurus. Command-based stdio providers are not supported by that remote-provider path yet. See the [Remote MCP Providers Guide](docs/REMOTE_MCP_PROVIDERS.md) for details.
 
 ## Tools & Plugins
 
