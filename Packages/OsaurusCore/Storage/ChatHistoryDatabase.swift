@@ -53,6 +53,13 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
     // MARK: - Lifecycle
 
     public func open() throws {
+        #if DEBUG
+            if RuntimeEnvironment.isUnderTests, OsaurusPaths.overrideRoot == nil {
+                try openInMemory()
+                return
+            }
+        #endif
+
         // Defensive gate: production flow already awaits the
         // migrator in `AppDelegate.applicationDidFinishLaunching`,
         // but tests + future headless entry points may call
