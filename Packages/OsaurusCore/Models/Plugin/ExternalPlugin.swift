@@ -469,8 +469,7 @@ public struct PluginManifest: Decodable, Sendable {
             // Path parameter match — segment-by-segment, only the first
             // definition wins to give plugin authors deterministic ordering.
             if paramMatch == nil,
-                let params = matchPathParams(routePath: routePath, requestPath: normalizedPath)
-            {
+                let params = matchPathParams(routePath: routePath, requestPath: normalizedPath) {
                 paramMatch = RouteMatch(route: route, pathParams: params)
             }
         }

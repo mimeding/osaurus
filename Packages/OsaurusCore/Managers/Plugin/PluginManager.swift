@@ -572,8 +572,7 @@ final class PluginManager {
         // The runtime checks the static branch first, so any overlap means
         // the plugin's `handle_route` for that path can never fire.
         if let mount = manifest.capabilities.web?.mount,
-            let routes = manifest.capabilities.routes
-        {
+            let routes = manifest.capabilities.routes {
             let normalizedMount = mount.hasPrefix("/") ? mount : "/\(mount)"
             for route in routes {
                 let routePath = route.path.hasPrefix("/") ? route.path : "/\(route.path)"

@@ -111,8 +111,7 @@ public struct ToolsDoctor {
         let receiptURL = versionDir.appendingPathComponent("receipt.json")
         let receiptResult: (PluginReceipt, Result)
         if let rdata = try? Data(contentsOf: receiptURL),
-            let receipt = try? JSONDecoder().decode(PluginReceipt.self, from: rdata)
-        {
+            let receipt = try? JSONDecoder().decode(PluginReceipt.self, from: rdata) {
             receiptResult = (receipt, .ok("\(receipt.plugin_id)@\(receipt.version)"))
         } else {
             checks.append(.init(label: "receipt.json", result: .fail("missing or invalid")))

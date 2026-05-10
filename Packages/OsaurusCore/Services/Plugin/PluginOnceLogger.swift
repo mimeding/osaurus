@@ -15,7 +15,7 @@ import Foundation
 enum PluginOnceLogger {
 
     private static let lock = NSLock()
-    private nonisolated(unsafe) static var seen: Set<String> = []
+    nonisolated(unsafe) private static var seen: Set<String> = []
 
     /// Emits `message` (formatted with `arguments`) via `NSLog` exactly
     /// once per `key` per process. Subsequent calls with the same key are
