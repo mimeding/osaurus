@@ -107,6 +107,14 @@ private struct AddProviderFlow: View {
         return canTest && !parseManualModelIds(manualModelIdsText).isEmpty
     }
 
+    private var canSaveCustomProviderWithoutSuccessfulTest: Bool {
+        selectedPreset == .custom && canTestCustom && !parseManualModelIds(manualModelIdsText).isEmpty
+    }
+
+    private var canSaveProviderWithoutSuccessfulTest: Bool {
+        canSaveKnownProviderWithoutSuccessfulTest || canSaveCustomProviderWithoutSuccessfulTest
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header bar
@@ -376,6 +384,8 @@ private struct AddProviderFlow: View {
                             )
                     )
 
+                    customModelIdsSection
+
                     // Advanced settings toggle
                     advancedSettingsSection
                 }
@@ -384,7 +394,7 @@ private struct AddProviderFlow: View {
 
             // Footer
             sheetFooter(canProceed: canTestCustom) {
-                if testResult?.isSuccess == true {
+                if testResult?.isSuccess == true || canSaveCustomProviderWithoutSuccessfulTest {
                     saveCustomProvider()
                 } else {
                     testCustomProvider()
@@ -528,6 +538,16 @@ private struct AddProviderFlow: View {
             text: $manualModelIdsText,
             title: "DEPLOYMENT NAMES",
             placeholder: "gpt-5.4\nmy-prod-chat",
+            theme: theme
+        )
+        .onChange(of: manualModelIdsText) { _, _ in testResult = nil }
+    }
+
+    private var customModelIdsSection: some View {
+        DeploymentNamesEditor(
+            text: $manualModelIdsText,
+            title: "MODEL IDS",
+            placeholder: "MiniMax-M2.7\nMiniMax-M2.7-highspeed",
             theme: theme
         )
         .onChange(of: manualModelIdsText) { _, _ in testResult = nil }
@@ -968,7 +988,7 @@ private struct AddProviderFlow: View {
 
     private var actionButtonTitle: String {
         if isTesting { return openAIAuthMode == .chatGPTSubscription ? L("Signing in...") : L("Testing...") }
-        if testResult?.isSuccess == true || canSaveKnownProviderWithoutSuccessfulTest { return L("Add Provider") }
+        if testResult?.isSuccess == true || canSaveProviderWithoutSuccessfulTest { return L("Add Provider") }
         if case .failure = testResult { return L("Retry") }
         if selectedPreset == .openai && openAIAuthMode == .chatGPTSubscription {
             return L("Sign in with ChatGPT")
@@ -977,7 +997,7 @@ private struct AddProviderFlow: View {
     }
 
     private var actionButtonColor: Color {
-        if testResult?.isSuccess == true || canSaveKnownProviderWithoutSuccessfulTest { return theme.successColor }
+        if testResult?.isSuccess == true || canSaveProviderWithoutSuccessfulTest { return theme.successColor }
         if case .failure = testResult { return theme.errorColor }
         return theme.accentColor
     }
@@ -1116,6 +1136,7 @@ private struct AddProviderFlow: View {
             enabled: true,
             autoConnect: true,
             timeout: timeout,
+            manualModelIds: parseManualModelIds(manualModelIdsText),
             secretHeaderKeys: secretKeys
         )
 

@@ -238,16 +238,7 @@ public final class RemoteProviderManager: ObservableObject {
             }
 
             // Fetch models from the provider and merge any manually configured deployment IDs.
-            let discoveredModels: [String]
-            do {
-                discoveredModels = try await RemoteProviderService.fetchModels(from: provider)
-            } catch {
-                if provider.providerType == .azureOpenAI && !provider.manualModelIds.isEmpty {
-                    discoveredModels = []
-                } else {
-                    throw error
-                }
-            }
+            let discoveredModels = try await fetchModelsAllowingManualFallback(for: provider)
             let models = provider.mergedModelIds(discovered: discoveredModels)
 
             // Create service instance – resolve headers eagerly on @MainActor
@@ -353,11 +344,7 @@ public final class RemoteProviderManager: ObservableObject {
 
         let discovered: [String]
         do {
-            if let override = testFetchModelsOverride {
-                discovered = try await override(provider)
-            } else {
-                discovered = try await RemoteProviderService.fetchModels(from: provider)
-            }
+            discovered = try await fetchModelsAllowingManualFallback(for: provider)
         } catch {
             return
         }
@@ -372,6 +359,42 @@ public final class RemoteProviderManager: ObservableObject {
             await service.updateModels(merged)
         }
         notifyModelsChanged()
+    }
+
+    private func fetchModelsAllowingManualFallback(for provider: RemoteProvider) async throws -> [String] {
+        do {
+            if let override = testFetchModelsOverride {
+                return try await override(provider)
+            }
+            return try await RemoteProviderService.fetchModels(from: provider)
+        } catch {
+            if shouldUseManualModelIdsAfterDiscoveryFailure(provider: provider, error: error) {
+                return []
+            }
+            throw error
+        }
+    }
+
+    private func shouldUseManualModelIdsAfterDiscoveryFailure(provider: RemoteProvider, error: Error) -> Bool {
+        guard provider.providerType.supportsManualModelDiscoveryFallback,
+            !provider.mergedModelIds(discovered: []).isEmpty
+        else { return false }
+
+        // Azure deployments are manual IDs; preserve the existing behavior of
+        // not requiring Azure's /models response before connecting.
+        if provider.providerType == .azureOpenAI {
+            return true
+        }
+
+        guard case .requestFailed(let message) = error as? RemoteProviderServiceError else {
+            return false
+        }
+
+        let normalized = message.lowercased()
+        return normalized.contains("404")
+            || normalized.contains("not found")
+            || normalized.contains("405")
+            || normalized.contains("method not allowed")
     }
 
     /// Refresh every enabled provider's model list, coalesced and throttled.

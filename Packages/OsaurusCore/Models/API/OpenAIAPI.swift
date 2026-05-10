@@ -78,7 +78,7 @@ struct OpenAIModel: Codable, Sendable {
         name = try container.decodeIfPresent(String.self, forKey: .name)
         model = try container.decodeIfPresent(String.self, forKey: .model)
         modified_at = try container.decodeIfPresent(String.self, forKey: .modified_at)
-        size = try container.decodeIfPresent(Int.self, forKey: .size)
+        size = try? container.decodeIfPresent(Int.self, forKey: .size)
         digest = try container.decodeIfPresent(String.self, forKey: .digest)
         details = try container.decodeIfPresent(ModelDetails.self, forKey: .details)
     }

@@ -131,6 +131,45 @@ struct RemoteChatRequestEncodingTests {
         #expect(provider.mergedModelIds(discovered: ["gpt-4.1", "prod-chat"]) == ["gpt-4.1", "prod-chat", "gpt-5.4"])
     }
 
+    @Test func openAICompatibleProvider_supportsManualModelDiscoveryFallback() throws {
+        #expect(RemoteProviderType.openaiLegacy.supportsManualModelDiscoveryFallback)
+        #expect(RemoteProviderType.openResponses.supportsManualModelDiscoveryFallback)
+        #expect(RemoteProviderType.azureOpenAI.supportsManualModelDiscoveryFallback)
+        #expect(!RemoteProviderType.anthropic.supportsManualModelDiscoveryFallback)
+        #expect(!RemoteProviderType.gemini.supportsManualModelDiscoveryFallback)
+    }
+
+    @Test func openAIModelsResponse_decodesLemonadeFractionalSizePayload() throws {
+        let json = """
+            {
+              "object": "list",
+              "data": [
+                {
+                  "id": "Cogito-v2-llama-109B-MoE-GGUF",
+                  "object": "model",
+                  "created": 1234567890,
+                  "owned_by": "lemonade",
+                  "size": 65.3,
+                  "labels": ["vision"],
+                  "checkpoint": "unsloth/cogito-v2-preview-llama-109B-MoE-GGUF:Q4_K_M"
+                },
+                {
+                  "id": "Devstral-Small-2507-GGUF",
+                  "object": "model",
+                  "created": 1234567890,
+                  "owned_by": "lemonade",
+                  "size": 14.3,
+                  "suggested": true
+                }
+              ]
+            }
+            """
+
+        let response = try JSONDecoder().decode(ModelsResponse.self, from: Data(json.utf8))
+
+        #expect(response.data.map(\.id) == ["Cogito-v2-llama-109B-MoE-GGUF", "Devstral-Small-2507-GGUF"])
+    }
+
     @Test func remoteProvider_decodingDefaultsManualModelIdsToEmptyArray() throws {
         let json = """
             {

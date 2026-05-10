@@ -24,13 +24,18 @@ struct RemoteProviderManagerRefreshTests {
 
     // MARK: - Helpers
 
-    private func makeProvider(name: String = "Test Provider") -> RemoteProvider {
+    private func makeProvider(
+        name: String = "Test Provider",
+        providerType: RemoteProviderType = .openaiLegacy,
+        manualModelIds: [String] = []
+    ) -> RemoteProvider {
         RemoteProvider(
             name: name,
             host: "127.0.0.1",
             basePath: "/v1",
             authType: .none,
-            providerType: .openaiLegacy
+            providerType: providerType,
+            manualModelIds: manualModelIds
         )
     }
 
@@ -131,6 +136,49 @@ struct RemoteProviderManagerRefreshTests {
             let state = manager.providerStates[provider.id]
             #expect(state?.discoveredModels == ["keep-me"])
             #expect(state?.isConnected == true)
+        }
+    }
+
+    @Test func connect_usesManualModelsWhenOpenAICompatibleModelsEndpointIsMissing() async throws {
+        try await RemoteProviderTestLock.shared.run {
+            let manager = RemoteProviderManager.shared
+            let provider = makeProvider(
+                name: "MiniMax",
+                manualModelIds: [" MiniMax-M2.7 ", "", "minimax-m2.7", "MiniMax-M2.7-highspeed"]
+            )
+            manager._testInstallConnectedProvider(provider, discoveredModels: [])
+            defer { manager._testRemoveProviders(ids: [provider.id]) }
+
+            manager.testFetchModelsOverride = { _ in
+                throw RemoteProviderServiceError.requestFailed("HTTP 404: Page Not Found")
+            }
+
+            try await manager.connect(providerId: provider.id)
+
+            let state = manager.providerStates[provider.id]
+            #expect(state?.isConnected == true)
+            #expect(state?.discoveredModels == ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"])
+        }
+    }
+
+    @Test func connect_doesNotUseManualModelsForOpenAICompatibleAuthFailure() async throws {
+        await RemoteProviderTestLock.shared.run {
+            let manager = RemoteProviderManager.shared
+            let provider = makeProvider(name: "Unauthorized", manualModelIds: ["manual-model"])
+            manager._testInstallConnectedProvider(provider, discoveredModels: [])
+            defer { manager._testRemoveProviders(ids: [provider.id]) }
+
+            manager.testFetchModelsOverride = { _ in
+                throw RemoteProviderServiceError.requestFailed("HTTP 401: Unauthorized")
+            }
+
+            await #expect(throws: Error.self) {
+                try await manager.connect(providerId: provider.id)
+            }
+
+            let state = manager.providerStates[provider.id]
+            #expect(state?.isConnected == false)
+            #expect(state?.discoveredModels == [])
         }
     }
 

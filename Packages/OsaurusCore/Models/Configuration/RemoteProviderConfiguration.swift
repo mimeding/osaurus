@@ -70,6 +70,15 @@ public enum RemoteProviderType: String, Codable, Sendable, CaseIterable {
         // Both use /models but response format differs
         return "/models"
     }
+
+    public var supportsManualModelDiscoveryFallback: Bool {
+        switch self {
+        case .openaiLegacy, .openResponses, .azureOpenAI:
+            return true
+        case .anthropic, .openAICodex, .gemini, .osaurus:
+            return false
+        }
+    }
 }
 
 // MARK: - Remote Provider Model
