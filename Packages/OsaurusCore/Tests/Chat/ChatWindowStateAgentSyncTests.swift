@@ -157,6 +157,38 @@ struct ChatWindowStateAgentSyncTests {
         }
     }
 
+    @Test("saving a non-active agent theme with the same id refreshes the open window theme")
+    func savedAgentTheme_refreshesOpenWindowTheme() async throws {
+        try await ChatHistoryTestStorage.run {
+            var theme = CustomTheme.darkDefault
+            theme.metadata = ThemeMetadata(
+                id: UUID(),
+                name: "Window Theme \(UUID().uuidString.prefix(6))",
+                author: "Test"
+            )
+            theme.isBuiltIn = false
+            ThemeConfigurationStore.saveTheme(theme)
+
+            let custom = makeCustomAgent(name: "ThemeRefresh", themeId: theme.metadata.id)
+            AgentManager.shared.add(custom)
+            let window = makeWindow(for: custom.id)
+
+            #expect(window.theme.customThemeConfig?.colors.accentColor == theme.colors.accentColor)
+
+            var updatedTheme = theme
+            updatedTheme.colors.accentColor = "#FF3366"
+            updatedTheme.metadata.updatedAt = Date()
+            ThemeManager.shared.saveTheme(updatedTheme)
+
+            await flushMainQueue()
+
+            #expect(window.theme.customThemeConfig?.colors.accentColor == "#FF3366")
+
+            _ = await AgentManager.shared.delete(id: custom.id)
+            _ = ThemeConfigurationStore.deleteTheme(id: theme.metadata.id)
+        }
+    }
+
     /// Pins that the existing `.appConfigurationChanged` observer was
     /// preserved across the issue-1004 fix. Without this, a future
     /// contributor could remove that observer thinking the new Combine

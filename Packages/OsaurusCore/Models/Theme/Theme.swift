@@ -724,6 +724,8 @@ public class ThemeManager: ObservableObject {
         // If this is the active theme, update it
         if activeCustomTheme?.metadata.id == theme.metadata.id {
             applyCustomTheme(theme)
+        } else {
+            NotificationCenter.default.post(name: .globalThemeChanged, object: nil)
         }
     }
 
