@@ -3,7 +3,7 @@
 //  osaurus
 //
 //  Settings UI for text-to-speech (PocketTTS).
-//  Toggle TTS, pick voice/temperature, download model, preview.
+//  Toggle TTS, pick language/voice/temperature, download model, preview.
 //
 
 import SwiftUI
@@ -19,6 +19,14 @@ struct TTSModeSettingsTab: View {
 
     private func displayName(for voice: String) -> String {
         PocketTTSVoiceCatalog.displayName(for: voice)
+    }
+
+    private func displayName(for language: TTSLanguage) -> String {
+        language.displayName
+    }
+
+    private var languageMenuOptions: [TTSLanguage] {
+        TTSLanguage.allCases
     }
 
     private var voiceMenuOptions: [String] {
@@ -72,6 +80,7 @@ struct TTSModeSettingsTab: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .ttsConfigurationChanged)) { _ in
             loadSettings()
+            ttsService.refreshModelState()
         }
     }
 
@@ -122,7 +131,7 @@ struct TTSModeSettingsTab: View {
                     .foregroundColor(theme.accentColor)
 
                 Text(
-                    "Powered by FluidAudio PocketTTS. English only. Streams audio as it's synthesized.",
+                    "Powered by FluidAudio PocketTTS. Pick the language pack that matches the reply text.",
                     bundle: .module
                 )
                 .font(.system(size: 12))
@@ -190,7 +199,7 @@ struct TTSModeSettingsTab: View {
 
     private var modelStatusText: String {
         switch ttsService.modelState {
-        case .notReady: return L("Not downloaded — about 700 MB")
+        case .notReady: return L("Selected language pack not downloaded")
         case .downloading(let fraction):
             if let fraction {
                 return String(format: "%@ %d%%", L("Downloading"), Int(fraction * 100))
@@ -273,6 +282,25 @@ struct TTSModeSettingsTab: View {
             Text("Voice", bundle: .module)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(theme.primaryText)
+
+            HStack {
+                Text("Language", bundle: .module)
+                    .font(.system(size: 12))
+                    .foregroundColor(theme.secondaryText)
+                Spacer()
+                Picker("", selection: $config.language) {
+                    ForEach(languageMenuOptions) { language in
+                        Text(displayName(for: language)).tag(language)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(MenuPickerStyle())
+                .frame(maxWidth: 180)
+                .onChange(of: config.language) { _, _ in
+                    saveSettings()
+                    ttsService.refreshModelState()
+                }
+            }
 
             HStack {
                 Text("Voice", bundle: .module)

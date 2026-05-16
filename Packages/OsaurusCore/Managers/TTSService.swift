@@ -61,6 +61,7 @@ public final class TTSService: ObservableObject {
     // MARK: - Private state
 
     private var manager: PocketTtsManager?
+    private var managerLanguage: TTSLanguage?
     private var playbackTask: Task<Void, Never>?
     private var initTask: Task<Void, Never>?
 
@@ -84,7 +85,11 @@ public final class TTSService: ObservableObject {
 
     /// True when the model is fully loaded and ready to synthesize.
     public var isModelReady: Bool {
-        if case .ready = modelState { return true }
+        if case .ready = modelState,
+            managerLanguage == TTSConfigurationStore.load().language
+        {
+            return true
+        }
         return false
     }
 
@@ -98,7 +103,7 @@ public final class TTSService: ObservableObject {
         }
 
         guard isModelReady else {
-            if Self.pocketTtsModelsExistOnDisk() {
+            if Self.pocketTtsModelsExistOnDisk(language: TTSConfigurationStore.load().language) {
                 // Models already downloaded; just load them into memory.
                 ensureModelLoaded()
             } else {
@@ -119,7 +124,7 @@ public final class TTSService: ObservableObject {
     /// `activeSpeakCallId` so the row spinner runs until audio drains
     public func startToolPlayback(text: String, messageId: UUID, callId: String, voiceOverride: String? = nil) throws {
         guard isModelReady else {
-            if Self.pocketTtsModelsExistOnDisk() {
+            if Self.pocketTtsModelsExistOnDisk(language: TTSConfigurationStore.load().language) {
                 ensureModelLoaded()
             } else {
                 NotificationCenter.default.post(name: .openTTSSettingsRequested, object: nil)
@@ -150,16 +155,22 @@ public final class TTSService: ObservableObject {
 
     /// Begin a background download/initialize. Safe to call multiple times.
     public func ensureModelLoaded() {
-        if case .ready = modelState { return }
+        let config = TTSConfigurationStore.load()
+        if case .ready = modelState, managerLanguage == config.language { return }
         if initTask != nil { return }
 
+        stop()
+        manager = nil
+        managerLanguage = nil
         modelState = .downloading(fraction: nil)
-        let voice = TTSConfigurationStore.load().voice
+        let voice = config.voice
+        let language = config.language
         initTask = Task { [weak self] in
             do {
                 // Route through the downloader explicitly so we get progress callbacks.
                 // When models are already cached this returns nearly instantly.
                 _ = try await PocketTtsResourceDownloader.ensureModels(
+                    language: language.fluidAudioLanguage,
                     directory: nil,
                     progressHandler: { progress in
                         Task { @MainActor in
@@ -176,11 +187,15 @@ public final class TTSService: ObservableObject {
                     }
                 )
 
-                let mgr = PocketTtsManager(defaultVoice: voice)
+                let mgr = PocketTtsManager(
+                    defaultVoice: voice,
+                    language: language.fluidAudioLanguage
+                )
                 try await mgr.initialize()
                 await MainActor.run {
                     guard let self else { return }
                     self.manager = mgr
+                    self.managerLanguage = language
                     self.modelState = .ready
                     self.initTask = nil
                 }
@@ -198,17 +213,21 @@ public final class TTSService: ObservableObject {
     /// Call this on app launch and when returning to the settings tab.
     /// If models are already present, transitions to `.ready` after a fast local load.
     public func refreshModelState() {
-        if case .ready = modelState { return }
+        let language = TTSConfigurationStore.load().language
+        if case .ready = modelState, managerLanguage == language { return }
         if initTask != nil { return }
 
-        if Self.pocketTtsModelsExistOnDisk() {
+        if Self.pocketTtsModelsExistOnDisk(language: language) {
             ensureModelLoaded()
         } else {
+            stop()
+            manager = nil
+            managerLanguage = nil
             modelState = .notReady
         }
     }
 
-    private static func pocketTtsModelsExistOnDisk() -> Bool {
+    private static func pocketTtsModelsExistOnDisk(language: TTSLanguage) -> Bool {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let repoDir =
             home
@@ -216,6 +235,8 @@ public final class TTSService: ObservableObject {
             .appendingPathComponent("fluidaudio", isDirectory: true)
             .appendingPathComponent("Models", isDirectory: true)
             .appendingPathComponent("pocket-tts", isDirectory: true)
+            .appendingPathComponent("v2", isDirectory: true)
+            .appendingPathComponent(language.rawValue, isDirectory: true)
         let required = ModelNames.PocketTTS.requiredModels
         let fm = FileManager.default
         return required.allSatisfy { fm.fileExists(atPath: repoDir.appendingPathComponent($0).path) }
@@ -224,6 +245,13 @@ public final class TTSService: ObservableObject {
     // MARK: - Playback
 
     private func startPlayback(text: String, messageId: UUID, voiceOverride: String? = nil) {
+        let config = TTSConfigurationStore.load()
+        guard let manager, managerLanguage == config.language else {
+            playingMessageId = nil
+            ensureModelLoaded()
+            return
+        }
+
         do {
             try configureEngineIfNeeded()
         } catch {
@@ -232,16 +260,10 @@ public final class TTSService: ObservableObject {
             return
         }
 
-        guard let manager else {
-            playingMessageId = nil
-            return
-        }
-
         streamFinished = false
         pendingBufferCount = 0
         playerNode.play()
 
-        let config = TTSConfigurationStore.load()
         let trimmedOverride = voiceOverride?.trimmingCharacters(in: .whitespacesAndNewlines)
         let voice = (trimmedOverride?.isEmpty == false ? trimmedOverride! : config.voice)
         let temperature = Float(config.temperature)
@@ -328,6 +350,25 @@ public final class TTSService: ObservableObject {
         }
         if !audioEngine.isRunning {
             try audioEngine.start()
+        }
+    }
+}
+
+private extension TTSLanguage {
+    /// FluidAudio binds language to `PocketTtsManager`, while Osaurus
+    /// persists raw IDs for migration stability.
+    var fluidAudioLanguage: PocketTtsLanguage {
+        switch self {
+        case .english: return .english
+        case .french24L: return .french24L
+        case .german: return .german
+        case .german24L: return .german24L
+        case .italian: return .italian
+        case .italian24L: return .italian24L
+        case .portuguese: return .portuguese
+        case .portuguese24L: return .portuguese24L
+        case .spanish: return .spanish
+        case .spanish24L: return .spanish24L
         }
     }
 }
