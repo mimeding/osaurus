@@ -86,15 +86,19 @@ Reasons:
   supported stdio bridge, and Remote MCP Providers are clarified as URL-based
   HTTP/SSE only. Validation: `git diff --check` over the touched docs.
 
-## PR Publication Step - 2026-05-16 08:03 UTC
+## PR Publication Result - 2026-05-16 08:27 UTC
 
 - A clean publication worktree was created from `origin/main` at `bb2e7f7c`.
 - Only the intended plan, provider, tool-search, eval, and MCP docs files were
   applied to the publication worktree; unrelated dirty theme, schedule, and
   coordinator work in the original checkout was left untouched.
-- Required final action before opening the PR: run combined focused tests in
-  the clean worktree, commit the isolated branch, push it to GitHub, and open a
-  draft PR with the validation evidence.
+- Opened upstream PR #1112 from `mimeding:codex/development-plan-bug-lanes`,
+  marked it ready after GitHub checks passed, and posted validation evidence.
+- GitHub checks green on #1112: `test-core`, `test-cli`, `swiftlint`,
+  `shellcheck`, and `update_release_draft`.
+- Review request via `gh pr edit --add-reviewer tpae` was blocked by token
+  permission (`RequestReviewsByLogin`), so the evidence comment records the
+  reviewer handoff state.
 
 ## Maximum Parallelization Plan - 2026-05-16
 
