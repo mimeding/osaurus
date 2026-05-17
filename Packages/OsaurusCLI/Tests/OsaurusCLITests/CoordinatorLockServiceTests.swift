@@ -9,7 +9,17 @@ final class CoordinatorLockServiceTests: XCTestCase {
         let first = try service.acquire(resource: "Packages/Foo.swift", owner: "worker-a")
         let second = try service.acquire(resource: "Packages/Foo.swift", owner: "worker-b")
 
-        XCTAssertEqual(first, .acquired(CoordinatorLock(resource: "Packages/Foo.swift", owner: "worker-a", acquiredAt: lockDate(first), expiresAt: nil)))
+        XCTAssertEqual(
+            first,
+            .acquired(
+                CoordinatorLock(
+                    resource: "Packages/Foo.swift",
+                    owner: "worker-a",
+                    acquiredAt: lockDate(first),
+                    expiresAt: nil
+                )
+            )
+        )
         if case .held(let lock) = second {
             XCTAssertEqual(lock.owner, "worker-a")
         } else {

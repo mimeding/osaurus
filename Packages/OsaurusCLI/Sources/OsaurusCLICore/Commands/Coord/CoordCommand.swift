@@ -30,7 +30,8 @@ public struct CoordCommand: Command {
             try runFeatureFlags(paths: parsed.paths, args: rest)
         case "lock":
             try runLock(paths: parsed.paths, args: rest)
-        case "preflight", "gate-main", "heartbeat", "lane", "nudge", "promote", "agent-abort", "conflict-proof", "reviewer-summary", "tick-report", "pause", "resume", "stop", "clear-stop":
+        case "preflight", "gate-main", "heartbeat", "lane", "nudge", "promote", "agent-abort", "conflict-proof",
+            "reviewer-summary", "tick-report", "pause", "resume", "stop", "clear-stop":
             fputs("coord \(subcommand) is not available in the coordinator foundation slice.\n\n", stderr)
             printUsage()
             exit(EXIT_FAILURE)
@@ -214,7 +215,8 @@ enum CoordCommandError: LocalizedError, Equatable {
         case .invalidFeatureFlagsUsage:
             return "Usage: osaurus coord feature-flags [list|get <name>|set <name> <true|false>]"
         case .invalidLockUsage:
-            return "Usage: osaurus coord lock [list|acquire <resource> --owner <owner> [--ttl seconds]|release <resource> --owner <owner> [--force]|reap]"
+            return
+                "Usage: osaurus coord lock [list|acquire <resource> --owner <owner> [--ttl seconds]|release <resource> --owner <owner> [--force]|reap]"
         }
     }
 }

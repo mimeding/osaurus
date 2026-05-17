@@ -56,7 +56,7 @@ public struct CoordinatorStatusService {
             ("worktrees", paths.worktreesDirectory),
             ("artifacts", paths.artifactsDirectory),
             ("evidence", paths.evidenceDirectory),
-            ("lanes", paths.lanesDirectory)
+            ("lanes", paths.lanesDirectory),
         ]
     }
 }

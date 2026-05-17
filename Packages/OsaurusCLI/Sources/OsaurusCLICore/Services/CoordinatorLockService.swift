@@ -44,7 +44,9 @@ public struct CoordinatorLockService {
         self.fileManager = fileManager
     }
 
-    public func acquire(resource: String, owner: String, ttl: TimeInterval? = nil, now: Date = Date()) throws -> CoordinatorLockAcquireResult {
+    public func acquire(resource: String, owner: String, ttl: TimeInterval? = nil, now: Date = Date()) throws
+        -> CoordinatorLockAcquireResult
+    {
         try fileManager.createDirectory(at: paths.locksDirectory, withIntermediateDirectories: true)
         let lock = CoordinatorLock(
             resource: resource,

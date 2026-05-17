@@ -24,15 +24,16 @@ public struct CoordinatorBootstrap {
         var createdDirectories: [String] = []
         var existingDirectories: [String] = []
 
-        let requiredDirectories = [
-            paths.root,
-            paths.stateDirectory,
-            paths.locksDirectory,
-            paths.worktreesDirectory,
-            paths.artifactsDirectory,
-            paths.evidenceDirectory,
-            paths.lanesDirectory
-        ] + lanes.map { paths.laneDirectory(named: $0) }
+        let requiredDirectories =
+            [
+                paths.root,
+                paths.stateDirectory,
+                paths.locksDirectory,
+                paths.worktreesDirectory,
+                paths.artifactsDirectory,
+                paths.evidenceDirectory,
+                paths.lanesDirectory,
+            ] + lanes.map { paths.laneDirectory(named: $0) }
 
         for directory in requiredDirectories {
             if fileManager.fileExists(atPath: directory.path) {

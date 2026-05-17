@@ -14,7 +14,7 @@ public struct CoordinatorFeatureFlags: Codable, Equatable, Sendable {
         "heartbeat": false,
         "nudge": false,
         "promote": false,
-        "reviewer-summary": false
+        "reviewer-summary": false,
     ])
 
     public subscript(name: String) -> Bool? {

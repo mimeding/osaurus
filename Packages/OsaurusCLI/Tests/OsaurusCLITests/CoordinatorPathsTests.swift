@@ -14,7 +14,10 @@ final class CoordinatorPathsTests: XCTestCase {
     }
 
     func testCliRootOverridesEnvironmentRoot() throws {
-        let paths = try CoordinatorPaths.resolve(cliRoot: "/tmp/cli-coord", environment: ["OSAURUS_COORD_ROOT": "/tmp/env-coord"])
+        let paths = try CoordinatorPaths.resolve(
+            cliRoot: "/tmp/cli-coord",
+            environment: ["OSAURUS_COORD_ROOT": "/tmp/env-coord"]
+        )
         XCTAssertEqual(paths.root.path, "/tmp/cli-coord")
     }
 

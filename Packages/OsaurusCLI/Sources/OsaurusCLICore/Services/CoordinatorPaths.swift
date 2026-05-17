@@ -27,7 +27,10 @@ public struct CoordinatorPaths: Equatable, Sendable {
         self.init(root: URL(fileURLWithPath: NSString(string: trimmed).expandingTildeInPath))
     }
 
-    public static func resolve(cliRoot: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment) throws -> CoordinatorPaths {
+    public static func resolve(
+        cliRoot: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> CoordinatorPaths {
         if let cliRoot {
             return try CoordinatorPaths(rootPath: cliRoot)
         }
