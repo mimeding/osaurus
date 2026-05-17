@@ -30,6 +30,7 @@ public enum DocumentAdaptersBootstrap {
         registry.register(adapter: PDFAdapter())
         registry.register(adapter: RichDocumentAdapter())
         registry.register(adapter: XLSXAdapter())
+        registry.register(emitter: XLSXEmitter())
         if registry === DocumentFormatRegistry.shared {
             didRegisterShared = true
         }
