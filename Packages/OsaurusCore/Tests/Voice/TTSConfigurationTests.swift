@@ -79,4 +79,17 @@ struct TTSConfigurationTests {
         #expect(languages.contains(.spanish24L))
         #expect(TTSLanguage.french24L.displayName == "French (24-layer)")
     }
+
+    @Test func pocketTTSCacheDirectoryMatchesFluidAudioLayout() {
+        let home = URL(fileURLWithPath: "/tmp/osaurus-home", isDirectory: true)
+        let directory = TTSService.pocketTtsModelCacheDirectory(
+            language: .french24L,
+            homeDirectory: home
+        )
+
+        #expect(
+            directory.path
+                == "/tmp/osaurus-home/.cache/fluidaudio/Models/pocket-tts/v2/french_24l"
+        )
+    }
 }
