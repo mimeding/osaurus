@@ -254,7 +254,6 @@ public struct SystemPromptComposer: Sendable {
             trace: trace
         )
         let rendered = comp.render()
-        let toolNames = toolset.tools.map { $0.function.name }
         trace?.set("systemPromptChars", rendered.count)
         trace?.set("toolCount", toolset.tools.count)
         trace?.set("preflightItems", toolset.preflight.items.count)
@@ -267,7 +266,7 @@ public struct SystemPromptComposer: Sendable {
             preflight: toolset.preflight,
             memorySection: memorySection,
             alwaysLoadedNames: toolset.alwaysLoadedNames,
-            cacheHint: manifest.staticPrefixHash(toolNames: toolNames),
+            cacheHint: manifest.staticPrefixHash(tools: toolset.tools),
             staticPrefix: manifest.staticPrefixContent,
             contextDisable: toolset.contextDisable
         )
@@ -1026,7 +1025,6 @@ public struct SystemPromptComposer: Sendable {
         )
 
         let manifest = composer.manifest()
-        let toolNames = toolset.tools.map { $0.function.name }
         let rendered = composer.render()
 
         return ComposedContext(
@@ -1038,7 +1036,7 @@ public struct SystemPromptComposer: Sendable {
             preflight: .empty,
             memorySection: nil,
             alwaysLoadedNames: toolset.alwaysLoadedNames,
-            cacheHint: manifest.staticPrefixHash(toolNames: toolNames),
+            cacheHint: manifest.staticPrefixHash(tools: toolset.tools),
             staticPrefix: manifest.staticPrefixContent,
             contextDisable: toolset.contextDisable
         )
