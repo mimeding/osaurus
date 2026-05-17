@@ -83,6 +83,8 @@ struct DocumentParserShimTests {
         DocumentAdaptersBootstrap.registerBuiltIns(registry: registry)
         let ids = registry.registeredFormatIds()
         #expect(ids.contains("plaintext"))
+        #expect(ids.contains("csv"))
+        #expect(ids.contains("tsv"))
         #expect(ids.contains("pdf"))
         #expect(ids.contains("richdoc"))
     }
