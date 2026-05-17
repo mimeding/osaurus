@@ -46,6 +46,9 @@ public struct CoordinatorPaths: Equatable, Sendable {
     public var artifactsDirectory: URL { root.appendingPathComponent("artifacts", isDirectory: true) }
     public var evidenceDirectory: URL { root.appendingPathComponent("evidence", isDirectory: true) }
     public var lanesDirectory: URL { root.appendingPathComponent("lanes", isDirectory: true) }
+    public var tickReportsDirectory: URL {
+        artifactsDirectory.appendingPathComponent("tick-reports", isDirectory: true)
+    }
 
     public var statusFile: URL { stateDirectory.appendingPathComponent("status.json") }
     public var featureFlagsFile: URL { stateDirectory.appendingPathComponent("feature-flags.json") }

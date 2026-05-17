@@ -30,9 +30,24 @@ public struct CoordCommand: Command {
             try runFeatureFlags(paths: parsed.paths, args: rest)
         case "lock":
             try runLock(paths: parsed.paths, args: rest)
-        case "preflight", "gate-main", "heartbeat", "lane", "nudge", "promote", "agent-abort", "conflict-proof",
-            "reviewer-summary", "tick-report", "pause", "resume", "stop", "clear-stop":
-            fputs("coord \(subcommand) is not available in the coordinator foundation slice.\n\n", stderr)
+        case "preflight":
+            try runPreflight(args: rest)
+        case "gate-main":
+            try runGateMain(paths: parsed.paths, args: rest)
+        case "heartbeat":
+            try runHeartbeat(paths: parsed.paths, args: rest)
+        case "tick-report":
+            try runTickReport(paths: parsed.paths, args: rest)
+        case "pause":
+            try runPause(paths: parsed.paths, args: rest)
+        case "resume":
+            try runResume(paths: parsed.paths)
+        case "stop":
+            try runStop(paths: parsed.paths, args: rest)
+        case "clear-stop":
+            try runClearStop(paths: parsed.paths)
+        case "lane", "nudge", "promote", "agent-abort", "conflict-proof", "reviewer-summary":
+            fputs("coord \(subcommand) is not available in this coordinator slice.\n\n", stderr)
             printUsage()
             exit(EXIT_FAILURE)
         default:
@@ -71,13 +86,73 @@ public struct CoordCommand: Command {
         }
     }
 
+    private static func runPreflight(args: [String]) throws {
+        let report = CoordinatorPreflightService().run()
+        if args.contains("--json") {
+            try printJSON(report)
+        } else {
+            printPreflight(report)
+        }
+        if !report.ok { exit(EXIT_FAILURE) }
+    }
+
+    private static func runGateMain(paths: CoordinatorPaths, args: [String]) throws {
+        let report = try CoordinatorMainGateService(paths: paths).run(forceRebuild: args.contains("--force"))
+        if args.contains("--json") {
+            try printJSON(report)
+        } else {
+            printMainGate(report)
+        }
+        if !report.ok { exit(EXIT_FAILURE) }
+    }
+
+    private static func runHeartbeat(paths: CoordinatorPaths, args: [String]) throws {
+        let report = try CoordinatorHeartbeatService(paths: paths).tick()
+        if args.contains("--json") {
+            try printJSON(report)
+        } else {
+            printHeartbeat(report)
+        }
+        if !report.ok { exit(EXIT_FAILURE) }
+    }
+
+    private static func runTickReport(paths: CoordinatorPaths, args: [String]) throws {
+        let output = try parseOutputURL(args)
+        let snapshot = try CoordinatorStatusService(paths: paths).snapshot()
+        let artifact = try CoordinatorTickReportService(paths: paths).writeStatusReport(snapshot, output: output)
+        if args.contains("--json") {
+            try printJSON(artifact)
+        } else {
+            print("Wrote coordinator tick report: \(artifact.path)")
+        }
+    }
+
+    private static func runPause(paths: CoordinatorPaths, args: [String]) throws {
+        let reason = parseReason(args, fallback: "manual pause")
+        let marker = try CoordinatorControlService(paths: paths).pause(reason: reason)
+        print("Paused coordinator: \(marker.reason)")
+    }
+
+    private static func runResume(paths: CoordinatorPaths) throws {
+        try CoordinatorControlService(paths: paths).resume()
+        print("Resumed coordinator")
+    }
+
+    private static func runStop(paths: CoordinatorPaths, args: [String]) throws {
+        let reason = parseReason(args, fallback: "manual stop")
+        let marker = try CoordinatorControlService(paths: paths).stop(reason: reason)
+        print("Stopped coordinator: \(marker.reason)")
+    }
+
+    private static func runClearStop(paths: CoordinatorPaths) throws {
+        try CoordinatorControlService(paths: paths).clearStop()
+        print("Cleared coordinator stop")
+    }
+
     private static func runStatus(paths: CoordinatorPaths, args: [String]) throws {
         let snapshot = try CoordinatorStatusService(paths: paths).snapshot()
         if args.contains("--json") {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            print(String(data: try encoder.encode(snapshot), encoding: .utf8) ?? "{}")
+            try printJSON(snapshot)
             return
         }
         print("Coordinator root: \(snapshot.root)")
@@ -185,6 +260,62 @@ public struct CoordCommand: Command {
         return (owner, ttl, force)
     }
 
+    private static func parseOutputURL(_ args: [String]) throws -> URL? {
+        var index = 0
+        while index < args.count {
+            if args[index] == "--output" {
+                guard index + 1 < args.count else { throw CoordCommandError.invalidTickReportUsage }
+                return URL(fileURLWithPath: args[index + 1])
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    private static func parseReason(_ args: [String], fallback: String) -> String {
+        guard !args.isEmpty else { return fallback }
+        if args.first == "--reason" {
+            let reason = args.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            return reason.isEmpty ? fallback : reason
+        }
+        let reason = args.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? fallback : reason
+    }
+
+    private static func printJSON<T: Encodable>(_ value: T) throws {
+        print(String(data: try CoordinatorJSON.encoder().encode(value), encoding: .utf8) ?? "{}")
+    }
+
+    private static func printPreflight(_ report: CoordinatorPreflightReport) {
+        print("preflight \(report.ok ? "ok" : "failed")")
+        for check in report.checks {
+            print("[\(check.status.rawValue)] \(check.name): \(check.message)")
+        }
+        if let originMainSHA = report.originMainSHA {
+            print("origin/main: \(originMainSHA)")
+        }
+        if let remaining = report.rateLimitRemaining, let limit = report.rateLimitLimit {
+            print("gh rate limit: \(remaining)/\(limit)")
+        }
+    }
+
+    private static func printMainGate(_ report: CoordinatorMainGateReport) {
+        print("gate-main \(report.ok ? "ok" : "failed")")
+        print("main: \(report.mainSHA)")
+        print("action: \(report.action.rawValue)")
+        print("evidence: \(report.evidenceDirectory)")
+        print(report.message)
+    }
+
+    private static func printHeartbeat(_ report: CoordinatorHeartbeatReport) {
+        print("heartbeat \(report.ok ? "ok" : "blocked")")
+        print("preflight: \(report.preflight.ok ? "pass" : "fail")")
+        print("plan drift: \(report.planDrift.status.rawValue)")
+        print("reaped locks: \(report.reapedLocks.count)")
+        print("gate-main: \(report.gate.action) \(report.gate.status)")
+        print("tick report: \(report.tickReportPath)")
+    }
+
     private static func printUsage() {
         let usage = """
             osaurus coord <subcommand> [--root PATH]
@@ -196,7 +327,14 @@ public struct CoordCommand: Command {
               lock list|acquire|release|reap
                                            Manage file-scoped coordinator locks
 
-            Later orchestration subcommands are registered but unsupported in this slice.
+            Gate subcommands:
+              preflight [--json]           Check gh auth, rate limit, origin/main, and SHA drift
+              gate-main [--json] [--force] Validate or run exact-main local release build
+              heartbeat [--json]           Run one idempotent coordinator orchestration tick
+              tick-report [--json]         Write a deterministic Markdown status artifact
+              pause|resume|stop|clear-stop Manage local heartbeat controls
+
+            Later PR hygiene subcommands are registered but unsupported in this slice.
 
             """
         print(usage)
@@ -207,6 +345,7 @@ enum CoordCommandError: LocalizedError, Equatable {
     case missingRootValue
     case invalidFeatureFlagsUsage
     case invalidLockUsage
+    case invalidTickReportUsage
 
     var errorDescription: String? {
         switch self {
@@ -217,6 +356,8 @@ enum CoordCommandError: LocalizedError, Equatable {
         case .invalidLockUsage:
             return
                 "Usage: osaurus coord lock [list|acquire <resource> --owner <owner> [--ttl seconds]|release <resource> --owner <owner> [--force]|reap]"
+        case .invalidTickReportUsage:
+            return "Usage: osaurus coord tick-report [--json] [--output path]"
         }
     }
 }
