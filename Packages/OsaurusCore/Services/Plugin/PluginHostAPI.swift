@@ -64,6 +64,7 @@ final class PluginHostContext: @unchecked Sendable {
 
     let pluginId: String
     let database: PluginDatabase
+    private let chatEngineFactory: @Sendable () -> any ChatEngineProtocol
 
     /// Heap-allocated host API struct whose pointer is handed to the plugin at
     /// init. Must outlive the plugin because it may store the pointer rather
@@ -193,8 +194,14 @@ final class PluginHostContext: @unchecked Sendable {
         Self.activeAgentId() ?? Agent.defaultId
     }
 
-    init(pluginId: String) throws {
+    init(
+        pluginId: String,
+        chatEngineFactory: @escaping @Sendable () -> any ChatEngineProtocol = {
+            ChatEngine(source: .plugin)
+        }
+    ) throws {
         self.pluginId = pluginId
+        self.chatEngineFactory = chatEngineFactory
         self.database = PluginDatabase(pluginId: pluginId)
         // NOTE: deliberately do NOT call `database.open()` here.
         // Most plugins never call `db.exec` / `db.query`, so eagerly
@@ -674,7 +681,7 @@ final class PluginHostContext: @unchecked Sendable {
     private struct PreparedInference {
         let enriched: EnrichedInference
         let options: InferenceOptions
-        let engine: ChatEngine
+        let engine: any ChatEngineProtocol
         let budgetManager: ContextBudgetManager?
         let agentId: UUID?
         let executionMode: ExecutionMode
@@ -715,7 +722,8 @@ final class PluginHostContext: @unchecked Sendable {
         request: ChatCompletionRequest,
         rawJSON: [String: Any],
         pluginId: String? = nil,
-        activeAgentId: UUID? = nil
+        activeAgentId: UUID? = nil,
+        chatEngineFactory: @Sendable () -> any ChatEngineProtocol
     ) async -> PreparedInference {
         let options = InferenceOptions(from: rawJSON)
         let agentCtx = await resolveAgentContext(agentId: activeAgentId)
@@ -748,7 +756,7 @@ final class PluginHostContext: @unchecked Sendable {
             SystemPromptComposer.appendSystemContent(section, into: &enriched.request.messages)
         }
 
-        let engine = ChatEngine(source: .plugin)
+        let engine = chatEngineFactory()
         let budgetMgr = await createBudgetManager(for: enriched, maxIterations: options.maxIterations)
         return PreparedInference(
             enriched: enriched,
@@ -1238,6 +1246,7 @@ final class PluginHostContext: @unchecked Sendable {
         let releaseSlot: @Sendable () -> Void = { [weak self] in
             self?.exitInflightInference()
         }
+        let chatEngineFactory = self.chatEngineFactory
         let activityId = Self.beginPluginActivity(pluginId: pid, kind: .complete)
         return Self.blockingAsync {
             defer {
@@ -1259,7 +1268,8 @@ final class PluginHostContext: @unchecked Sendable {
                 request: request,
                 rawJSON: rawJSON,
                 pluginId: pid,
-                activeAgentId: activeAgent
+                activeAgentId: activeAgent,
+                chatEngineFactory: chatEngineFactory
             )
             var messages = prep.enriched.request.messages
             var toolCallsExecuted: [[String: String]] = []
@@ -1331,7 +1341,10 @@ final class PluginHostContext: @unchecked Sendable {
                     return Self.jsonString(json)
 
                 } catch {
-                    return Self.jsonString(["error": "inference_error", "message": error.localizedDescription])
+                    return Self.jsonString([
+                        "error": "inference_error",
+                        "message": Self.redactedErrorMessage(error.localizedDescription),
+                    ])
                 }
             }
 
@@ -1383,6 +1396,7 @@ final class PluginHostContext: @unchecked Sendable {
             guard let id = streamId, let ctx = ctxRef else { return false }
             return ctx.isStreamCancelled(id)
         }
+        let chatEngineFactory = self.chatEngineFactory
         let activityId = Self.beginPluginActivity(pluginId: pid, kind: .completeStream)
         return Self.blockingAsync {
             // Stream id is per-call: if the plugin supplied one in the
@@ -1423,7 +1437,8 @@ final class PluginHostContext: @unchecked Sendable {
                 request: request,
                 rawJSON: rawJSON,
                 pluginId: pid,
-                activeAgentId: activeAgent
+                activeAgentId: activeAgent,
+                chatEngineFactory: chatEngineFactory
             )
             let cid = "cmpl-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
             var messages = prep.enriched.request.messages
@@ -1575,7 +1590,10 @@ final class PluginHostContext: @unchecked Sendable {
                     continue
 
                 } catch {
-                    return Self.jsonString(["error": "inference_error", "message": error.localizedDescription])
+                    return Self.jsonString([
+                        "error": "inference_error",
+                        "message": Self.redactedErrorMessage(error.localizedDescription),
+                    ])
                 }
             }
 
@@ -2898,6 +2916,135 @@ extension PluginHostContext {
 
     // MARK: - Insights Logging Helpers
 
+    private static let sensitivePluginLogKeys: Set<String> = [
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "bot_token",
+        "bearer_token",
+        "client_secret",
+        "secret",
+        "password",
+    ]
+
+    private static let sensitivePluginURLQueryKeys: Set<String> = [
+        "access_token",
+        "api_key",
+        "apikey",
+        "key",
+        "sig",
+        "signature",
+        "token",
+        "x-amz-credential",
+        "x-amz-security-token",
+        "x-amz-signature",
+    ]
+
+    /// Sanitize plugin-controlled bodies before they enter Insights or error
+    /// envelopes. The host API accepts OpenAI-compatible media payloads and
+    /// plugin HTTP headers; those values are useful to the model but too
+    /// sensitive and too large for logs.
+    static func redactPluginLogBody(_ body: String?) -> String? {
+        guard let body else { return nil }
+        if let data = body.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data)
+        {
+            let redacted = redactPluginLogJSONObject(object, parentKey: nil)
+            if JSONSerialization.isValidJSONObject(redacted),
+                let encoded = try? JSONSerialization.data(withJSONObject: redacted, options: [.sortedKeys])
+            {
+                return String(decoding: encoded, as: UTF8.self)
+            }
+        }
+        return redactSensitivePluginString(body)
+    }
+
+    static func redactedErrorMessage(_ message: String) -> String {
+        redactPluginLogBody(message) ?? "[redacted]"
+    }
+
+    private static func redactPluginLogJSONObject(_ value: Any, parentKey: String?) -> Any {
+        if let dict = value as? [String: Any] {
+            let parent = parentKey?.lowercased()
+            let bodyIsBase64 = (dict["body_encoding"] as? String)?.caseInsensitiveCompare("base64") == .orderedSame
+            var redacted: [String: Any] = [:]
+            for (key, child) in dict {
+                let lower = key.lowercased()
+                if isSensitivePluginLogKey(lower) {
+                    redacted[key] = "[redacted]"
+                } else if lower == "body", bodyIsBase64, child is String {
+                    redacted[key] = "[redacted-base64]"
+                } else if lower == "data", parent == "input_audio" || parent == "inline_data" {
+                    redacted[key] = "[redacted-media]"
+                } else {
+                    redacted[key] = redactPluginLogJSONObject(child, parentKey: key)
+                }
+            }
+            return redacted
+        }
+        if let array = value as? [Any] {
+            return array.map { redactPluginLogJSONObject($0, parentKey: parentKey) }
+        }
+        if let string = value as? String {
+            return redactSensitivePluginString(string)
+        }
+        return value
+    }
+
+    private static func isSensitivePluginLogKey(_ key: String) -> Bool {
+        sensitivePluginLogKeys.contains(key)
+            || key.hasSuffix("_token")
+            || key.hasSuffix("_secret")
+            || key.contains("api-key")
+    }
+
+    private static func redactSensitivePluginString(_ string: String) -> String {
+        var redacted = string
+        redacted = replaceRegex(
+            #"(?i)data:([^;,\s]+);base64,[A-Za-z0-9+/_=\-]+"#,
+            in: redacted,
+            with: "data:$1;base64,[redacted-media]"
+        )
+        redacted = replaceRegex(
+            #"(?i)(bearer\s+)[A-Za-z0-9._~+/=\-]+"#,
+            in: redacted,
+            with: "$1[redacted]"
+        )
+        redacted = replaceRegex(
+            #"(?i)(api[_-]?key["']?\s*[:=]\s*["']?)[^"',\s}]+"#,
+            in: redacted,
+            with: "$1[redacted]"
+        )
+        return redactSensitiveURLQuery(in: redacted)
+    }
+
+    private static func replaceRegex(_ pattern: String, in string: String, with template: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return string }
+        let range = NSRange(string.startIndex ..< string.endIndex, in: string)
+        return regex.stringByReplacingMatches(in: string, options: [], range: range, withTemplate: template)
+    }
+
+    private static func redactSensitiveURLQuery(in string: String) -> String {
+        guard var components = URLComponents(string: string),
+            let items = components.queryItems
+        else { return string }
+        var changed = false
+        components.queryItems = items.map { item in
+            let lower = item.name.lowercased()
+            guard sensitivePluginURLQueryKeys.contains(lower) else { return item }
+            changed = true
+            return URLQueryItem(name: item.name, value: "[redacted]")
+        }
+        return changed ? components.string ?? string : string
+    }
+
     private static func logPluginCall(
         pluginId: String,
         method: String,
@@ -2916,8 +3063,8 @@ extension PluginHostContext {
             path: path,
             statusCode: statusCode,
             durationMs: durationMs,
-            requestBody: requestBody,
-            responseBody: responseBody,
+            requestBody: redactPluginLogBody(requestBody),
+            responseBody: redactPluginLogBody(responseBody),
             pluginId: pluginId,
             model: model,
             inputTokens: inputTokens,
