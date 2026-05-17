@@ -21,6 +21,10 @@ struct ThemeEditorView: View {
     @State private var collapsedSections: Set<String> = ["Advanced Colors", "Advanced"]
     @State private var animationPreviewTrigger = false
     @State private var showGlassPerformanceWarning = false
+    /// Reverts the glass toggle the user just turned on if they cancel the
+    /// performance-warning alert. Captured as a closure so the same alert
+    /// can serve any of the three independent glass toggles.
+    @State private var pendingGlassRevert: (() -> Void)?
 
     let onDismiss: () -> Void
 
@@ -55,9 +59,12 @@ struct ThemeEditorView: View {
                     "Glass effects use behind-window blur and additional compositing layers. This may impact performance, especially on older Macs or under heavy load.",
                 bundle: .module
             ),
-            primaryButton: .primary(String(localized: "Enable", bundle: .module)) {},
+            primaryButton: .primary(String(localized: "Enable", bundle: .module)) {
+                pendingGlassRevert = nil
+            },
             secondaryButton: .cancel(String(localized: "Cancel", bundle: .module)) {
-                editingTheme.glass.enabled = false
+                pendingGlassRevert?()
+                pendingGlassRevert = nil
             }
         )
         .themedAlertScope(.content)
@@ -73,6 +80,7 @@ struct ThemeEditorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     appearanceSection
+                    glassSection
                     codeSection
                     colorsSection
                     messagesSection
@@ -179,8 +187,93 @@ struct ThemeEditorView: View {
                 }
                 .pickerStyle(.segmented)
 
-                glassBackgroundToggle
+                if editingTheme.background.type == .image {
+                    imageBackgroundControls
+                }
             }
+        }
+    }
+
+    // MARK: - Section: Glass
+
+    private var glassSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            editorSection("Glass") {
+                glassToggleRow(
+                    label: "Chat Area",
+                    isOn: Binding(
+                        get: { editingTheme.glass.enabled },
+                        set: { editingTheme.glass.enabled = $0 }
+                    ),
+                    revert: { editingTheme.glass.enabled = false }
+                )
+                glassToggleRow(
+                    label: "Sidebar",
+                    isOn: Binding(
+                        get: { editingTheme.glass.sidebarEnabled },
+                        set: { editingTheme.glass.sidebarEnabled = $0 }
+                    ),
+                    revert: { editingTheme.glass.sidebarEnabled = false }
+                )
+                glassToggleRow(
+                    label: "Prompt Box",
+                    isOn: Binding(
+                        get: { editingTheme.glass.inputEnabled },
+                        set: { editingTheme.glass.inputEnabled = $0 }
+                    ),
+                    revert: { editingTheme.glass.inputEnabled = false }
+                )
+
+                if editingTheme.background.type == .image {
+                    Text("Disabled while using an image background.", bundle: .module)
+                        .font(.system(size: 11))
+                        .foregroundColor(currentTheme.tertiaryText)
+                }
+            }
+        }
+        .onChange(of: editingTheme.background.type) { _, newType in
+            // Image backgrounds composite poorly with behind-window blur;
+            // force all three glass toggles off when the user switches to
+            // an image background.
+            if newType == .image {
+                editingTheme.glass.enabled = false
+                editingTheme.glass.sidebarEnabled = false
+                editingTheme.glass.inputEnabled = false
+            }
+        }
+    }
+
+    /// One row of the Glass section. Disabled when the theme uses an image
+    /// background. Turning a toggle ON triggers the performance-warning
+    /// alert; cancelling the alert calls `revert` to undo the change.
+    private func glassToggleRow(
+        label: LocalizedStringKey,
+        isOn: Binding<Bool>,
+        revert: @escaping () -> Void
+    ) -> some View {
+        let isImageBackground = editingTheme.background.type == .image
+        return HStack {
+            Text(label, bundle: .module)
+                .font(.system(size: 13))
+                .foregroundColor(isImageBackground ? currentTheme.tertiaryText : currentTheme.primaryText)
+            Spacer()
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { isOn.wrappedValue && !isImageBackground },
+                    set: { newValue in
+                        isOn.wrappedValue = newValue
+                        if newValue {
+                            pendingGlassRevert = revert
+                            showGlassPerformanceWarning = true
+                        }
+                    }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .tint(currentTheme.accentColor)
+            .disabled(isImageBackground)
         }
     }
 
@@ -258,24 +351,31 @@ struct ThemeEditorView: View {
 
                 Divider().opacity(0.3)
 
-                Text("Inline Avatar", bundle: .module).font(.system(size: 11, weight: .semibold)).foregroundColor(
+                Text("Agent Avatar", bundle: .module).font(.system(size: 11, weight: .semibold)).foregroundColor(
                     currentTheme.tertiaryText
                 ).textCase(.uppercase)
-                inlineAvatarToggleRow
-                sliderRow("Size", value: $editingTheme.messages.inlineAvatarSize, range: 16 ... 36)
-                    .disabled(!editingTheme.messages.showInlineAvatar)
-                    .opacity(editingTheme.messages.showInlineAvatar ? 1 : 0.5)
+                sliderRow("Size", value: $editingTheme.messages.inlineAvatarSize, range: 16 ... 108)
+
+                Divider().opacity(0.3)
+
+                Text("Agent Name", bundle: .module).font(.system(size: 11, weight: .semibold)).foregroundColor(
+                    currentTheme.tertiaryText
+                ).textCase(.uppercase)
+                showAgentNameToggleRow
+                sliderRow("Name Size", value: $editingTheme.messages.agentNameSize, range: 12.5 ... 18)
+                    .disabled(!editingTheme.messages.showAgentName)
+                    .opacity(editingTheme.messages.showAgentName ? 1 : 0.5)
             }
         }
     }
 
-    private var inlineAvatarToggleRow: some View {
+    private var showAgentNameToggleRow: some View {
         HStack {
             Text("Show in chat", bundle: .module)
                 .font(.system(size: 13))
                 .foregroundColor(currentTheme.primaryText)
             Spacer()
-            Toggle("", isOn: $editingTheme.messages.showInlineAvatar)
+            Toggle("", isOn: $editingTheme.messages.showAgentName)
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .tint(currentTheme.accentColor)
@@ -324,42 +424,73 @@ struct ThemeEditorView: View {
         }
     }
 
-    private var glassBackgroundToggle: some View {
-        let isImageBackground = editingTheme.background.type == .image
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Glass Background", bundle: .module)
-                    .font(.system(size: 13))
-                    .foregroundColor(isImageBackground ? currentTheme.tertiaryText : currentTheme.primaryText)
-                Spacer()
-                Toggle(
-                    "",
-                    isOn: Binding(
-                        get: { editingTheme.glass.enabled && !isImageBackground },
-                        set: { newValue in
-                            editingTheme.glass.enabled = newValue
-                            if newValue {
-                                showGlassPerformanceWarning = true
-                            }
-                        }
+    private var imageBackgroundControls: some View {
+        VStack(spacing: 12) {
+            Text("Background Image", bundle: .module).font(.system(size: 11, weight: .semibold))
+                .foregroundColor(
+                    currentTheme.tertiaryText
+                ).textCase(.uppercase)
+
+            if let imageData = editingTheme.background.imageData,
+                let data = Data(base64Encoded: imageData),
+                let nsImage = NSImage(data: data)
+            {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 100)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(currentTheme.primaryBorder, lineWidth: 1)
                     )
-                )
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .tint(currentTheme.accentColor)
-                .disabled(isImageBackground)
+
+                Button {
+                    editingTheme.background.imageData = nil
+                } label: {
+                    Text("Remove Image", bundle: .module)
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Button(action: { showImagePicker = true }) {
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo.badge.plus").font(.system(size: 24))
+                        Text("Choose Image", bundle: .module).font(.system(size: 13, weight: .medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 80)
+                    .foregroundColor(currentTheme.secondaryText)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(currentTheme.primaryBorder, style: StrokeStyle(lineWidth: 1, dash: [5]))
+                    )
+                }
+                .buttonStyle(PlainButtonStyle())
             }
 
-            if isImageBackground {
-                Text("Disabled while using an image background.", bundle: .module)
-                    .font(.system(size: 11))
-                    .foregroundColor(currentTheme.tertiaryText)
+            sliderRow(
+                "Image Opacity",
+                value: Binding(
+                    get: { editingTheme.background.imageOpacity ?? 1.0 },
+                    set: { editingTheme.background.imageOpacity = $0 }
+                ),
+                range: 0 ... 1
+            )
+
+            Picker(
+                selection: Binding(
+                    get: { editingTheme.background.imageFit ?? .fill },
+                    set: { editingTheme.background.imageFit = $0 }
+                )
+            ) {
+                Text("Fill", bundle: .module).tag(ThemeBackground.ImageFit.fill)
+                Text("Fit", bundle: .module).tag(ThemeBackground.ImageFit.fit)
+                Text("Stretch", bundle: .module).tag(ThemeBackground.ImageFit.stretch)
+                Text("Tile", bundle: .module).tag(ThemeBackground.ImageFit.tile)
+            } label: {
+                Text("Fit", bundle: .module)
             }
-        }
-        .onChange(of: editingTheme.background.type) { _, newType in
-            if newType == .image && editingTheme.glass.enabled {
-                editingTheme.glass.enabled = false
-            }
+            .pickerStyle(.segmented)
         }
     }
 
@@ -487,77 +618,6 @@ struct ThemeEditorView: View {
                     }
                 }
 
-                if editingTheme.background.type == .image {
-                    Divider().opacity(0.3)
-
-                    Text("Background Image", bundle: .module).font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(
-                            currentTheme.tertiaryText
-                        ).textCase(.uppercase)
-                    VStack(spacing: 12) {
-                        if let imageData = editingTheme.background.imageData,
-                            let data = Data(base64Encoded: imageData),
-                            let nsImage = NSImage(data: data)
-                        {
-                            Image(nsImage: nsImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(height: 100)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(currentTheme.primaryBorder, lineWidth: 1)
-                                )
-
-                            Button {
-                                editingTheme.background.imageData = nil
-                            } label: {
-                                Text("Remove Image", bundle: .module)
-                            }
-                            .buttonStyle(.bordered)
-                        } else {
-                            Button(action: { showImagePicker = true }) {
-                                VStack(spacing: 8) {
-                                    Image(systemName: "photo.badge.plus").font(.system(size: 24))
-                                    Text("Choose Image", bundle: .module).font(.system(size: 13, weight: .medium))
-                                }
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 80)
-                                .foregroundColor(currentTheme.secondaryText)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(currentTheme.primaryBorder, style: StrokeStyle(lineWidth: 1, dash: [5]))
-                                )
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-
-                        sliderRow(
-                            "Image Opacity",
-                            value: Binding(
-                                get: { editingTheme.background.imageOpacity ?? 1.0 },
-                                set: { editingTheme.background.imageOpacity = $0 }
-                            ),
-                            range: 0 ... 1
-                        )
-
-                        Picker(
-                            selection: Binding(
-                                get: { editingTheme.background.imageFit ?? .fill },
-                                set: { editingTheme.background.imageFit = $0 }
-                            )
-                        ) {
-                            Text("Fill", bundle: .module).tag(ThemeBackground.ImageFit.fill)
-                            Text("Fit", bundle: .module).tag(ThemeBackground.ImageFit.fit)
-                            Text("Stretch", bundle: .module).tag(ThemeBackground.ImageFit.stretch)
-                            Text("Tile", bundle: .module).tag(ThemeBackground.ImageFit.tile)
-                        } label: {
-                            Text("Fit", bundle: .module)
-                        }
-                        .pickerStyle(.segmented)
-                    }
-                }
-
             }
         }
     }
@@ -583,7 +643,7 @@ struct ThemeEditorView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
                 ThemeChatPreview(theme: editingTheme)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .padding(6)
             }
             .padding(20)
@@ -874,9 +934,7 @@ struct ThemeEditorView: View {
 
         print("[Osaurus] ThemeEditor: Saving theme '\(themeToSave.metadata.name)' (id: \(themeToSave.metadata.id))")
         themeManager.saveTheme(themeToSave)
-        themeManager.applyCustomTheme(themeToSave)
-        themeManager.refreshInstalledThemes()
-        print("[Osaurus] ThemeEditor: Theme saved and applied successfully")
+        print("[Osaurus] ThemeEditor: Theme saved successfully")
 
         withAnimation { showSaveConfirmation = true }
 
@@ -987,9 +1045,9 @@ struct ThemeChatPreview: View {
             }
         }
         .background(c(theme.colors.primaryBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(c(theme.colors.primaryBorder).opacity(0.5), lineWidth: 0.5)
         )
     }
@@ -1007,13 +1065,48 @@ struct ThemeChatPreview: View {
     }
 
     private func messageHeader(_ name: String, color: Color) -> some View {
-        Text(name)
-            .font(primaryFont(size: captionSize + 1, weight: .semibold))
-            .foregroundColor(color)
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 2)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        let showAvatar = theme.messages.showInlineAvatar
+        let showName = theme.messages.showAgentName
+        let avatarSize = CGFloat(max(16, min(108, theme.messages.inlineAvatarSize)))
+        let nameSize = CGFloat(max(12.5, min(18, theme.messages.agentNameSize)))
+
+        return HStack(spacing: 8) {
+            if showAvatar {
+                previewAvatar(size: avatarSize, name: name, tint: color)
+            }
+            if showName {
+                Text(name)
+                    .font(primaryFont(size: nameSize, weight: .semibold))
+                    .foregroundColor(color)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func previewAvatar(size: CGFloat, name: String, tint: Color) -> some View {
+        if let mascot = Bundle.module.image(forResource: "osaurus-avatar-green") {
+            Image(nsImage: mascot)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(c(theme.colors.secondaryText).opacity(0.35), lineWidth: 1))
+        } else {
+            let initial = String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
+            ZStack {
+                Circle().fill(tint.opacity(0.18))
+                Text(initial.isEmpty ? "A" : initial)
+                    .font(primaryFont(size: size * 0.45, weight: .semibold))
+                    .foregroundColor(tint)
+            }
+            .frame(width: size, height: size)
+            .overlay(Circle().stroke(c(theme.colors.secondaryText).opacity(0.35), lineWidth: 1))
+        }
     }
 
     private func previewUserMessage(_ content: String) -> some View {

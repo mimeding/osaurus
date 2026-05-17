@@ -43,7 +43,17 @@ public enum AgentStore {
                 if a.id == Agent.defaultId { return true }
                 if b.id == Agent.defaultId { return false }
             }
-            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            // Ordered agents first; unordered fall through to alphabetical.
+            switch (a.order, b.order) {
+            case let (lhs?, rhs?) where lhs != rhs:
+                return lhs < rhs
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
         }
     }
 
@@ -100,6 +110,18 @@ public enum AgentStore {
         if let agent = load(id: id), let url = agent.customAvatarURL {
             try? FileManager.default.removeItem(at: url)
         }
+
+        // Agent DB feature: drop scheduler rows + the per-agent DB
+        // directory. Each cleanup is best-effort so a missing
+        // scheduler.sqlite (feature not yet initialised) doesn't
+        // block agent deletion.
+        try? SchedulerDatabase.shared.deleteAllForAgent(id)
+        try? AgentDatabaseStore.shared.deleteOnDisk(for: id)
+        // The serial queue + open DB handle inside LocalAgentBridge
+        // outlives `deleteOnDisk` (those live in a separate registry
+        // keyed by agentId). Drop them here so a later create-with-
+        // the-same-id can't re-attach to a stale handle.
+        LocalAgentBridge.shared.forget(agentId: id)
 
         do {
             try FileManager.default.removeItem(at: agentFileURL(for: id))

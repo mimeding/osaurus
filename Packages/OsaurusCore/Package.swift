@@ -9,7 +9,10 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.88.0"),
-        .package(url: "https://github.com/apple/containerization.git", from: "0.26.0"),
+        // Keep package-local SwiftPM builds aligned with the workspace
+        // lockfiles. Containerization 0.32.x changed Process.kill's signal
+        // parameter type while the app CI graph is still pinned to 0.31.x.
+        .package(url: "https://github.com/apple/containerization.git", .upToNextMinor(from: "0.31.0")),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0"),
         .package(url: "https://github.com/orlandos-nl/IkigaJSON", from: "2.3.2"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.7.0"),
@@ -128,10 +131,20 @@ let package = Package(
         // use the native Poolside fallback template, and model-factory
         // fallback logs are quiet unless `VMLINUX_MODEL_FACTORY_TRACE=1`.
         //
-        // 2026-05-07 bump (`4a832400` → `b9da180`) lands the ZAYA1 port,
-        // two Ling/Bailing multi-turn fixes, AND a host-integration
-        // hardening checkpoint that addresses three concerns flagged in
-        // PR #1037 review:
+        // 2026-05-07 bump (`4a832400` → `b9da180`) landed the ZAYA1 port,
+        // two Ling/Bailing multi-turn fixes, and a host-integration
+        // hardening checkpoint.
+        //
+        // 2026-05-10 bump (`b9da180` → `a5a0e37`) adds the Osaurus runtime
+        // readiness wave: ZAYA parser/cache contracts, native ZAYA1-VL
+        // image/text generation with disk-backed CCA cache restore, Hy3
+        // native text runtime plus `reasoning_effort`/Hunyuan parser wiring,
+        // reasoning/media cache-scope salt propagation, generation_config
+        // defaults, VLM extent guards, JANGTQ top-k override plumbing, and
+        // the B>1 admission coalescing fix that lets concurrent requests
+        // actually overlap before decode starts.
+        //
+        // The 2026-05-07 concerns addressed for PR #1037 were:
         //
         //   - a138f47 fix(runtime): derive prompt tail for token iterator
         //     generation. Reconstructs the decoded prompt tail from
@@ -182,18 +195,15 @@ let package = Package(
         // for batched decode, `TQDiskSerializer` `.zayaCCA` LayerKind for
         // disk round-trip, and `BatchEngine` admission auto-flips
         // `setHybrid` + `setPagedIncompatible` whenever a slot's per-layer
-        // cache list contains `ZayaCCACache`. `LLMUserInputProcessor.
-        // defaultContext` clamps `enable_thinking=false` for `model_type=
-        // zaya`/`zyphra` until live thinking-on parity is proven (per
-        // 2026-05-06 ZAYA Production Notes in OSAURUS-RUNTIME-HANDOFF).
-        // Tool calls route through `ToolCallFormat.zayaXml` (`<zyphra_tool_call>`
-        // wrapper). Osaurus-side wiring in this PR mirrors the Ling
-        // pattern: `ModelFamilyNames.isZayaFamily` helper + `ZayaRuntimeProfile`
-        // (reserves ZAYA ahead of `AutoThinkingProfile` so the chat UI
-        // doesn't expose a misleading Thinking toggle) + `MLXBatchAdapter.
-        // additionalContext` short-circuit (forces `enable_thinking=false`)
-        // + `ModelRuntime.isKnownHybridModel` ZAYA family addition for
-        // eager `setHybrid(true)` parity with the BatchEngine auto-flip.
+        // cache list contains `ZayaCCACache`. ZAYA is reasoning-capable:
+        // osaurus must trust bundle stamps (`supports_thinking=true`,
+        // `think_in_template=false`) and pass structured `enable_thinking`
+        // context through Swift Jinja instead of forcing family-name
+        // defaults. Tool calls route through `ToolCallFormat.zayaXml`
+        // (`<zyphra_tool_call>` wrapper). Osaurus-side wiring keeps only
+        // topology policy here: `ModelRuntime.isKnownHybridModel` includes
+        // ZAYA family names for eager `setHybrid(true)` parity with the
+        // BatchEngine auto-flip.
         //
         // Adjacent runtime hardening also included: `LMInput.hasMediaContent`
         // (image/video/audio) replaces ad-hoc image/video checks in
@@ -205,9 +215,79 @@ let package = Package(
         // prefix reuse routes through the v2 disk serializer instead of
         // the paged tier; DSV4 chat-template context strips
         // `reasoning_effort` when `enable_thinking=false`.
+        //
+        // 2026-05-10 follow-up (`a5a0e37` → `ac60b5d`) restores MiniMax M2.7
+        // JANGTQ single-slot decode speed on the Osaurus path. It adds a
+        // cache-safe B=1 `BatchEngine.generate` fast path, restores the
+        // JANGTQ Hadamard `newv[8]` + cached-meta kernel optimization, and fixes
+        // TokenIterator max-token stop accounting. It also keeps text-only ZAYA
+        // out of the VLM registry so `model_type=zaya` routes through MLXLLM.
+        // The latest pin also closes the solo lifecycle stream-completion race,
+        // indexes pre-stacked JANGTQ streaming experts, and advances Qwen3.5-VL
+        // gated-delta Mamba cache offsets. It routes MiniMax tool-call wrappers
+        // through the tool parser even while inside `<think>` reasoning, preserves
+        // visible text around tagged calls, and keeps the fallback MiniMax Jinja
+        // template aligned with tool schemas, assistant tool calls, and tool
+        // result turns. It also synthesizes terminal `.info` if the lower token
+        // stream closes early, so reasoning-only completions still surface
+        // `unclosedReasoning` and final stats to the UI/API layers. Commit
+        // `fee2583` reverts the later MiniMax blank-content watchdog so the
+        // pin keeps the real stream-info/tool-routing fixes without a
+        // heuristic generation cutoff. `bf4087f` then makes the MiniMax
+        // tool-call parser lossless: invalid `<minimax:tool_call>` prose in
+        // reasoning is released immediately on the reasoning rail instead of
+        // being buffered until a closing wrapper that may never arrive.
+        // `ac60b5d` widens defensive EOS tokens for Laguna / wide-pipe
+        // DeepSeek-style bundles across BatchEngine and synchronous generate.
+        // `7223ebb` adds ZAYA's exact LanguageModel array-forward overload
+        // so BatchEngine doesn't fall through to the protocol fatalError.
+        // `21adfc8` keeps Hy3 off the unsafe compiled batch decode path.
+        // `174847b` compiles Laguna's router and wires runtime MoE top-k
+        // override into Laguna config. `c980034` adds direct Laguna
+        // reasoning/tool capability stamps so future bundles that stamp
+        // `laguna` do not bypass the correct parsers. `495ac32` restores
+        // disk L2 longest-prefix hits for growing chat prompts after unload.
+        // `c0d5c99` pins the swift-transformers added-token regex fix that
+        // removes ZAYA text's 30s Osaurus-sized prompt encode path. `d8c2bb2`
+        // materializes TokenIterator disk restores before B=1 prefill, keeping
+        // Osaurus's single-slot path aligned with BatchEngine's cache safety.
+        // `78cf6ac` adds Gemma4 PLE-off config tolerance, serializes
+        // safetensors disk-cache IO across resident models, keeps MiniMax off
+        // the unsafe compiled decode path while removing automatic forced
+        // close-token injection, trims B=1 full-cache hits before seed prefill,
+        // preserves assistant `reasoning_content`, adds ZAYA reasoning stamps,
+        // and skips per-expert source tensors when a JangPress prestacked
+        // overlay is present. `b350af6` preserves DSV4 JANGTQ-K routed
+        // expert layer bit plans, keeps routed bit-plan metadata out of
+        // generic affine quantization overrides, and wires DSV4 routed MoE
+        // top-k into the existing lower-only override path. `6de602c`
+        // makes the DSV4 tokenizer fallback match the canonical multi-turn
+        // chat encoder so generated cache boundaries can be reused. `ad1d231`
+        // synchronizes before and after safetensors disk writes so
+        // post-answer cache storage cannot crash after generation. `c0f8b3b`
+        // adds Nemotron Omni live-voice handoff support, including
+        // pre-encoded Parakeet/audio embeddings and updated Osaurus hookup
+        // docs for media-aware cache verification. `e497f61` adds the
+        // reusable thread-safe live PCM buffer and recorder streaming cursor
+        // needed by real VAD/call-mode polling while preserving the full
+        // retained waveform for the final Omni request. `638024b` adds the
+        // tracked OmniAudioLatencyBench executable and local call-mode
+        // latency evidence for raw PCM vs pre-encoded Parakeet embeddings.
+        // `fb8fb39` makes Omni media cache restore token-aware and records
+        // prompt/media topology in the latency bench output. `b57fe98`
+        // refreshes the live Parakeet/RADIO integration docs consumed by the
+        // Osaurus voice path. `81c8ef7` adds the OmniAudioChunkStabilityBench
+        // proof that current Parakeet embeddings are not chunk-concat safe.
+        // `4365651` decodes nested ZAYA/JANGTQ-K routed-expert mxtq bit
+        // metadata, including separate fused gate/up and down-projection
+        // widths, without falling back to config parse failure.
+        // `f728718` fixes DSV4 Flash HSA selection for long prompts by masking
+        // future compressed pool chunks before indexer top-k. `6561a72`
+        // preserves ratio-4 overlap-compressor state across decode calls so
+        // long-tail DSV4 generation keeps the previous complete pool window.
         .package(
             url: "https://github.com/osaurus-ai/vmlx-swift-lm",
-            revision: "b9da180158365c20a0fab130217e4fa50b8ec674"
+            revision: "e1280c3978d68e9204006923e922e62cb2ea5628"
         ),
         // Osaurus-owned transformers/Jinja chain. `swift-transformers`
         // depends on `osaurus-ai/Jinja`, but its semver range can fresh-
@@ -220,7 +300,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/osaurus-ai/swift-transformers",
-            revision: "b4a094b34b997167549c7f45bde16c80f18ed5a8"
+            revision: "087a66b17e482220b94909c5cf98688383ae481a"
         ),
         // FluidAudio 0.14.3 added a breaking `language:` parameter to TTS
         // calls that osaurus's `TTSService` doesn't pass. Pinning to the

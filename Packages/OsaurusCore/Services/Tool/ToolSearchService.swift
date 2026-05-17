@@ -75,22 +75,33 @@ public struct ToolSearchHybridDiagnostic: Sendable {
     /// source. Sorted by `fusedScore` descending.
     public let allHits: [Hit]
     /// `allHits` filtered to `fusedScore >= minFusedScore`, capped at
-    /// `topK`. Mirror of what `searchHybrid` returns.
+    /// `topK`. `minFusedScore` is the effective cutoff after any
+    /// single-source fallback; `requestedMinFusedScore` preserves the
+    /// caller's configured cutoff for diagnostics.
     public let acceptedHits: [Hit]
+    public let requestedMinFusedScore: Float
     public let minFusedScore: Float
+    /// Names that passed score/enabled checks but were suppressed by
+    /// the active agent's enabled-tool allowlist. This separates "not
+    /// indexed" from "not granted" during #823/#789-style triage.
+    public let filteredByAllowlist: [String]
 
     public init(
         indexedToolCount: Int,
         bm25Available: Bool,
         allHits: [Hit],
         acceptedHits: [Hit],
-        minFusedScore: Float
+        minFusedScore: Float,
+        requestedMinFusedScore: Float? = nil,
+        filteredByAllowlist: [String] = []
     ) {
         self.indexedToolCount = indexedToolCount
         self.bm25Available = bm25Available
         self.allHits = allHits
         self.acceptedHits = acceptedHits
+        self.requestedMinFusedScore = requestedMinFusedScore ?? minFusedScore
         self.minFusedScore = minFusedScore
+        self.filteredByAllowlist = filteredByAllowlist
     }
 }
 
@@ -325,12 +336,14 @@ public actor ToolSearchService {
     public func searchHybrid(
         query: String,
         topK: Int = 10,
-        minFusedScore: Float = 0.01
+        minFusedScore: Float = 0.01,
+        allowedNames: Set<String>? = nil
     ) async -> [ToolSearchResult] {
         let (results, _) = await searchHybridWithDiagnostic(
             query: query,
             topK: topK,
-            minFusedScore: minFusedScore
+            minFusedScore: minFusedScore,
+            allowedNames: allowedNames
         )
         return results
     }
@@ -350,7 +363,8 @@ public actor ToolSearchService {
     public func searchHybridWithDiagnostic(
         query: String,
         topK: Int,
-        minFusedScore: Float
+        minFusedScore: Float,
+        allowedNames: Set<String>? = nil
     ) async -> (results: [ToolSearchResult], diagnostic: ToolSearchHybridDiagnostic) {
         let indexedCount = (try? ToolDatabase.shared.entryCount()) ?? 0
         let bm25Available = ToolDatabase.sanitizeFTS5Query(query) != nil
@@ -427,16 +441,29 @@ public actor ToolSearchService {
         // the embedder + BM25 surfaced even when nothing was accepted.
         let allHits = fused.map { makeHit(name: $0.name, score: $0.score) }
 
-        // `acceptedHits`: enabled + above `minFusedScore` + capped at
+        let effectiveMinFusedScore = Self.effectiveMinFusedScore(
+            requested: minFusedScore,
+            topK: topK,
+            bm25Available: bm25Available,
+            bm25HitCount: bm25.count,
+            embedHitCount: embed.count
+        )
+
+        // `acceptedHits`: enabled + above the effective fused cutoff + capped at
         // topK. Eager loop so the slice → [Hit] type stays simple
         // (lazy `prefix` over a compactMap chain confused the type
         // checker on first attempt).
         var acceptedResults: [ToolSearchResult] = []
         var acceptedHits: [ToolSearchHybridDiagnostic.Hit] = []
+        var filteredByAllowlist: [String] = []
         for (name, score) in fused {
             if acceptedResults.count >= topK { break }
-            guard score >= minFusedScore else { continue }
+            guard score >= effectiveMinFusedScore else { continue }
             guard let entry = entriesByName[name], enabledNames.contains(name) else { continue }
+            if let allowedNames, !allowedNames.contains(name) {
+                filteredByAllowlist.append(name)
+                continue
+            }
             acceptedResults.append(ToolSearchResult(entry: entry, searchScore: score))
             acceptedHits.append(makeHit(name: name, score: score))
         }
@@ -446,9 +473,36 @@ public actor ToolSearchService {
             bm25Available: bm25Available,
             allHits: allHits,
             acceptedHits: acceptedHits,
-            minFusedScore: minFusedScore
+            minFusedScore: effectiveMinFusedScore,
+            requestedMinFusedScore: minFusedScore,
+            filteredByAllowlist: filteredByAllowlist
         )
         return (acceptedResults, diagnostic)
+    }
+
+    /// The production `CapabilitySearch` cutoff was tuned for fused
+    /// BM25+embedding scores. When the embedding side is silent or the
+    /// FTS5 sanitiser rejects the query, a rank-1 hit from the surviving
+    /// source only scores `1 / (60 + 1)`, which sits below that fused cutoff.
+    /// Lower the cutoff just enough to keep the requested top-K from that
+    /// source instead of reporting "no tools found" while one source is
+    /// unavailable. A normal lexical miss (`bm25Available == true` with
+    /// zero BM25 hits) keeps the requested cutoff, so semantic-only noise
+    /// does not get re-admitted just because BM25 found nothing.
+    private static func effectiveMinFusedScore(
+        requested: Float,
+        topK: Int,
+        bm25Available: Bool,
+        bm25HitCount: Int,
+        embedHitCount: Int
+    ) -> Float {
+        guard requested > 0 else { return requested }
+        let bm25Only = bm25HitCount > 0 && embedHitCount == 0
+        let embedOnlyBecauseBM25Unavailable = !bm25Available && bm25HitCount == 0 && embedHitCount > 0
+        guard bm25Only || embedOnlyBecauseBM25Unavailable else { return requested }
+        let cappedRank = max(1, topK)
+        let singleSourceTopKFloor = 1.0 / (rrfK + Float(cappedRank))
+        return min(requested, singleSourceTopKFloor)
     }
 
     // MARK: - Rebuild

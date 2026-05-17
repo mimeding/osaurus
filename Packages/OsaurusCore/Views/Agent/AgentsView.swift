@@ -1,4 +1,5 @@
 import AppKit
+import OsaurusRepository
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -40,6 +41,7 @@ struct AgentsView: View {
     @State private var selectedAgent: Agent?
     @State private var selectedRemoteAgentId: UUID?
     @State private var isCreating = false
+    @State private var isReordering = false
     @State private var hasAppeared = false
     @State private var successMessage: String?
     @State private var sandboxCleanupNotice: SandboxCleanupNotice?
@@ -130,6 +132,10 @@ struct AgentsView: View {
                 }
             )
         }
+        .sheet(isPresented: $isReordering) {
+            AgentReorderSheet()
+                .environment(\.theme, themeManager.currentTheme)
+        }
         .themedAlert(
             sandboxCleanupNotice?.title ?? "Sandbox Cleanup",
             isPresented: Binding(
@@ -145,6 +151,20 @@ struct AgentsView: View {
             agentManager.refresh()
             withAnimation(.easeOut(duration: 0.25).delay(0.05)) {
                 hasAppeared = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .agentDetailDeeplink)) { note in
+            // Notification-tap deep-link router (spec §3.3). Resolves
+            // the target agent and surfaces it; `AgentDetailView`
+            // observes the same notification to flip its inner tab
+            // selection so this view stays single-purpose.
+            guard let info = note.userInfo,
+                let agentId = info["agentId"] as? UUID,
+                let target = agentManager.agents.first(where: { $0.id == agentId })
+            else { return }
+            withAnimation(Self.navTransition) {
+                selectedRemoteAgentId = nil
+                selectedAgent = target
             }
         }
     }
@@ -281,6 +301,11 @@ struct AgentsView: View {
             HeaderIconButton("arrow.clockwise", help: "Refresh agents") {
                 agentManager.refresh()
             }
+            if !customAgents.isEmpty {
+                HeaderIconButton("list.bullet.indent", help: "Reorder agents") {
+                    isReordering = true
+                }
+            }
             HeaderPrimaryButton("Create Agent", icon: "plus") {
                 isCreating = true
             }
@@ -335,7 +360,8 @@ struct AgentsView: View {
             temperature: agent.temperature,
             maxTokens: agent.maxTokens,
             chatQuickActions: agent.chatQuickActions,
-            workQuickActions: agent.workQuickActions,
+            chatGreeting: agent.chatGreeting,
+            chatSubtitle: agent.chatSubtitle,
             isBuiltIn: false,
             createdAt: Date(),
             updatedAt: Date()
@@ -681,6 +707,30 @@ private enum DetailTab: String, CaseIterable {
     case sandbox
     case automation
     case memory
+    /// Agent DB feature (spec §5.5 / §7). Visible only when
+    /// `Agent.settings.dbEnabled == true`; the tab strip filters
+    /// these out via `Self.allTabsForAgent`. Order in the strip
+    /// follows the canonical iteration order on `allCases`.
+    case home
+    case schema
+    case data
+    case views
+    case activity
+
+    /// DetailTabs that belong to the Agent DB feature. Hidden from
+    /// the tab strip unless the agent has `settings.dbEnabled`.
+    static let dbTabs: Set<DetailTab> = [.home, .schema, .data, .views, .activity]
+
+    /// Tabs visible for `agent`, in canonical order. We render the
+    /// schema/data/activity trio at the end so they sit visually
+    /// adjacent to memory — both surface "what does this agent
+    /// remember?" but along different axes.
+    static func allTabsForAgent(_ agent: Agent) -> [DetailTab] {
+        if agent.settings.dbEnabled {
+            return DetailTab.allCases
+        }
+        return DetailTab.allCases.filter { !dbTabs.contains($0) }
+    }
 
     var label: String {
         switch self {
@@ -691,6 +741,11 @@ private enum DetailTab: String, CaseIterable {
         case .sandbox: return "Sandbox"
         case .automation: return "Automation"
         case .memory: return "Memory"
+        case .home: return "Home"
+        case .schema: return "Schema"
+        case .data: return "Data"
+        case .views: return "Views"
+        case .activity: return "Activity"
         }
     }
 
@@ -703,6 +758,11 @@ private enum DetailTab: String, CaseIterable {
         case .sandbox: return "shippingbox"
         case .automation: return "clock.badge.checkmark"
         case .memory: return "brain.head.profile"
+        case .home: return "house"
+        case .schema: return "tablecells"
+        case .data: return "square.grid.3x1.below.line.grid.1x2"
+        case .views: return "eye"
+        case .activity: return "waveform.path.ecg"
         }
     }
 
@@ -710,11 +770,21 @@ private enum DetailTab: String, CaseIterable {
         switch self {
         case .configure: return "Identity, model, and behavior overrides."
         case .capabilities: return "Pick which tools and skills this agent can use."
-        case .customization: return "Quick actions and visual theme."
+        case .customization: return "Avatar, empty state, and visual theme."
         case .network: return "Bonjour discovery and relay tunnel."
         case .sandbox: return "Container-based code execution."
         case .automation: return "Schedules and file watchers for autonomous behavior."
         case .memory: return "Conversation history, pinned facts, and episode summaries."
+        case .home:
+            return "Dashboard of pinned views — the agent's own home screen."
+        case .schema:
+            return "Tables, columns, indexes the agent has created in its private database."
+        case .data:
+            return "Browse, inspect, and export the rows stored in the agent's database."
+        case .views:
+            return "Saved SQL views the agent reuses across runs."
+        case .activity:
+            return "Run history and the audit trail of every write the agent has done."
         }
     }
 }
@@ -722,6 +792,12 @@ private enum DetailTab: String, CaseIterable {
 private enum AgentTab: Hashable {
     case builtIn(DetailTab)
     case plugin(String)
+    /// Tab for a plugin that the host tried to load but couldn't —
+    /// either failed during dlopen/init/handshake, or quarantined on
+    /// the previous launch. Surfaces the structured error from
+    /// `PluginManager.loadError(for:)` and a Retry button so the user
+    /// can act on the crash without dropping into a terminal.
+    case failedPlugin(String)
 }
 
 // MARK: - Tab Bar Preference Keys
@@ -784,11 +860,67 @@ struct AgentDetailView: View {
     @State private var maxTokens: String = ""
     @State private var selectedThemeId: UUID?
     @State private var chatQuickActions: [AgentQuickAction]?
-    @State private var workQuickActions: [AgentQuickAction]?
     @State private var editingQuickActionId: UUID?
     @State private var pluginInstructionsMap: [String: String] = [:]
     @State private var disableTools: Bool = false
     @State private var disableMemory: Bool = false
+    /// Local mirror of `Agent.settings.dbEnabled` (spec §5.5). The
+    /// Features section binds a toggle to this; `debouncedSave`
+    /// folds it back into the persisted `AgentSettings` block.
+    @State private var dbEnabled: Bool = false
+    /// Per-agent on/off for the chat empty-state generative greeting.
+    /// `nil` resolves to "auto" — the feature runs whenever a Core Model
+    /// is configured. Values flow through `loadAgent` / `saveAgent`
+    /// like the other `AgentSettings` fields.
+    @State private var generativeGreetingsEnabled: Bool? = nil
+    /// Per-agent override for the empty-state greeting voice. Empty-after-
+    /// trim falls through to the global persona on
+    /// `ChatConfiguration.greetingPersona`; both empty falls back to the
+    /// built-in default in `GenerativeGreetingService`.
+    @State private var greetingPersona: String = ""
+    /// Manual override for `Agent.chatGreeting`. Empty-after-trim becomes
+    /// `nil` on save so the chat empty state falls through to the
+    /// time-of-day default. Only rendered when the generative toggle
+    /// resolves to OFF for this agent (gated by `isGenerativeOn`).
+    @State private var chatGreetingDraft: String = ""
+    /// Manual override for `Agent.chatSubtitle`. Same gating and
+    /// trim-empty-to-nil semantics as `chatGreetingDraft`.
+    @State private var chatSubtitleDraft: String = ""
+    /// Bound to the `Delete Data` confirmation dialog. We require an
+    /// explicit confirmation because deleting an agent's DB throws
+    /// away its only copy (the encrypted `db.sqlite`) of the data it
+    /// has accumulated — no Trash, no undo.
+    @State private var showDeleteDBConfirmation: Bool = false
+
+    // MARK: - Bundle export/import state (spec §11.1)
+
+    /// Pending export destination — `nil` when no export is in flight.
+    /// Bound to the passphrase sheet so the user types the seal
+    /// passphrase after picking a destination.
+    @State private var bundleExportDestination: URL? = nil
+    /// Pending import source URL the user picked from `NSOpenPanel`,
+    /// awaiting passphrase entry.
+    @State private var bundleImportSource: URL? = nil
+    /// Passphrase typed into the active sheet. Cleared on dismiss.
+    @State private var bundlePassphraseInput: String = ""
+    /// Confirmation passphrase typed during export, to catch typos
+    /// before we burn through PBKDF2 600k iterations sealing a key
+    /// the user has no hope of remembering.
+    @State private var bundleConfirmPassphraseInput: String = ""
+    /// Held after a successful unpack — drives the review-before-
+    /// activate sheet (manifest contents + Activate / Discard).
+    @State private var bundleImportPreview: AgentBundleService.ImportPreview? = nil
+    /// `true` while the bundle service is running export/unpack
+    /// asynchronously. Disables both bundle buttons to avoid
+    /// double-clicks.
+    @State private var isBundleBusy: Bool = false
+    /// Most-recent error message from a bundle operation. Surfaced
+    /// via `ThemedAlertDialog` (reusing the existing alert host).
+    @State private var bundleErrorMessage: String? = nil
+    @State private var bundleSuccessMessage: String? = nil
+    @State private var autoSpeak: Bool = false
+    @State private var ttsVoice: String = ""
+    @ObservedObject private var ttsService = TTSService.shared
     @State private var avatar: String? = nil
     /// Drives the title-bar agent picker popover. Tapping the avatar / name in the
     /// header bar reveals the list of other custom agents so the user can jump
@@ -807,6 +939,17 @@ struct AgentDetailView: View {
     // MARK: - UI State
 
     @State private var selectedTab: AgentTab = .builtIn(.configure)
+    /// Optional saved-view name to focus when the user lands on the
+    /// Views tab via the notification deep-link (spec §3.3). Passed
+    /// through to `ViewsTabView`, which uses it as an initial
+    /// `selection`. Cleared back to `nil` once the user navigates
+    /// elsewhere so re-entering the tab manually doesn't keep
+    /// snapping back to the old view.
+    @State private var pendingFocusedViewName: String? = nil
+    /// Optional table name to pre-select when the user lands on the
+    /// Data tab via the Schema-tab "Browse" deep-link. Same lifecycle
+    /// as `pendingFocusedViewName`.
+    @State private var pendingFocusedTableName: String? = nil
     @State private var hasAppeared = false
     @State private var saveIndicator: String?
     @State private var saveDebounceTask: Task<Void, Never>?
@@ -826,6 +969,14 @@ struct AgentDetailView: View {
     @State private var isInitialLoadComplete = false
     @State private var agentSecrets: [AgentSecretEntry] = []
     @State private var editingSecretEntryId: AgentSecretEntry.ID?
+
+    /// Pending plugin id for the failed-plugin Retry / Uninstall
+    /// confirmation alerts. Kept separate so the two destructive
+    /// dialogs don't race each other. Both are gated through alerts
+    /// so a user can't crash-loop the host by mashing Retry on a
+    /// still-broken plugin.
+    @State private var pendingFailedPluginRetry: String?
+    @State private var pendingFailedPluginUninstall: String?
     /// Captured by `GeometryReader`s wrapped around the tab strip so the
     /// "scrollable" affordance (right-edge fade + chevron) only renders when
     /// the tab content actually overflows the viewport AND the user hasn't
@@ -833,6 +984,11 @@ struct AgentDetailView: View {
     @State private var tabBarContentWidth: CGFloat = 0
     @State private var tabBarViewportWidth: CGFloat = 0
     @State private var tabBarScrollOffset: CGFloat = 0
+    /// Bumped on `.toolsListChanged` so plugin tabs re-evaluate after async
+    /// `PluginManager.loadAll()` — `PluginManager` is not Observable, so without
+    /// this the tab strip can stay empty if the user opened this view before
+    /// plugins finished loading.
+    @State private var loadedPluginsRefreshNonce: UInt = 0
     private var tabsOverflowRight: Bool {
         // 1pt fudge so pixel-aligned end-of-scroll positions don't leave a
         // phantom indicator on screen.
@@ -860,20 +1016,118 @@ struct AgentDetailView: View {
 
     private var agentColor: Color { agentColorFor(name) }
 
+    /// Plugins that expose any per-agent surface (config, instructions,
+    /// routes, Keychain-backed manifest secrets, or tunnel-mounted web UI).
     private var agentPlugins: [PluginManager.LoadedPlugin] {
-        PluginManager.shared.plugins.filter { loaded in
-            let hasConfig = loaded.plugin.manifest.capabilities.config != nil
-            let hasInstructions =
-                loaded.plugin.manifest.instructions != nil
-                || currentAgent.pluginInstructions?[loaded.plugin.id] != nil
-            let hasRoutes = !loaded.routes.isEmpty
-            return hasConfig || hasInstructions || hasRoutes
+        _ = loadedPluginsRefreshNonce
+        return PluginManager.shared.plugins.filter(pluginAppearsInAgentDetailTabs)
+    }
+
+    /// Whether this loaded plugin should get its own tab on this agent's detail
+    /// screen. Keep in sync with `agentPlugins` / `.toolsListChanged` invalidation.
+    private func pluginAppearsInAgentDetailTabs(_ loaded: PluginManager.LoadedPlugin) -> Bool {
+        let manifest = loaded.plugin.manifest
+        return manifestExposesAgentSurface(manifest, pluginId: loaded.plugin.id)
+            || !loaded.routes.isEmpty
+            || loaded.webConfig != nil
+    }
+
+    /// Same predicate, but applied to the cached `lastKnownManifest`
+    /// of a failed plugin. Failed plugins don't have a `LoadedPlugin`
+    /// (no routes/web config materialized), so we only check the
+    /// manifest-derived signals; `nil` manifest counts as "show
+    /// anyway" — a quarantined plugin the host couldn't decode is
+    /// still actionable (Retry / report the crash).
+    private func failedPluginAppearsInAgentDetailTabs(_ failed: PluginManager.FailedPlugin) -> Bool {
+        guard let manifest = failed.lastKnownManifest else { return true }
+        return manifestExposesAgentSurface(manifest, pluginId: failed.pluginId)
+            || (manifest.capabilities.routes?.isEmpty == false)
+            || (manifest.capabilities.web != nil)
+    }
+
+    /// Per-agent surface signals available from the manifest alone
+    /// (no `LoadedPlugin` required). Shared by the loaded-plugin and
+    /// failed-plugin filters so a failed plugin shows up under the
+    /// SAME conditions a successful load would have shown it.
+    private func manifestExposesAgentSurface(_ manifest: PluginManifest, pluginId: String) -> Bool {
+        let hasConfig = manifest.capabilities.config != nil
+        let hasInstructions =
+            manifest.instructions != nil
+            || currentAgent.pluginInstructions?[pluginId] != nil
+        let hasSecrets = !(manifest.secrets ?? []).isEmpty
+        return hasConfig || hasInstructions || hasSecrets
+    }
+
+    /// Failed plugins to surface as dedicated tabs. Sorted by id so
+    /// tab order is stable across launches; keying on the same
+    /// `loadedPluginsRefreshNonce` as `agentPlugins` so a `Retry` that
+    /// bumps `.toolsListChanged` re-renders both lists.
+    private var agentFailedPlugins: [PluginManager.FailedPlugin] {
+        _ = loadedPluginsRefreshNonce
+        return PluginManager.shared.failedPlugins.values
+            .filter(failedPluginAppearsInAgentDetailTabs)
+            .sorted { $0.pluginId < $1.pluginId }
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .builtIn(.capabilities):
+            AgentCapabilityManagerView(agentId: agent.id, onDismiss: nil)
+                .environment(\.theme, themeManager.currentTheme)
+                .id(selectedTab)
+        case .builtIn(.home):
+            HomeTabView(agentId: agent.id)
+                .environment(\.theme, themeManager.currentTheme)
+                .id(selectedTab)
+        case .builtIn(.schema):
+            SchemaTabView(agentId: agent.id)
+                .environment(\.theme, themeManager.currentTheme)
+                .id(selectedTab)
+        case .builtIn(.data):
+            DataTabView(
+                agentId: agent.id,
+                initialSelectedTable: pendingFocusedTableName
+            )
+            .environment(\.theme, themeManager.currentTheme)
+            .id(selectedTab)
+        case .builtIn(.views):
+            ViewsTabView(
+                agentId: agent.id,
+                initialFocusedViewName: pendingFocusedViewName
+            )
+            .environment(\.theme, themeManager.currentTheme)
+            .id(selectedTab)
+        case .builtIn(.activity):
+            ActivityTabView(agentId: agent.id)
+                .environment(\.theme, themeManager.currentTheme)
+                .id(selectedTab)
+        default:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    scrollableTabContent
+                }
+                .padding(24)
+                .id(selectedTab)
+            }
+            .animation(nil, value: selectedTab)
         }
     }
 
-    var body: some View {
+    private var bodyCore: some View {
         VStack(spacing: 0) {
             detailHeaderBar
+
+            // Next Run panel (spec §9.4) sits above the tab strip for any
+            // user-created agent. The panel renders one of three banner
+            // shapes — paused, scheduled, or idle — and is the only place
+            // Pause/Resume is reachable at-a-glance. The mode picker
+            // itself moved into the Configure tab; a read-only mode chip
+            // here links back to it.
+            if agent.id != Agent.defaultId {
+                NextRunPanelView(agentId: agent.id)
+                    .environment(\.theme, theme)
+            }
 
             VStack(alignment: .leading, spacing: 0) {
                 tabBar
@@ -883,26 +1137,13 @@ struct AgentDetailView: View {
                 Divider()
                     .foregroundColor(theme.primaryBorder)
 
-                // Capabilities is the only tab whose body has its own scroll
-                // (NSTableView inside `AgentCapabilityManagerView`). Rendering
-                // it directly — without the outer ScrollView the other tabs
-                // share — keeps the table flush and avoids nested scrolling.
-                switch selectedTab {
-                case .builtIn(.capabilities):
-                    AgentCapabilityManagerView(agentId: agent.id, onDismiss: nil)
-                        .environment(\.theme, themeManager.currentTheme)
-                        .id(selectedTab)
-                default:
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
-                            scrollableTabContent
-                        }
-                        .padding(24)
-                        .id(selectedTab)
-                    }
-                    .animation(nil, value: selectedTab)
-                }
+                // Capabilities + Schema/Data/Activity host their own scrolling
+                // (NSTableView / NSOutlineView). Rendering them directly —
+                // without the outer ScrollView the other tabs share — keeps
+                // their tables flush and avoids nested scrolling.
+                tabContent
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.primaryBackground)
@@ -918,68 +1159,237 @@ struct AgentDetailView: View {
             }
             withAnimation { hasAppeared = true }
         }
+        .onChange(of: dbEnabled) { _, newValue in
+            // Watch the local `@State dbEnabled` (driven by the Configure
+            // tab toggle), not `agent.settings.dbEnabled` — the prop is
+            // frozen at view construction and would never fire. If the
+            // user just turned the DB feature off while sitting on a
+            // DB-only tab, snap back to Configure so they're not
+            // stranded on a tab whose data has just been deleted.
+            if !newValue,
+                case .builtIn(let dt) = selectedTab,
+                DetailTab.dbTabs.contains(dt)
+            {
+                selectedTab = .builtIn(.configure)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .agentDetailDeeplink)) { note in
+            // Tab + entity deep-link handler. Used by:
+            //   - `NotifyTool` taps (`tab: "views"`, `viewRef: ...`)
+            //   - `SchemaTabView` "Browse" button (`tab: "data"`,
+            //     `tableRef: ...`)
+            // AgentsView selects the right agent via the same
+            // notification; this handler just flips the inner tab
+            // and stashes the entity name for the destination tab to
+            // pick up on first load.
+            guard let info = note.userInfo,
+                let targetId = info["agentId"] as? UUID,
+                targetId == agent.id
+            else { return }
+            if let tabRaw = info["tab"] as? String,
+                let tab = DetailTab(rawValue: tabRaw),
+                DetailTab.allTabsForAgent(currentAgent).contains(tab)
+            {
+                pendingFocusedViewName = info["viewRef"] as? String
+                pendingFocusedTableName = info["tableRef"] as? String
+                selectedTab = .builtIn(tab)
+            }
+        }
+        .onChange(of: selectedTab) { _, newValue in
+            // Drop any leftover notification-driven focus when the
+            // user navigates to a tab the focus doesn't apply to.
+            // The focused-name state is set together with
+            // `selectedTab` in the deeplink handler above so it
+            // survives this transition exactly once.
+            switch newValue {
+            case .builtIn(.views):
+                pendingFocusedTableName = nil
+            case .builtIn(.data):
+                pendingFocusedViewName = nil
+            default:
+                pendingFocusedViewName = nil
+                pendingFocusedTableName = nil
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toolsListChanged)) { _ in
+            loadedPluginsRefreshNonce &+= 1
+            switch selectedTab {
+            case .plugin(let pid):
+                let stillVisible = PluginManager.shared.plugins.contains {
+                    $0.plugin.id == pid && pluginAppearsInAgentDetailTabs($0)
+                }
+                if !stillVisible {
+                    // After a Retry succeeds, a previously failed plugin
+                    // promotes from `failedPlugins` to `plugins`. We
+                    // intentionally let that flow drop the user back to
+                    // Configure here too, so they SEE the success
+                    // message and aren't sitting on a stale view.
+                    selectedTab = .builtIn(.configure)
+                }
+            case .failedPlugin(let pid):
+                // The plugin loaded successfully on Retry → switch to
+                // its real tab so the user lands on the happy path.
+                if let loaded = PluginManager.shared.plugins.first(where: { $0.plugin.id == pid }),
+                    pluginAppearsInAgentDetailTabs(loaded)
+                {
+                    selectedTab = .plugin(pid)
+                } else if PluginManager.shared.failedPlugins[pid] == nil {
+                    // Plugin no longer present in either bucket
+                    // (uninstalled while the failed tab was open).
+                    selectedTab = .builtIn(.configure)
+                }
+            case .builtIn:
+                break
+            }
+        }
         .onReceive(ModelPickerItemCache.shared.$items) { options in
             pickerItems = options
         }
-        .themedAlert(
-            "Delete Agent",
-            isPresented: $showDeleteConfirm,
-            message:
-                "Are you sure you want to delete \"\(currentAgent.name)\"? This action cannot be undone. Any sandbox resources provisioned for this agent will also be removed.",
-            primaryButton: .destructive("Delete") { onDelete(currentAgent) },
-            secondaryButton: .cancel("Cancel")
-        )
-        .themedAlert(
-            "Expose Agent to Internet?",
-            isPresented: $showRelayConfirmation,
-            message:
-                "This will create a public URL for this agent via agent.osaurus.ai. Anyone with the URL can send requests to your local server. Your access keys still protect the API endpoints.",
-            primaryButton: .destructive("Enable Relay") {
-                relayManager.setTunnelEnabled(true, for: agent.id)
-            },
-            secondaryButton: .cancel("Cancel")
-        )
-        .sheet(isPresented: $showCreateSchedule) {
-            ScheduleEditorSheet(
-                mode: .create,
-                onSave: { schedule in
-                    ScheduleManager.shared.create(
-                        name: schedule.name,
-                        instructions: schedule.instructions,
-                        agentId: schedule.agentId,
-                        frequency: schedule.frequency,
-                        isEnabled: schedule.isEnabled
-                    )
-                    showCreateSchedule = false
-                    showSuccess("Created schedule \"\(schedule.name)\"")
-                },
-                onCancel: { showCreateSchedule = false },
-                initialAgentId: agent.id
+    }
+
+    private var bodyWithSheets: some View {
+        bodyCore
+            .sheet(
+                isPresented: Binding(
+                    get: { bundleExportDestination != nil },
+                    set: { if !$0 { bundleExportDestination = nil } }
+                )
+            ) {
+                bundleExportPassphraseSheet
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { bundleImportSource != nil },
+                    set: { if !$0 { bundleImportSource = nil } }
+                )
+            ) {
+                bundleImportPassphraseSheet
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { bundleImportPreview != nil },
+                    set: { if !$0 { discardBundlePreview() } }
+                )
+            ) {
+                bundleImportReviewSheet
+            }
+    }
+
+    private var bodyWithAlerts: some View {
+        bodyWithSheets
+            .themedAlert(
+                "Bundle operation failed",
+                isPresented: Binding(
+                    get: { bundleErrorMessage != nil },
+                    set: { if !$0 { bundleErrorMessage = nil } }
+                ),
+                message: bundleErrorMessage ?? "",
+                primaryButton: .primary("OK") { bundleErrorMessage = nil }
             )
-            .environment(\.theme, themeManager.currentTheme)
-        }
-        .sheet(isPresented: $showCreateWatcher) {
-            WatcherEditorSheet(
-                mode: .create,
-                onSave: { watcher in
-                    watcherManager.create(
-                        name: watcher.name,
-                        instructions: watcher.instructions,
-                        agentId: watcher.agentId,
-                        watchPath: watcher.watchPath,
-                        watchBookmark: watcher.watchBookmark,
-                        isEnabled: watcher.isEnabled,
-                        recursive: watcher.recursive,
-                        responsiveness: watcher.responsiveness
-                    )
-                    showCreateWatcher = false
-                    showSuccess("Created watcher \"\(watcher.name)\"")
-                },
-                onCancel: { showCreateWatcher = false },
-                initialAgentId: agent.id
+            .themedAlert(
+                "Bundle ready",
+                isPresented: Binding(
+                    get: { bundleSuccessMessage != nil },
+                    set: { if !$0 { bundleSuccessMessage = nil } }
+                ),
+                message: bundleSuccessMessage ?? "",
+                primaryButton: .primary("OK") { bundleSuccessMessage = nil }
             )
-            .environment(\.theme, themeManager.currentTheme)
-        }
+            .themedAlert(
+                "Delete Agent",
+                isPresented: $showDeleteConfirm,
+                message:
+                    "Are you sure you want to delete \"\(currentAgent.name)\"? This action cannot be undone. Any sandbox resources provisioned for this agent will also be removed.",
+                primaryButton: .destructive("Delete") { onDelete(currentAgent) },
+                secondaryButton: .cancel("Cancel")
+            )
+            .themedAlert(
+                "Expose Agent to Internet?",
+                isPresented: $showRelayConfirmation,
+                message:
+                    "This will create a public URL for this agent via agent.osaurus.ai. Anyone with the URL can send requests to your local server. Your access keys still protect the API endpoints.",
+                primaryButton: .destructive("Enable Relay") {
+                    relayManager.setTunnelEnabled(true, for: agent.id)
+                },
+                secondaryButton: .cancel("Cancel")
+            )
+            .themedAlert(
+                "Retry plugin load?",
+                isPresented: Binding(
+                    get: { pendingFailedPluginRetry != nil },
+                    set: { if !$0 { pendingFailedPluginRetry = nil } }
+                ),
+                message:
+                    "The host quarantined this plugin after it caused a crash during load. Retrying re-runs the same dylib against the same host build, so if the underlying bug (most often a misaligned `osr_host_api` mirror in the plugin) is unfixed it will crash again. Use this only after you have rebuilt or re-installed the plugin.",
+                primaryButton: .destructive("Retry Anyway") {
+                    if let pid = pendingFailedPluginRetry {
+                        confirmRetryFailedPlugin(pid)
+                    }
+                    pendingFailedPluginRetry = nil
+                },
+                secondaryButton: .cancel("Cancel")
+            )
+            .themedAlert(
+                "Uninstall plugin?",
+                isPresented: Binding(
+                    get: { pendingFailedPluginUninstall != nil },
+                    set: { if !$0 { pendingFailedPluginUninstall = nil } }
+                ),
+                message:
+                    "This permanently deletes the plugin's installed dylib, manifest, and per-agent secrets from disk. The host will stop attempting to load it on every launch — the only way to escape a crash-looping plugin without editing files by hand. You can reinstall it later from the Tools manager.",
+                primaryButton: .destructive("Uninstall") {
+                    if let pid = pendingFailedPluginUninstall {
+                        confirmUninstallFailedPlugin(pid)
+                    }
+                    pendingFailedPluginUninstall = nil
+                },
+                secondaryButton: .cancel("Cancel")
+            )
+    }
+
+    var body: some View {
+        bodyWithAlerts
+            .sheet(isPresented: $showCreateSchedule) {
+                ScheduleEditorSheet(
+                    mode: .create,
+                    onSave: { schedule in
+                        ScheduleManager.shared.create(
+                            name: schedule.name,
+                            instructions: schedule.instructions,
+                            agentId: schedule.agentId,
+                            frequency: schedule.frequency,
+                            isEnabled: schedule.isEnabled
+                        )
+                        showCreateSchedule = false
+                        showSuccess("Created schedule \"\(schedule.name)\"")
+                    },
+                    onCancel: { showCreateSchedule = false },
+                    initialAgentId: agent.id
+                )
+                .environment(\.theme, themeManager.currentTheme)
+            }
+            .sheet(isPresented: $showCreateWatcher) {
+                WatcherEditorSheet(
+                    mode: .create,
+                    onSave: { watcher in
+                        watcherManager.create(
+                            name: watcher.name,
+                            instructions: watcher.instructions,
+                            agentId: watcher.agentId,
+                            watchPath: watcher.watchPath,
+                            watchBookmark: watcher.watchBookmark,
+                            isEnabled: watcher.isEnabled,
+                            recursive: watcher.recursive,
+                            responsiveness: watcher.responsiveness
+                        )
+                        showCreateWatcher = false
+                        showSuccess("Created watcher \"\(watcher.name)\"")
+                    },
+                    onCancel: { showCreateWatcher = false },
+                    initialAgentId: agent.id
+                )
+                .environment(\.theme, themeManager.currentTheme)
+            }
     }
 
     // MARK: - Detail Header Bar
@@ -1229,7 +1639,8 @@ struct AgentDetailView: View {
         switch tab {
         case .builtIn(let dt):
             switch dt {
-            case .configure, .capabilities, .customization, .network, .sandbox:
+            case .configure, .capabilities, .customization, .network, .sandbox,
+                .home, .schema, .data, .views, .activity:
                 return nil
             case .automation:
                 let count = linkedSchedules.count + linkedWatchers.count
@@ -1239,6 +1650,11 @@ struct AgentDetailView: View {
                 return count > 0 ? count : nil
             }
         case .plugin:
+            return nil
+        case .failedPlugin:
+            // Suppress the badge so the warning icon (set in the strip)
+            // is the only visual signal for the failed state — adding
+            // a count on top would compete for attention.
             return nil
         }
     }
@@ -1251,7 +1667,13 @@ struct AgentDetailView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
-                    ForEach(DetailTab.allCases, id: \.self) { tab in
+                    // IMPORTANT: read from `currentAgent`, not the captured
+                    // `agent` prop. The prop is frozen at view construction
+                    // and never reflects toggle changes; `currentAgent`
+                    // re-fetches from `AgentManager` so flipping
+                    // `Enable Database` in Configure causes the DB tabs
+                    // (Home/Schema/Data/Views/Activity) to appear here.
+                    ForEach(DetailTab.allTabsForAgent(currentAgent), id: \.self) { tab in
                         tabButton(for: .builtIn(tab), label: tab.label, icon: tab.icon)
                             .id(AgentTab.builtIn(tab))
                     }
@@ -1262,6 +1684,19 @@ struct AgentDetailView: View {
                             icon: "puzzlepiece.extension"
                         )
                         .id(AgentTab.plugin(loaded.plugin.id))
+                    }
+                    // Failed plugins surface AFTER successfully loaded ones
+                    // so the warning tabs cluster on the trailing edge of
+                    // the strip — visually obvious without crowding the
+                    // happy-path tabs. Each shows a structured error +
+                    // Retry button via `failedPluginTabContent`.
+                    ForEach(agentFailedPlugins, id: \.pluginId) { failed in
+                        tabButton(
+                            for: .failedPlugin(failed.pluginId),
+                            label: failedPluginTabLabel(for: failed),
+                            icon: "exclamationmark.triangle.fill"
+                        )
+                        .id(AgentTab.failedPlugin(failed.pluginId))
                     }
                 }
                 .padding(.horizontal, 4)
@@ -1358,6 +1793,22 @@ struct AgentDetailView: View {
 
     private func tabButton(for tab: AgentTab, label: String, icon: String) -> some View {
         let isSelected = selectedTab == tab
+        // Failed plugin tabs use the system warning color regardless of
+        // selection state so the user can spot them at a glance even
+        // in a long tab strip; the accent color is reserved for the
+        // happy-path "selected" signal.
+        let isFailed: Bool = {
+            if case .failedPlugin = tab { return true }
+            return false
+        }()
+        let foreground: Color
+        if isFailed {
+            foreground = .orange
+        } else if isSelected {
+            foreground = theme.accentColor
+        } else {
+            foreground = theme.tertiaryText
+        }
         return Button {
             selectedTab = tab
         } label: {
@@ -1381,13 +1832,13 @@ struct AgentDetailView: View {
                             )
                     }
                 }
-                .foregroundColor(isSelected ? theme.accentColor : theme.tertiaryText)
+                .foregroundColor(foreground)
                 .padding(.horizontal, 12)
                 .padding(.top, 10)
                 .padding(.bottom, 8)
 
                 Rectangle()
-                    .fill(isSelected ? theme.accentColor : Color.clear)
+                    .fill(isSelected ? (isFailed ? Color.orange : theme.accentColor) : Color.clear)
                     .frame(height: 2)
             }
             .contentShape(Rectangle())
@@ -1421,8 +1872,12 @@ struct AgentDetailView: View {
     private var configureTabContent: some View {
         tabHelperText(DetailTab.configure.helperText)
         identitySection
+        voiceSection
         systemPromptSection
         defaultModelSection
+        if agent.id != Agent.defaultId {
+            scheduleSection
+        }
         advancedSettingsDisclosure
     }
 
@@ -1444,12 +1899,23 @@ struct AgentDetailView: View {
             automationTabContent
         case .builtIn(.memory):
             memoryTabContent
+        case .builtIn(.home),
+            .builtIn(.schema),
+            .builtIn(.data),
+            .builtIn(.views),
+            .builtIn(.activity):
+            // Routed at the body level outside the ScrollView (the
+            // DB tabs host their own scrolling); the
+            // ScrollView-wrapping path would force a fixed sizing.
+            EmptyView()
         case .builtIn(.capabilities):
             // Routed at the body level outside the ScrollView; nothing to
             // render here. This branch keeps the switch exhaustive.
             EmptyView()
         case .plugin(let pid):
             pluginTabContent(for: pid)
+        case .failedPlugin(let pid):
+            failedPluginTabContent(for: pid)
         }
     }
 
@@ -1555,8 +2021,180 @@ struct AgentDetailView: View {
     private var customizationTabContent: some View {
         tabHelperText(DetailTab.customization.helperText)
         avatarSection
-        quickActionsSection
+        emptyStateSection
         themeSection
+    }
+
+    /// Two-way choice the user makes for an agent's chat empty state.
+    /// `Bool?` on disk; `EmptyStateMode` in the picker. `auto` resolves
+    /// against `coreModelConfigured` so the picker reflects what the
+    /// runtime would actually do.
+    private enum EmptyStateMode: Hashable {
+        case ai
+        case manual
+    }
+
+    /// Resolved on/off state for this agent's generative greeting.
+    /// `nil` defers to "auto" — on iff a Core Model is configured.
+    private var isGenerativeOn: Bool {
+        let coreModelConfigured =
+            AppConfiguration.shared.chatConfig.coreModelIdentifier != nil
+        return generativeGreetingsEnabled ?? coreModelConfigured
+    }
+
+    /// Picker binding. Reads the resolved state, writes an explicit
+    /// `Bool` so the user's choice is durable. We don't roundtrip back
+    /// to `nil`/auto — once the user expresses an opinion, we honor it.
+    private var emptyStateModeBinding: Binding<EmptyStateMode> {
+        Binding(
+            get: { isGenerativeOn ? .ai : .manual },
+            set: { newMode in
+                generativeGreetingsEnabled = (newMode == .ai)
+                debouncedSave()
+            }
+        )
+    }
+
+    /// Customization → Empty State. Two mutually-exclusive paths:
+    /// - **AI** → free-text Personality drives generated greeting + actions.
+    /// - **Custom** → user-authored Greeting / Message / Action Bar.
+    /// We render only the active side so the surface stays calm; the
+    /// segmented picker flips between them.
+    private var emptyStateSection: some View {
+        AgentDetailSection(title: "Empty State", icon: "sparkles") {
+            VStack(alignment: .leading, spacing: 14) {
+                Picker("", selection: emptyStateModeBinding) {
+                    Label("AI", systemImage: "sparkles").tag(EmptyStateMode.ai)
+                    Label("Custom", systemImage: "pencil.and.scribble").tag(EmptyStateMode.manual)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                if isGenerativeOn {
+                    aiEmptyStateBody
+                } else {
+                    manualEmptyStateBody
+                }
+            }
+            .onChange(of: chatGreetingDraft) { debouncedSave() }
+            .onChange(of: chatSubtitleDraft) { debouncedSave() }
+        }
+    }
+
+    /// AI side: just the Personality editor with one short helper line.
+    /// We drop the noisy "Generates a fresh greeting + four quick
+    /// actions on your Core Model. Falls back to the static defaults
+    /// silently on any failure." paragraph — that's runtime trivia,
+    /// not configuration the user needs to think about. The label row
+    /// also hosts a "Reset to Default" button that flips the editor
+    /// back to whatever the agent currently inherits.
+    private var aiEmptyStateBody: some View {
+        let isAtDefault =
+            greetingPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+            == resolvedPersonaDefault.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Personality", bundle: .module)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(theme.primaryText)
+                Spacer()
+                if !isAtDefault {
+                    Button {
+                        greetingPersona = resolvedPersonaDefault
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Reset to Default", bundle: .module)
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(theme.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            personalityEditor
+
+            Text(
+                "Inherits from the global personality in Settings → Chat. Edit to give this agent its own voice.",
+                bundle: .module
+            )
+            .font(.system(size: 11))
+            .foregroundColor(theme.tertiaryText)
+        }
+    }
+
+    /// Resolved default for the per-agent Personality field. The editor
+    /// inherits from the global persona on `ChatConfiguration.greetingPersona`
+    /// when the agent has no explicit override; if the global is also
+    /// empty we fall back to the built-in default. Same precedence the
+    /// runtime uses in `GenerativeGreetingService.resolvedPersona(...)`.
+    private var resolvedPersonaDefault: String {
+        let global = AppConfiguration.shared.chatConfig.greetingPersona
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return global.isEmpty
+            ? GenerativeGreetingService.defaultPersonaInstruction
+            : global
+    }
+
+    /// Manual side: Greeting / Message / Action Bar. The Action Bar's
+    /// own group header (icon + label + Default/Custom badge + enable
+    /// toggle, rendered by `quickActionsModeGroup`) is the only header
+    /// — we no longer wrap it in an outer "Action Bar" Text since
+    /// there's just one quick-actions block now that work mode is gone.
+    private var manualEmptyStateBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Greeting", bundle: .module)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(theme.primaryText)
+                StyledTextField(
+                    placeholder: "Welcome back, friend",
+                    text: $chatGreetingDraft,
+                    icon: "text.cursor"
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Message", bundle: .module)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(theme.primaryText)
+                StyledTextField(
+                    placeholder: "How can I help today?",
+                    text: $chatSubtitleDraft,
+                    icon: "text.cursor"
+                )
+            }
+
+            actionBarBlock
+        }
+    }
+
+    /// Personality `TextEditor` with matching panel chrome. The editor
+    /// is hydrated by `loadAgentData` with `resolvedPersonaDefault` when
+    /// the agent has no explicit override, so the empty-placeholder
+    /// branch we used to need is gone — the user always sees real text
+    /// they can edit, copy, or wipe to type their own. Persists on
+    /// change so the segmented picker doesn't need to push it onto the
+    /// manual side's onChange handlers.
+    private var personalityEditor: some View {
+        TextEditor(text: $greetingPersona)
+            .font(.system(size: 13, design: .monospaced))
+            .foregroundColor(theme.primaryText)
+            .scrollContentBackground(.hidden)
+            .frame(minHeight: 80, maxHeight: 200)
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(theme.inputBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(theme.inputBorder, lineWidth: 1)
+                    )
+            )
+            .onChange(of: greetingPersona) { debouncedSave() }
     }
 
     private var avatarSection: some View {
@@ -1855,6 +2493,136 @@ struct AgentDetailView: View {
         }
     }
 
+    // MARK: - Scheduling
+
+    /// Schedule-mode picker. Lives in Configure (not the top banner)
+    /// so each option can carry its own description of what it actually
+    /// changes — picking a mode rewrites the agent's `schedule`
+    /// preset via `AgentScheduleSettings.defaults(for:)`. The read-only
+    /// chip in the Next Run banner deep-links here.
+    private var scheduleSection: some View {
+        AgentDetailSection(title: "Scheduling", icon: "calendar.badge.clock") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(
+                    "How often this agent is allowed to run itself in the background. The agent picks its own next time within these bounds.",
+                    bundle: .module
+                )
+                .font(.system(size: 11))
+                .foregroundColor(theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+                VStack(spacing: 8) {
+                    ForEach(AgentScheduleMode.allCases, id: \.self) { mode in
+                        scheduleModeCard(mode: mode)
+                    }
+                }
+            }
+        }
+    }
+
+    /// One radio-card in the schedule-mode list. Filled circle when
+    /// selected; the body lays out title + tagline + concrete preset
+    /// numbers so the user sees exactly what changing the mode does.
+    @ViewBuilder
+    private func scheduleModeCard(mode: AgentScheduleMode) -> some View {
+        let isSelected = (currentAgent.settings.schedule.mode == mode)
+        Button {
+            selectScheduleMode(mode)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .font(.system(size: 16))
+                    .foregroundColor(isSelected ? theme.accentColor : theme.tertiaryText)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(Self.scheduleModeTitle(mode))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(theme.primaryText)
+                        Text(Self.scheduleModeTagline(mode))
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.secondaryText)
+                    }
+                    Text(Self.scheduleModePresetSummary(mode))
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.tertiaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isSelected ? theme.accentColor.opacity(0.08) : theme.inputBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(
+                                isSelected ? theme.accentColor.opacity(0.6) : theme.inputBorder,
+                                lineWidth: 1
+                            )
+                    )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // TODO(mode-merge): the spec (§9.4 / §13) allows per-field overrides
+    // — horizon, interval, quiet hours — to coexist with the mode preset.
+    // Once those override controls land, change the setter below to MERGE
+    // `AgentScheduleSettings.defaults(for:)` with the user's preserved
+    // overrides instead of overwriting the whole struct. Today the radio
+    // cards are the only authoring surface so the destructive overwrite
+    // is intentional; a no-op review-then-replace once finer-grained
+    // controls ship.
+    private func selectScheduleMode(_ newMode: AgentScheduleMode) {
+        guard var current = agentManager.agent(for: agent.id) else { return }
+        guard current.settings.schedule.mode != newMode else { return }
+        current.settings = AgentSettings(
+            dbEnabled: current.settings.dbEnabled,
+            schedule: AgentScheduleSettings.defaults(for: newMode),
+            limits: current.settings.limits
+        )
+        current.updatedAt = Date()
+        agentManager.update(current)
+        showSaveIndicator()
+    }
+
+    private static func scheduleModeTitle(_ mode: AgentScheduleMode) -> String {
+        switch mode {
+        case .ambient: return "Ambient"
+        case .reactive: return "Reactive"
+        case .project: return "Project"
+        case .manual: return "Manual"
+        }
+    }
+
+    private static func scheduleModeTagline(_ mode: AgentScheduleMode) -> String {
+        switch mode {
+        case .ambient: return "Background helper"
+        case .reactive: return "Quick reflexes"
+        case .project: return "Deep work"
+        case .manual: return "Self-scheduling off"
+        }
+    }
+
+    /// Plain-English summary of the values written by
+    /// `AgentScheduleSettings.defaults(for:)` so the user knows what
+    /// changing modes actually does. Keep in sync with the presets in
+    /// `Agent.swift`.
+    private static func scheduleModePresetSummary(_ mode: AgentScheduleMode) -> String {
+        switch mode {
+        case .ambient:
+            return "Up to 6 runs/day · at most once an hour · quiet 10pm–7am."
+        case .reactive:
+            return "Up to 48 runs/day · as often as every 5 min · no quiet hours."
+        case .project:
+            return "Up to 4 runs/day · at most once an hour · quiet 10pm–7am."
+        case .manual:
+            return "The agent only runs when you ask. Scheduled API calls from the agent are rejected."
+        }
+    }
+
     /// Power-user generation overrides. Tucked inside the Advanced disclosure so
     /// the Configure tab leads with model + capabilities + system prompt for the
     /// 90% case.
@@ -1897,6 +2665,105 @@ struct AgentDetailView: View {
         }
     }
 
+    // MARK: - Voice
+
+    /// auto-speak toggle + voice override. toggle is gated on the PocketTTS
+    /// model being downloaded.
+    private var voiceSection: some View {
+        AgentDetailSection(title: "Voice", icon: "speaker.wave.2") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto Speak Responses", bundle: .module)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(theme.primaryText)
+                        Text(
+                            ttsService.isModelReady
+                                ? "Read replies aloud after streaming completes."
+                                : "Download the PocketTTS model in Voice settings to enable.",
+                            bundle: .module
+                        )
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.tertiaryText)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $autoSpeak)
+                        .toggleStyle(SwitchToggleStyle(tint: theme.accentColor))
+                        .labelsHidden()
+                        .disabled(!ttsService.isModelReady)
+                        .onChange(of: autoSpeak) { debouncedSave() }
+                }
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(theme.inputBackground)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(theme.inputBorder, lineWidth: 1)
+                        )
+                )
+
+                if !ttsService.isModelReady {
+                    Button {
+                        NotificationCenter.default.post(
+                            name: .openTTSSettingsRequested,
+                            object: nil
+                        )
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Open Voice Settings", bundle: .module)
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(theme.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if autoSpeak && ttsService.isModelReady {
+                    HStack {
+                        Text("Voice", bundle: .module)
+                            .font(.system(size: 12))
+                            .foregroundColor(theme.secondaryText)
+                        Spacer()
+                        Picker("", selection: $ttsVoice) {
+                            Text("Default (global)", bundle: .module).tag("")
+                            ForEach(agentVoiceOptions, id: \.self) { voice in
+                                Text(PocketTTSVoiceCatalog.displayName(for: voice))
+                                    .tag(voice)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(MenuPickerStyle())
+                        .frame(maxWidth: 200)
+                        .onChange(of: ttsVoice) { debouncedSave() }
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(theme.inputBackground)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(theme.inputBorder, lineWidth: 1)
+                            )
+                    )
+                }
+            }
+        }
+        .onAppear { ttsService.refreshModelState() }
+    }
+
+    /// built-in catalog plus any stored custom voice (preserves legacy values).
+    private var agentVoiceOptions: [String] {
+        let builtIn = PocketTTSVoiceCatalog.availableVoices
+        let current = ttsVoice.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !current.isEmpty && !builtIn.contains(current) {
+            return [current] + builtIn
+        }
+        return builtIn
+    }
+
     // MARK: - Tool Selection
 
     private var disableTogglesSection: some View {
@@ -1912,8 +2779,382 @@ struct AgentDetailView: View {
                     subtitle: "Memory will not be injected into prompts or recorded.",
                     isOn: $disableMemory
                 )
+                databaseFeatureRow
             }
         }
+    }
+
+    /// Row for the Agent DB feature (spec §5.5). Houses the on/off
+    /// toggle plus a Delete Data action that wipes the per-agent
+    /// `db.sqlite` (encrypted) and the scheduler-side rows belonging
+    /// to this agent. The Delete action only renders when the agent
+    /// has the feature on, since there's nothing to delete otherwise.
+    @ViewBuilder
+    private var databaseFeatureRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            featureToggleRow(
+                title: "Enable Database",
+                subtitle:
+                    "Give this agent a private encrypted SQLite database to remember structured data across runs.",
+                isOn: $dbEnabled
+            )
+            if dbEnabled, isUsingRemoteProvider {
+                // Spec §5.5.5 / line 340: when the agent's effective
+                // model is a remote (cloud) provider, surface the
+                // schema-leak disclaimer right under the toggle so the
+                // user knows exactly what crosses the wire.
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.tertiaryText)
+                    Text(
+                        "Schema (table names and column types) is sent with each request. Row data is not.",
+                        bundle: .module
+                    )
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 2)
+            }
+            if dbEnabled {
+                HStack(spacing: 8) {
+                    Button {
+                        beginBundleExport()
+                    } label: {
+                        Label("Export Bundle…", systemImage: "square.and.arrow.up")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isBundleBusy)
+                    Button {
+                        beginBundleImport()
+                    } label: {
+                        Label("Import Bundle…", systemImage: "square.and.arrow.down")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isBundleBusy)
+                    Spacer()
+                    Button(role: .destructive) {
+                        showDeleteDBConfirmation = true
+                    } label: {
+                        Label("Delete Data", systemImage: "trash")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.red)
+                }
+            }
+        }
+        .confirmationDialog(
+            "Delete this agent's database?",
+            isPresented: $showDeleteDBConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Data", role: .destructive) {
+                deleteAgentDatabaseData()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This permanently erases the encrypted SQLite database, all "
+                    + "schema artifacts, all scheduled / pause state, and the run "
+                    + "history for this agent. The agent itself stays. This can't "
+                    + "be undone."
+            )
+        }
+    }
+
+    /// Whether the agent's effective model resolves to a connected
+    /// remote provider. Used by the privacy disclaimer under the
+    /// Database toggle (spec §5.5.5) so the warning only shows when
+    /// the schema actually crosses the wire. Local models stay
+    /// silent.
+    private var isUsingRemoteProvider: Bool {
+        guard let model = AgentManager.shared.effectiveModel(for: agent.id) else {
+            return false
+        }
+        return RemoteProviderManager.shared.findService(forModel: model) != nil
+    }
+
+    // MARK: - Bundle export/import (spec §11.1)
+
+    @ViewBuilder
+    private var bundleExportPassphraseSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Seal Bundle", bundle: .module)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(theme.primaryText)
+            Text(
+                "Choose a passphrase (≥ 8 characters) to encrypt this agent's bundle. You'll need the same passphrase to import it on another Mac.",
+                bundle: .module
+            )
+            .font(.system(size: 11))
+            .foregroundColor(theme.tertiaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            SecureField("Passphrase", text: $bundlePassphraseInput)
+                .textFieldStyle(.roundedBorder)
+            SecureField("Confirm passphrase", text: $bundleConfirmPassphraseInput)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    bundleExportDestination = nil
+                    bundlePassphraseInput = ""
+                    bundleConfirmPassphraseInput = ""
+                }
+                .controlSize(.small)
+                Button("Export") {
+                    performBundleExport()
+                }
+                .controlSize(.small)
+                .keyboardShortcut(.defaultAction)
+                .disabled(
+                    bundlePassphraseInput.count < 8
+                        || bundlePassphraseInput != bundleConfirmPassphraseInput
+                )
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+    }
+
+    @ViewBuilder
+    private var bundleImportPassphraseSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Open Bundle", bundle: .module)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(theme.primaryText)
+            if let url = bundleImportSource {
+                Text(url.lastPathComponent)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(theme.tertiaryText)
+            }
+            Text("Enter the passphrase used when the bundle was exported.", bundle: .module)
+                .font(.system(size: 11))
+                .foregroundColor(theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            SecureField("Passphrase", text: $bundlePassphraseInput)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    bundleImportSource = nil
+                    bundlePassphraseInput = ""
+                }
+                .controlSize(.small)
+                Button("Unlock") {
+                    performBundleImport()
+                }
+                .controlSize(.small)
+                .keyboardShortcut(.defaultAction)
+                .disabled(bundlePassphraseInput.count < 8)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+    }
+
+    @ViewBuilder
+    private var bundleImportReviewSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Review Bundle", bundle: .module)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(theme.primaryText)
+            if let preview = bundleImportPreview {
+                bundleManifestSummary(preview.manifest)
+            }
+            Text(
+                "Activate copies the agent into ~/.osaurus/agents/<id>/, rekeys its database to your local key, and registers the agent for use. Discard wipes the unpacked scratch directory and changes nothing on disk.",
+                bundle: .module
+            )
+            .font(.system(size: 11))
+            .foregroundColor(theme.tertiaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Discard", role: .destructive) {
+                    discardBundlePreview()
+                }
+                .controlSize(.small)
+                Button("Activate") {
+                    activateBundlePreview()
+                }
+                .controlSize(.small)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+    }
+
+    @ViewBuilder
+    private func bundleManifestSummary(_ manifest: AgentBundleManifest) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("Agent:").font(.system(size: 11, weight: .semibold))
+                Text(manifest.agentName).font(.system(size: 11))
+            }
+            if !manifest.agentDescription.isEmpty {
+                Text(manifest.agentDescription)
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 12) {
+                Text("Tables: \(manifest.schemaTables)").font(.system(size: 11))
+                Text("Views: \(manifest.savedViews)").font(.system(size: 11))
+                Spacer()
+            }
+            .foregroundColor(theme.secondaryText)
+            Text("Exported \(manifest.exportedAt.formatted(date: .abbreviated, time: .shortened))")
+                .font(.system(size: 10))
+                .foregroundColor(theme.tertiaryText)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 6).fill(theme.tertiaryBackground)
+        )
+    }
+
+    private func beginBundleExport() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = []
+        panel.nameFieldStringValue = currentAgent.displayName
+        panel.canCreateDirectories = true
+        panel.title = String(localized: "Export Bundle", bundle: .module)
+        panel.message = String(
+            localized: "Pick a folder for the .osaurus-agent bundle.",
+            bundle: .module
+        )
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        bundleExportDestination = url.deletingLastPathComponent()
+        bundlePassphraseInput = ""
+        bundleConfirmPassphraseInput = ""
+    }
+
+    private func beginBundleImport() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = []
+        panel.title = String(localized: "Import Bundle", bundle: .module)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        bundleImportSource = url
+        bundlePassphraseInput = ""
+    }
+
+    private func performBundleExport() {
+        guard let destination = bundleExportDestination else { return }
+        let passphrase = bundlePassphraseInput
+        bundleExportDestination = nil
+        bundlePassphraseInput = ""
+        bundleConfirmPassphraseInput = ""
+        isBundleBusy = true
+        let agentId = currentAgent.id
+        Task {
+            do {
+                let result = try await AgentBundleService.shared.exportBundle(
+                    agentId: agentId,
+                    passphrase: passphrase,
+                    destinationDirectory: destination
+                )
+                await MainActor.run {
+                    isBundleBusy = false
+                    bundleSuccessMessage = "Bundle saved to \(result.bundleURL.lastPathComponent)."
+                }
+            } catch {
+                await MainActor.run {
+                    isBundleBusy = false
+                    bundleErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func performBundleImport() {
+        guard let source = bundleImportSource else { return }
+        let passphrase = bundlePassphraseInput
+        bundleImportSource = nil
+        bundlePassphraseInput = ""
+        isBundleBusy = true
+        Task {
+            do {
+                let preview = try await AgentBundleService.shared.openBundleForReview(
+                    url: source,
+                    passphrase: passphrase
+                )
+                await MainActor.run {
+                    isBundleBusy = false
+                    bundleImportPreview = preview
+                }
+            } catch {
+                await MainActor.run {
+                    isBundleBusy = false
+                    bundleErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func activateBundlePreview() {
+        guard let preview = bundleImportPreview else { return }
+        bundleImportPreview = nil
+        isBundleBusy = true
+        Task {
+            do {
+                let imported = try await AgentBundleService.shared.activate(preview: preview)
+                await MainActor.run {
+                    isBundleBusy = false
+                    agentManager.refresh()
+                    bundleSuccessMessage = "Imported \(imported.displayName)."
+                }
+            } catch {
+                await MainActor.run {
+                    isBundleBusy = false
+                    bundleErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func discardBundlePreview() {
+        guard let preview = bundleImportPreview else { return }
+        bundleImportPreview = nil
+        AgentBundleService.shared.discard(preview: preview)
+    }
+
+    /// Wipe per-agent persisted DB + scheduler state for this agent.
+    /// Lives here (rather than on `AgentManager`) because the feature
+    /// surface is otherwise self-contained: the agent itself is
+    /// kept and the toggle stays on, so the next write will simply
+    /// re-create the DB lazily.
+    private func deleteAgentDatabaseData() {
+        let agentId = agent.id
+        // The agent itself stays, so we close + drop the disk files
+        // and forget any cached per-agent serial queue. The next DB
+        // write reopens lazily and the agent rebuilds its own
+        // tables from scratch — exactly the cold-start path.
+        do {
+            try AgentDatabaseStore.shared.deleteOnDisk(for: agentId)
+        } catch {
+            print("[Configure] Failed to delete agent DB for \(agentId): \(error)")
+        }
+        do {
+            try SchedulerDatabase.shared.deleteAllForAgent(agentId)
+        } catch {
+            print(
+                "[Configure] Failed to delete scheduler rows for \(agentId): \(error)"
+            )
+        }
+        LocalAgentBridge.shared.forget(agentId: agentId)
     }
 
     private func featureToggleRow(title: LocalizedStringKey, subtitle: LocalizedStringKey, isOn: Binding<Bool>)
@@ -1971,6 +3212,261 @@ struct AgentDetailView: View {
             if !loaded.routes.isEmpty {
                 pluginRoutesCard(for: loaded)
             }
+
+            pluginDiagnosticsCard(for: pid)
+        }
+    }
+
+    /// One-shot warnings emitted by `PluginOnceLogger` for this plugin
+    /// (NULL on_chunk callback, agent-scope override attempts, missing
+    /// agent context on background threads, oversized config_set, etc.).
+    /// Surfaces them in the plugin detail UI so authors don't have to
+    /// grep `Console.app` to find ABI misuse the host has already
+    /// flagged. Hidden when the plugin has no warnings yet.
+    @ViewBuilder
+    private func pluginDiagnosticsCard(for pluginId: String) -> some View {
+        let entries = PluginOnceLogger.entries(forPlugin: pluginId)
+        if !entries.isEmpty {
+            AgentDetailSection(title: "Diagnostics", icon: "exclamationmark.triangle") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(
+                        String(
+                            format: L("Host emitted %d one-shot warning%@ for this plugin."),
+                            entries.count,
+                            entries.count == 1 ? "" : "s"
+                        )
+                    )
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.secondaryText)
+                    .padding(.horizontal, 16)
+
+                    // Most-recent first so the latest issue is at the
+                    // top — matches how console viewers usually order.
+                    ForEach(entries.reversed()) { entry in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.message)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(theme.primaryText)
+                                .textSelection(.enabled)
+                            Text(entry.date.formatted(date: .omitted, time: .standard))
+                                .font(.system(size: 10))
+                                .foregroundColor(theme.tertiaryText)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(theme.cardBackground.opacity(0.4))
+                        )
+                        .padding(.horizontal, 16)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
+    /// Tab label for a failed plugin. Prefers the manifest display
+    /// name when we managed to decode the manifest before the failure,
+    /// falling back to the plugin id. Suffix `(Failed)` keeps the
+    /// failure unambiguous in the tab strip.
+    private func failedPluginTabLabel(for failed: PluginManager.FailedPlugin) -> String {
+        let base = failed.lastKnownManifest?.name ?? failed.pluginId
+        return "\(base) (Failed)"
+    }
+
+    /// Tab body for a plugin in `PluginManager.failedPlugins`. Names
+    /// the likely cause (misaligned `osr_host_api` mirror), shows the
+    /// install path with a Reveal-in-Finder shortcut, and surfaces
+    /// two confirmation-gated actions: Retry (re-runs the same dylib,
+    /// will crash again if unfixed) and Uninstall (wipes the plugin
+    /// directory and secrets — the escape hatch).
+    @ViewBuilder
+    private func failedPluginTabContent(for pid: String) -> some View {
+        let display = PluginManager.shared.failedPlugins[pid]?.lastKnownManifest?.name ?? pid
+        let error =
+            PluginManager.shared.loadError(for: pid)
+            ?? "The host failed to load this plugin and the underlying error was not captured."
+        let installPath = PluginInstallManager.toolsPluginDirectory(pluginId: pid).path
+
+        tabHelperText(
+            String(format: L("\u{201C}%@\u{201D} could not be loaded for this agent."), display)
+        )
+
+        AgentDetailSection(title: "Plugin failed to load", icon: "exclamationmark.triangle.fill") {
+            VStack(alignment: .leading, spacing: 14) {
+                failedPluginField(label: "Error") {
+                    Text(error)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(theme.primaryText)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(theme.cardBackground.opacity(0.6))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .strokeBorder(Color.orange.opacity(0.4), lineWidth: 1)
+                                )
+                        )
+                }
+
+                failedPluginField(label: "Plugin id") {
+                    Text(pid)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(theme.secondaryText)
+                        .textSelection(.enabled)
+                }
+
+                failedPluginField(
+                    label: "Install path",
+                    trailing: { revealInFinderButton(path: installPath) }
+                ) {
+                    Text(installPath)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(theme.secondaryText)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+
+                failedPluginField(label: "Most likely cause") {
+                    Text(
+                        "The plugin's `osr_host_api` mirror struct does not match the host's v6 layout — most often the v5 `log_structured` slot is skipped, which shifts every later slot by 8 bytes. The plugin then dispatches `host->free_string` to the wrong host trampoline and `libc free()` aborts on a non-malloc pointer, killing the host. See `docs/plugins/HOST_API.md → Mirror Struct Audit` and `docs/plugins/ABI_VERSIONS.md` for the pinned offsets and the documented v1..v6 evolution.",
+                        bundle: .module
+                    )
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 10) {
+                    failedPluginActionButton(
+                        title: "Retry Load",
+                        icon: "arrow.clockwise",
+                        tint: theme.primaryText,
+                        background: theme.cardBackground.opacity(0.6),
+                        border: theme.tertiaryText.opacity(0.4),
+                        helpText: "Re-load this plugin. Will crash again if the underlying bug is unfixed."
+                    ) {
+                        pendingFailedPluginRetry = pid
+                    }
+
+                    failedPluginActionButton(
+                        title: "Uninstall Plugin",
+                        icon: "trash",
+                        tint: .red,
+                        background: Color.red.opacity(0.15),
+                        border: Color.red.opacity(0.5),
+                        helpText: "Permanently delete this plugin from disk so the host stops trying to load it."
+                    ) {
+                        pendingFailedPluginUninstall = pid
+                    }
+
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+        }
+
+        pluginDiagnosticsCard(for: pid)
+    }
+
+    /// Labeled section block used inside `failedPluginTabContent`.
+    /// `trailing` is rendered to the right of the label (e.g. the
+    /// "Reveal in Finder" button on the install-path row).
+    @ViewBuilder
+    private func failedPluginField<Trailing: View, Content: View>(
+        label: LocalizedStringKey,
+        @ViewBuilder trailing: () -> Trailing,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(label, bundle: .module)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(theme.tertiaryText)
+                    .textCase(.uppercase)
+                Spacer()
+                trailing()
+            }
+            content()
+        }
+        .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private func failedPluginField<Content: View>(
+        label: LocalizedStringKey,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        failedPluginField(label: label, trailing: { EmptyView() }, content: content)
+    }
+
+    private func revealInFinderButton(path: String) -> some View {
+        Button {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Reveal in Finder", bundle: .module)
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundColor(theme.accentColor)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func failedPluginActionButton(
+        title: LocalizedStringKey,
+        icon: String,
+        tint: Color,
+        background: Color,
+        border: Color,
+        helpText: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(title, bundle: .module)
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(background))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(border, lineWidth: 1))
+            .foregroundColor(tint)
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+    }
+
+    /// Drops the `pid` quarantine entry (and the stale
+    /// `.currently_loading` marker) then triggers a forced reload of
+    /// all plugins. Only invoked from the `pendingFailedPluginRetry`
+    /// alert's primary button so the user has explicitly acknowledged
+    /// that the plugin may crash again.
+    private func confirmRetryFailedPlugin(_ pid: String) {
+        PluginManager.removeFromQuarantine(pid)
+        Task {
+            await PluginManager.shared.loadAll(forceReload: true)
+        }
+    }
+
+    /// Routes through `PluginRepositoryService.uninstall` so secrets,
+    /// skills, and the install directory are cleaned up the same way
+    /// the Tools manager would handle a normal uninstall. Also wipes
+    /// the quarantine entry so a future re-install starts clean.
+    private func confirmUninstallFailedPlugin(_ pid: String) {
+        PluginManager.removeFromQuarantine(pid)
+        Task {
+            try? await PluginRepositoryService.shared.uninstall(pluginId: pid)
         }
     }
 
@@ -2593,31 +4089,17 @@ struct AgentDetailView: View {
             .background(Capsule().fill(color.opacity(0.1)))
     }
 
-    private var quickActionsSection: some View {
-        AgentDetailSection(
-            title: L("Quick Actions"),
-            icon: "bolt.fill"
-        ) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Prompt shortcuts shown in the empty state. Customize each mode independently.", bundle: .module)
-                    .font(.system(size: 11))
-                    .foregroundColor(theme.tertiaryText)
-
-                quickActionsModeGroup(
-                    label: "Chat",
-                    icon: "bubble.left.fill",
-                    actions: $chatQuickActions,
-                    defaults: AgentQuickAction.defaultChatQuickActions
-                )
-
-                quickActionsModeGroup(
-                    label: "Work",
-                    icon: "hammer.fill",
-                    actions: $workQuickActions,
-                    defaults: AgentQuickAction.defaultWorkQuickActions
-                )
-            }
-        }
+    /// Single quick-actions block surfaced under Custom in the merged
+    /// Empty State section. Now that work mode is gone, there's only
+    /// one list — `chatQuickActions` — so we label the group "Action
+    /// Bar" rather than "Chat" to match the surrounding section copy.
+    private var actionBarBlock: some View {
+        quickActionsModeGroup(
+            label: "Action Bar",
+            icon: "bolt.fill",
+            actions: $chatQuickActions,
+            defaults: AgentQuickAction.defaultChatQuickActions
+        )
     }
 
     private func quickActionsModeGroup(
@@ -3274,9 +4756,26 @@ struct AgentDetailView: View {
         maxTokens = agent.maxTokens.map { String($0) } ?? ""
         selectedThemeId = agent.themeId
         chatQuickActions = agent.chatQuickActions
-        workQuickActions = agent.workQuickActions
+        chatGreetingDraft = agent.chatGreeting ?? ""
+        chatSubtitleDraft = agent.chatSubtitle ?? ""
         disableTools = agent.disableTools ?? false
         disableMemory = agent.disableMemory ?? false
+        dbEnabled = agent.settings.dbEnabled
+        generativeGreetingsEnabled = agent.settings.generativeGreetingsEnabled
+        // Hydrate the Personality editor with the resolved default
+        // (global persona, falling back to built-in) when the agent has
+        // no explicit override. Mirrors the global Settings view: the
+        // editor never shows an empty placeholder, just selectable text
+        // the user can edit or wipe. `saveAgent` collapses an unedited
+        // default back to nil so future changes upstream still flow.
+        let savedPersona = agent.settings.greetingPersona?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        greetingPersona =
+            (savedPersona?.isEmpty ?? true)
+            ? resolvedPersonaDefault
+            : (agent.settings.greetingPersona ?? "")
+        autoSpeak = agent.autoSpeak ?? false
+        ttsVoice = agent.ttsVoice ?? ""
         avatar = agent.avatar
         var instrMap: [String: String] = [:]
         let overrides = agent.pluginInstructions ?? [:]
@@ -3400,7 +4899,14 @@ struct AgentDetailView: View {
             temperature: Float(temperature),
             maxTokens: Int(maxTokens),
             chatQuickActions: chatQuickActions,
-            workQuickActions: workQuickActions,
+            chatGreeting: {
+                let trimmed = chatGreetingDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }(),
+            chatSubtitle: {
+                let trimmed = chatSubtitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }(),
             isBuiltIn: false,
             createdAt: agent.createdAt,
             updatedAt: Date(),
@@ -3414,7 +4920,30 @@ struct AgentDetailView: View {
             disableTools: disableTools ? true : nil,
             disableMemory: disableMemory ? true : nil,
             avatar: avatar,
-            customAvatarFilename: current.customAvatarFilename
+            customAvatarFilename: current.customAvatarFilename,
+            autoSpeak: autoSpeak ? true : nil,
+            ttsVoice: ttsVoice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? nil : ttsVoice,
+            settings: AgentSettings(
+                dbEnabled: dbEnabled,
+                schedule: current.settings.schedule,
+                limits: current.settings.limits,
+                generativeGreetingsEnabled: generativeGreetingsEnabled,
+                greetingPersona: {
+                    // Collapse an unedited inherited default back to
+                    // nil so the agent stays in "inherit from global"
+                    // mode — that way upstream persona / built-in
+                    // changes still flow through. Trim before
+                    // comparison so trailing whitespace from the
+                    // editor doesn't accidentally diverge.
+                    let trimmed = greetingPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.isEmpty { return nil }
+                    let inheritedTrimmed =
+                        resolvedPersonaDefault
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed == inheritedTrimmed ? nil : trimmed
+                }()
+            )
         )
 
         agentManager.update(updated)

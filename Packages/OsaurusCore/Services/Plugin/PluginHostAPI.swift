@@ -46,8 +46,19 @@ final class PluginHostContext: @unchecked Sendable {
         }
     }
 
-    /// Temporary fallback used only during plugin init.
-    nonisolated(unsafe) static var currentContext: PluginHostContext?
+    /// Temporary fallback used only during plugin init — set right before
+    /// the plugin's `init` / `osaurus_plugin_entry_v2` call and cleared
+    /// right after, so trampolines fired from inside that frame can
+    /// resolve the context before `setContext` has registered it under
+    /// the plugin id. Plugin loads in `PluginManager` are sequential, so
+    /// today there is no concurrent writer, but the unfair-lock wrapper
+    /// keeps the path future-proof against a refactor that loads
+    /// plugins in parallel and avoids the `nonisolated(unsafe)` hazard.
+    private static let _currentContext = OSAllocatedUnfairLock<PluginHostContext?>(initialState: nil)
+    static var currentContext: PluginHostContext? {
+        get { _currentContext.withLock { $0 } }
+        set { _currentContext.withLock { $0 = newValue } }
+    }
 
     // MARK: - Instance Properties
 
@@ -84,6 +95,18 @@ final class PluginHostContext: @unchecked Sendable {
     private var dispatchTimestamps: [UUID: [Date]] = [:]
     private static let dispatchRateLimit = 10
     private static let dispatchRateWindow: TimeInterval = 60
+
+    /// Sliding-window timestamps for `http_request` rate limiting,
+    /// keyed by the resolved active agent so each agent's bucket is
+    /// independent (matches the dispatch limiter's shape). Caps a
+    /// chatty plugin's outbound HTTP traffic so it can't saturate the
+    /// `httpSession` connection pool or trip third-party rate limits
+    /// silently. Note: this is a *host-side* control to stop runaway
+    /// plugins, not a substitute for the plugin's own backoff against
+    /// upstream APIs.
+    private var httpTimestamps: [UUID: [Date]] = [:]
+    static let httpRateLimit = 60
+    static let httpRateWindow: TimeInterval = 60
 
     // MARK: - Per-Plugin In-Flight Inference Cap
 
@@ -223,15 +246,44 @@ final class PluginHostContext: @unchecked Sendable {
     // MARK: - Config Callbacks
 
     func configGet(key: String) -> String? {
+        if Self.activeAgentId() == nil {
+            Self.warnNoAgentContextOnce(pluginId: pluginId, op: "config_get")
+        }
         return ToolSecretsKeychain.getSecret(id: key, for: pluginId, agentId: resolvedAgentId)
     }
 
+    /// Maximum config value byte size accepted by `config_set`. The
+    /// keychain is for credentials and small state, not blob storage;
+    /// values larger than this are silently rejected with a one-shot
+    /// warning (the plugin is expected to use `db_exec` / `db_query`
+    /// for larger payloads). The cap is documented under `config_set`
+    /// in `osaurus_plugin.h`.
+    static let configValueMaxBytes = 1 * 1024 * 1024  // 1 MiB
+
     func configSet(key: String, value: String) {
+        // Reject oversized values up front — silently, since the C ABI
+        // is `void`-returning and there's no envelope channel back to
+        // the plugin. The one-shot warning surfaces the bug to the
+        // plugin author the first time they trigger it.
+        if value.utf8.count > Self.configValueMaxBytes {
+            Self.warnConfigValueTooLargeOnce(
+                pluginId: pluginId,
+                key: key,
+                size: value.utf8.count
+            )
+            return
+        }
+        if Self.activeAgentId() == nil {
+            Self.warnNoAgentContextOnce(pluginId: pluginId, op: "config_set")
+        }
         ToolSecretsKeychain.saveSecret(value, id: key, for: pluginId, agentId: resolvedAgentId)
         postConfigChange(key: key, value: value)
     }
 
     func configDelete(key: String) {
+        if Self.activeAgentId() == nil {
+            Self.warnNoAgentContextOnce(pluginId: pluginId, op: "config_delete")
+        }
         ToolSecretsKeychain.deleteSecret(id: key, for: pluginId, agentId: resolvedAgentId)
         postConfigChange(key: key, value: nil)
     }
@@ -262,44 +314,187 @@ final class PluginHostContext: @unchecked Sendable {
 
     // MARK: - Dispatch Callbacks
 
+    /// Outcome of `planDispatch`: either an error envelope to return
+    /// straight to the plugin, or a fully-built `DispatchRequest` ready
+    /// for `TaskDispatcher`. Surfaced to tests so the security boundary
+    /// (agent-scope enforcement, prompt validation, request-id parse,
+    /// session_id passthrough) can be pinned without spinning up
+    /// `BackgroundTaskManager` or a real chat engine.
+    enum DispatchPlan {
+        case error(envelope: String)
+        case request(DispatchRequest)
+    }
+
+    /// Parses the plugin's `dispatch(requestJSON:)` payload and applies
+    /// the host-enforced agent scope (`activeAgent`, captured from TLS
+    /// before `blockingAsync`). The returned `DispatchPlan` either
+    /// carries the error envelope to send back, or the
+    /// `DispatchRequest` to hand to `TaskDispatcher`.
+    ///
+    /// Rate limiting is intentionally *not* in this function: it
+    /// requires per-context state (`PluginHostContext.getContext(for:)`
+    /// + `checkDispatchRateLimit`), whereas this helper is a pure
+    /// transform from `(json, pluginId, activeAgent) -> plan`. Keeping
+    /// it pure lets unit tests assert "this JSON + this TLS agent
+    /// produces this DispatchRequest" without singletons.
+    static func planDispatch(
+        requestJSON: String,
+        pluginId: String,
+        activeAgent: UUID?,
+        allowedToolNames: Set<String> = []
+    ) -> DispatchPlan {
+        let data = Data(requestJSON.utf8)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let prompt = json["prompt"] as? String
+        else {
+            return .error(
+                envelope: jsonString([
+                    "error": "invalid_request", "message": "Missing required field: prompt",
+                ])
+            )
+        }
+
+        // Empty/whitespace prompts make `ChatSession.send` no-op (no Task,
+        // no `isStreaming` flip), which would leave the dispatched task
+        // hanging in `.running` until the awaitCompletion watchdog.
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .error(
+                envelope: jsonString(["error": "invalid_request", "message": "Prompt is empty"])
+            )
+        }
+
+        var requestId = UUID()
+        if let idStr = json["id"] as? String, let parsed = UUID(uuidString: idStr) {
+            requestId = parsed
+        }
+
+        // Agent scope is host-enforced — caller-supplied `agent_address`
+        // / `agent_id` is ignored, and missing TLS falls back to default.
+        // Both branches warn-once per (plugin, op) so the misuse stays
+        // visible without flooding the log.
+        auditAgentScope(json: json, pluginId: pluginId, op: "dispatch", activeAgent: activeAgent)
+        let resolvedAgent = activeAgent ?? Agent.defaultId
+
+        let title = json["title"] as? String
+
+        var folderBookmark: Data?
+        if let bookmarkStr = json["folder_bookmark"] as? String {
+            folderBookmark = Data(base64Encoded: bookmarkStr)
+        }
+
+        // v3: only `session_id` is accepted. The legacy `external_session_key`
+        // alias was removed; old plugins passing it will need to migrate.
+        let externalSessionKey = json["session_id"] as? String
+
+        // Optional `tools` array — see `parseRequestedTools` for the
+        // validation contract. Empty when the plugin omits the field
+        // or `allowedToolNames` is empty (e.g. test paths that drive
+        // `planDispatch` directly without the MainActor lookup).
+        let requestedToolNames = parseRequestedTools(
+            json: json,
+            pluginId: pluginId,
+            allowedToolNames: allowedToolNames
+        )
+
+        let request = DispatchRequest(
+            id: requestId,
+            prompt: prompt,
+            agentId: resolvedAgent,
+            title: title,
+            folderBookmark: folderBookmark,
+            showToast: true,
+            sourcePluginId: pluginId,
+            source: .plugin,
+            externalSessionKey: externalSessionKey,
+            requestedToolNames: requestedToolNames
+        )
+        return .request(request)
+    }
+
+    /// Parses the optional `tools` field on a dispatch JSON payload and
+    /// returns the validated, deduplicated subset that survives the
+    /// allowed-set scope check. Pure helper — extracted so unit tests
+    /// can pin the validation table independently of the rest of
+    /// `planDispatch`.
+    ///
+    /// Order is preserved (first occurrence wins). Non-string entries,
+    /// blanks, and duplicates are dropped silently. Names outside the
+    /// allowed set fire one `PluginOnceLogger.warnOnce` per (plugin,
+    /// name) so plugin authors see the drop without flooding the log
+    /// on hot paths.
+    static func parseRequestedTools(
+        json: [String: Any],
+        pluginId: String,
+        allowedToolNames: Set<String>
+    ) -> [String] {
+        guard let raw = json["tools"] as? [Any] else { return [] }
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for entry in raw {
+            guard let name = entry as? String else { continue }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            if allowedToolNames.contains(trimmed) {
+                ordered.append(trimmed)
+            } else {
+                warnDispatchToolScopeOnce(pluginId: pluginId, name: trimmed)
+            }
+        }
+        return ordered
+    }
+
+    /// Tool names a plugin's `dispatch` call is allowed to request:
+    /// the plugin's own manifest tool ids
+    /// (`ExternalTool.name == manifest.tools[].id`) plus host built-in
+    /// always-loaded names (`builtInToolNames` ∪ `runtimeManagedToolNames`).
+    /// Plugins can pin their own tools and host built-ins like
+    /// `share_artifact` / `search_memory`, but cannot smuggle in another
+    /// plugin's tools. A missing loaded-plugin record (e.g. mid-unload)
+    /// collapses to "built-ins only"; `parseRequestedTools` then
+    /// warn-onces any of the plugin's own names that no longer resolve.
+    @MainActor
+    static func dispatchToolAllowedSet(pluginId: String) -> Set<String> {
+        let registry = ToolRegistry.shared
+        var allowed = registry.builtInToolNames.union(registry.runtimeManagedToolNames)
+        if let loaded = PluginManager.shared.loadedPlugin(for: pluginId) {
+            for tool in loaded.tools { allowed.insert(tool.name) }
+        }
+        return allowed
+    }
+
     func dispatch(requestJSON: String) -> (result: String, taskId: UUID?) {
-        return Self.blockingAsync { [pluginId] in
-            let data = Data(requestJSON.utf8)
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let prompt = json["prompt"] as? String
-            else {
-                return (
-                    Self.jsonString(["error": "invalid_request", "message": "Missing required field: prompt"]),
-                    UUID?.none
-                )
+        // Capture the active agent on the *calling* thread before crossing
+        // into `Self.blockingAsync` — TLS does not survive `Task.detached`.
+        // The host enforces that plugin-initiated dispatches always run
+        // under the agent that invoked the plugin (set by ExternalPlugin's
+        // invoke / handleRoute / notifyConfigBatch / notifyTaskEvent).
+        // Caller-supplied `agent_address` / `agent_id` is stripped below
+        // and a one-shot warning is logged so a deliberate cross-agent
+        // dispatch attempt remains visible in the unified log.
+        let activeAgent = Self.activeAgentId()
+        return Self.blockingAsync { [pluginId, activeAgent] in
+            // PluginManager + ToolRegistry are MainActor-isolated; hop
+            // once and hand `planDispatch` a plain `Set` so the planner
+            // stays a pure transform driveable from tests.
+            let allowedTools: Set<String> = await MainActor.run {
+                Self.dispatchToolAllowedSet(pluginId: pluginId)
             }
-
-            // Empty/whitespace prompts make `ChatSession.send` no-op (no Task,
-            // no `isStreaming` flip), which would leave the dispatched task
-            // hanging in `.running` until the awaitCompletion watchdog.
-            guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return (
-                    Self.jsonString(["error": "invalid_request", "message": "Prompt is empty"]),
-                    UUID?.none
-                )
+            let plan = Self.planDispatch(
+                requestJSON: requestJSON,
+                pluginId: pluginId,
+                activeAgent: activeAgent,
+                allowedToolNames: allowedTools
+            )
+            let request: DispatchRequest
+            switch plan {
+            case .error(let envelope):
+                return (envelope, UUID?.none)
+            case .request(let r):
+                request = r
             }
-
-            var requestId = UUID()
-            if let idStr = json["id"] as? String, let parsed = UUID(uuidString: idStr) {
-                requestId = parsed
-            }
-
-            var agentId: UUID?
-            if let address = json["agent_address"] as? String {
-                agentId = await MainActor.run { AgentManager.shared.agent(byAddress: address)?.id }
-            } else if let idStr = json["agent_id"] as? String {
-                agentId = UUID(uuidString: idStr)
-            }
-
-            let resolvedAgent = agentId ?? Agent.defaultId
 
             guard let ctx = PluginHostContext.getContext(for: pluginId),
-                ctx.checkDispatchRateLimit(agentId: resolvedAgent)
+                ctx.checkDispatchRateLimit(agentId: request.agentId ?? Agent.defaultId)
             else {
                 return (
                     Self.jsonString([
@@ -308,29 +503,6 @@ final class PluginHostContext: @unchecked Sendable {
                     UUID?.none
                 )
             }
-
-            let title = json["title"] as? String
-
-            var folderBookmark: Data?
-            if let bookmarkStr = json["folder_bookmark"] as? String {
-                folderBookmark = Data(base64Encoded: bookmarkStr)
-            }
-
-            // v3: only `session_id` is accepted. The legacy `external_session_key`
-            // alias was removed; old plugins passing it will need to migrate.
-            let externalSessionKey = json["session_id"] as? String
-
-            let request = DispatchRequest(
-                id: requestId,
-                prompt: prompt,
-                agentId: resolvedAgent,
-                title: title,
-                folderBookmark: folderBookmark,
-                showToast: true,
-                sourcePluginId: pluginId,
-                source: .plugin,
-                externalSessionKey: externalSessionKey
-            )
 
             // BackgroundTaskManager.dispatchChat now self-holds plugin
             // events between registerTask and trampoline-return, since
@@ -451,7 +623,10 @@ final class PluginHostContext: @unchecked Sendable {
 
     // MARK: Inference Types
 
-    private struct AgentContext {
+    /// Internal so unit tests can pin `resolveAgentContext`'s nil / non-nil
+    /// behavior. The fields below remain inspectable from `@testable import`
+    /// so a future test can assert per-agent overrides flow through.
+    struct AgentContext {
         let agentId: UUID
         let systemPrompt: String
         let model: String?
@@ -508,14 +683,19 @@ final class PluginHostContext: @unchecked Sendable {
 
     // MARK: Request Parsing
 
-    /// Strips extension fields (`agent_address`, `max_iterations`, `"tools": true`)
-    /// that would break the Codable decoder, returning both the raw dict and clean Data.
-    private static func parseRawRequest(_ requestJSON: String) -> (json: [String: Any], sanitized: Data)? {
+    /// Strips extension fields (`agent_address`, `agent_id`, `max_iterations`,
+    /// `"tools": true`) that would break the Codable decoder, returning both
+    /// the raw dict and clean Data. `agent_address` / `agent_id` are still
+    /// recognized in the raw dict so that plugin trampolines can warn-once
+    /// when a plugin tries to override the host-enforced agent scope.
+    /// Internal (not private) so unit tests can pin the strip behavior.
+    static func parseRawRequest(_ requestJSON: String) -> (json: [String: Any], sanitized: Data)? {
         let data = Data(requestJSON.utf8)
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
 
         var clean = json
         clean.removeValue(forKey: "agent_address")
+        clean.removeValue(forKey: "agent_id")
         clean.removeValue(forKey: "max_iterations")
         clean.removeValue(forKey: "preflight")
         if json["tools"] is Bool { clean.removeValue(forKey: "tools") }
@@ -526,25 +706,24 @@ final class PluginHostContext: @unchecked Sendable {
 
     /// Shared setup for both `complete` and `completeStream`: resolves agent context,
     /// enriches the request, creates the engine and budget manager.
+    ///
+    /// `activeAgentId` is the host-enforced agent scope captured on the
+    /// calling thread (TLS) before the plugin trampoline crossed into
+    /// `Self.blockingAsync`. Pass nil for non-plugin callers, where the
+    /// agent context is intentionally not bound to a specific agent.
     private static func prepareInference(
         request: ChatCompletionRequest,
         rawJSON: [String: Any],
-        pluginId: String? = nil
+        pluginId: String? = nil,
+        activeAgentId: UUID? = nil
     ) async -> PreparedInference {
         let options = InferenceOptions(from: rawJSON)
-        let agentCtx = await resolveAgentContext(json: rawJSON)
+        let agentCtx = await resolveAgentContext(agentId: activeAgentId)
         let execMode = agentCtx?.executionMode ?? .none
         var enriched = enrichRequest(request, context: agentCtx, options: options)
         if let pid = pluginId {
             let instructions: String? = await MainActor.run {
-                if let agentId = agentCtx?.agentId,
-                    let agent = AgentManager.shared.agent(for: agentId),
-                    let override = agent.pluginInstructions?[pid],
-                    !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                {
-                    return override
-                }
-                return PluginManager.shared.loadedPlugin(for: pid)?.plugin.manifest.instructions
+                PluginInstructionsResolver.instructions(pluginId: pid, agentId: agentCtx?.agentId)
             }
             if let instructions {
                 SystemPromptComposer.appendSystemContent(instructions, into: &enriched.request.messages)
@@ -584,16 +763,23 @@ final class PluginHostContext: @unchecked Sendable {
 
     // MARK: Agent Context Resolution
 
-    private static func resolveAgentContext(json: [String: Any]) async -> AgentContext? {
-        guard let address = json["agent_address"] as? String else { return nil }
+    /// Resolves the per-agent inference context (system prompt, tool surface,
+    /// model overrides, sampling defaults) for `agentId`. Returns nil when
+    /// `agentId` is nil or no agent record is found, in which case callers
+    /// fall back to host defaults. The agent id is now injected by the
+    /// trampoline (captured from TLS before `blockingAsync`); plugin-supplied
+    /// `agent_address` / `agent_id` is intentionally ignored — see
+    /// `warnAgentOverrideOnce` in the dispatch / inference entry points.
+    /// Internal (not private) so unit tests can pin the resolution surface.
+    static func resolveAgentContext(agentId: UUID?) async -> AgentContext? {
+        guard let agentId else { return nil }
 
         let resolved: (id: UUID, autonomousEnabled: Bool)? = await MainActor.run {
-            guard let agent = AgentManager.shared.agent(byAddress: address) else { return nil }
-            let enabled = AgentManager.shared.effectiveAutonomousExec(for: agent.id)?.enabled == true
-            return (agent.id, enabled)
+            guard AgentManager.shared.agent(for: agentId) != nil else { return nil }
+            let enabled = AgentManager.shared.effectiveAutonomousExec(for: agentId)?.enabled == true
+            return (agentId, enabled)
         }
         guard let resolved else { return nil }
-        let agentId = resolved.id
 
         if resolved.autonomousEnabled {
             await SandboxToolRegistrar.shared.registerTools(for: agentId)
@@ -680,7 +866,11 @@ final class PluginHostContext: @unchecked Sendable {
             tool_choice: request.tool_choice,
             session_id: request.session_id
         )
-        return EnrichedInference(request: enriched, tools: effectiveTools)
+        var enrichedWithRuntimeOptions = enriched
+        enrichedWithRuntimeOptions.enable_thinking = request.enable_thinking
+        enrichedWithRuntimeOptions.reasoning_effort = request.reasoning_effort
+        enrichedWithRuntimeOptions.modelOptions = request.modelOptions
+        return EnrichedInference(request: enrichedWithRuntimeOptions, tools: effectiveTools)
     }
 
     private static func iterationRequest(
@@ -688,7 +878,7 @@ final class PluginHostContext: @unchecked Sendable {
         messages: [ChatMessage],
         tools: [Tool]?
     ) -> ChatCompletionRequest {
-        ChatCompletionRequest(
+        var request = ChatCompletionRequest(
             model: base.model,
             messages: messages,
             temperature: base.temperature,
@@ -703,6 +893,10 @@ final class PluginHostContext: @unchecked Sendable {
             tool_choice: base.tool_choice,
             session_id: base.session_id
         )
+        request.enable_thinking = base.enable_thinking
+        request.reasoning_effort = base.reasoning_effort
+        request.modelOptions = base.modelOptions
+        return request
     }
 
     // MARK: Preflight Capability Search
@@ -858,7 +1052,7 @@ final class PluginHostContext: @unchecked Sendable {
 
         let messages = inference.request.messages
         let effectiveTools = tools.isEmpty ? nil : tools
-        let request = ChatCompletionRequest(
+        var request = ChatCompletionRequest(
             model: inference.request.model,
             messages: messages,
             temperature: inference.request.temperature,
@@ -873,6 +1067,9 @@ final class PluginHostContext: @unchecked Sendable {
             tool_choice: inference.request.tool_choice,
             session_id: inference.request.session_id
         )
+        request.enable_thinking = inference.request.enable_thinking
+        request.reasoning_effort = inference.request.reasoning_effort
+        request.modelOptions = inference.request.modelOptions
         return EnrichedInference(request: request, tools: effectiveTools)
     }
 
@@ -1034,6 +1231,10 @@ final class PluginHostContext: @unchecked Sendable {
             return Self.pluginBusyJSON(kind: "complete")
         }
         let pid = self.pluginId
+        // Capture host-enforced agent scope on the calling thread before
+        // crossing into `Self.blockingAsync` — TLS does not survive the
+        // `Task.detached` hop. See `dispatch` for the full rationale.
+        let activeAgent = Self.activeAgentId()
         let releaseSlot: @Sendable () -> Void = { [weak self] in
             self?.exitInflightInference()
         }
@@ -1051,10 +1252,14 @@ final class PluginHostContext: @unchecked Sendable {
                 ])
             }
 
+            // Agent scope is host-enforced — see `auditAgentScope`.
+            Self.auditAgentScope(json: rawJSON, pluginId: pid, op: "complete", activeAgent: activeAgent)
+
             let prep = await Self.prepareInference(
                 request: request,
                 rawJSON: rawJSON,
-                pluginId: pid
+                pluginId: pid,
+                activeAgentId: activeAgent
             )
             var messages = prep.enriched.request.messages
             var toolCallsExecuted: [[String: String]] = []
@@ -1154,6 +1359,10 @@ final class PluginHostContext: @unchecked Sendable {
             Self.warnNullChunkCallbackOnce(pluginId: pluginId)
         }
         let pid = self.pluginId
+        // Capture host-enforced agent scope on the calling thread before
+        // crossing into `Self.blockingAsync` — TLS does not survive the
+        // `Task.detached` hop. See `dispatch` for the full rationale.
+        let activeAgent = Self.activeAgentId()
         nonisolated(unsafe) let userData = userData
         // Single weak capture used by every callback below. `nonisolated(unsafe)`
         // is the documented way to share a weak ref into `@Sendable` closures
@@ -1202,10 +1411,19 @@ final class PluginHostContext: @unchecked Sendable {
                 }
             }
 
+            // Agent scope is host-enforced — see `auditAgentScope`.
+            Self.auditAgentScope(
+                json: rawJSON,
+                pluginId: pid,
+                op: "complete_stream",
+                activeAgent: activeAgent
+            )
+
             let prep = await Self.prepareInference(
                 request: request,
                 rawJSON: rawJSON,
-                pluginId: pid
+                pluginId: pid,
+                activeAgentId: activeAgent
             )
             let cid = "cmpl-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
             var messages = prep.enriched.request.messages
@@ -1234,6 +1452,7 @@ final class PluginHostContext: @unchecked Sendable {
                 do {
                     let stream = try await prep.engine.streamChat(request: iterReq)
                     var iterContent = ""
+                    var iterFinishReason = "stop"
 
                     for try await delta in stream {
                         // Cancellation check: plugin called `complete_cancel`
@@ -1275,6 +1494,9 @@ final class PluginHostContext: @unchecked Sendable {
                             // usage delta and remember it for the aggregated
                             // return so non-stream and stream paths surface
                             // the same metering shape.
+                            if let stopReason = stats.stopReason {
+                                iterFinishReason = stopReason
+                            }
                             let usage: [String: Any] = [
                                 "completion_tokens": stats.tokenCount,
                                 "tokens_per_second": stats.tokensPerSecond,
@@ -1293,7 +1515,7 @@ final class PluginHostContext: @unchecked Sendable {
                     if !iterContent.isEmpty {
                         messages.append(ChatMessage(role: "assistant", content: iterContent))
                     }
-                    emit(Self.chunkPayload(id: cid, delta: [:], finishReason: "stop"))
+                    emit(Self.chunkPayload(id: cid, delta: [:], finishReason: iterFinishReason))
                     Self.persistStreamingInference(
                         pluginId: pid,
                         agentId: prep.agentId,
@@ -1309,7 +1531,7 @@ final class PluginHostContext: @unchecked Sendable {
                         toolCallsExecuted: toolCallsExecuted,
                         sharedArtifacts: sharedArtifacts,
                         usage: lastUsage,
-                        finishReason: "stop"
+                        finishReason: iterFinishReason
                     )
 
                 } catch let invs as ServiceToolInvocations {
@@ -1627,11 +1849,105 @@ final class PluginHostContext: @unchecked Sendable {
         )
     }
 
+    /// Single audit pass for the agent-scope security boundary. Called
+    /// from every agent-aware trampoline (`dispatch`, `complete`,
+    /// `complete_stream`, `embed`) right after capturing the TLS active
+    /// agent. Emits at most one warning per (plugin, op) per process for
+    /// each of the two failure modes — caller-supplied agent override
+    /// and missing TLS agent — keeping the call sites a single line.
+    static func auditAgentScope(
+        json: [String: Any],
+        pluginId: String,
+        op: String,
+        activeAgent: UUID?
+    ) {
+        if let supplied = (json["agent_address"] as? String) ?? (json["agent_id"] as? String),
+            !supplied.isEmpty
+        {
+            warnAgentOverrideOnce(pluginId: pluginId, op: op, supplied: supplied)
+        }
+        if activeAgent == nil {
+            warnNoAgentContextOnce(pluginId: pluginId, op: op)
+        }
+    }
+
+    /// One-shot warning when a plugin's `dispatch` JSON requests a tool
+    /// name outside the plugin's allowed surface (own manifest tools or
+    /// host built-in always-loaded names). The name is dropped from the
+    /// dispatch's `requestedToolNames`; the rest of the dispatch
+    /// proceeds normally. Public so tests can pin the dedup behaviour.
+    static func warnDispatchToolScopeOnce(pluginId: String, name: String) {
+        PluginOnceLogger.warnOnce(
+            key: "\(pluginId)|dispatch|tool_scope|\(name)",
+            "[PluginHostAPI] Plugin '%@' requested tool '%@' on dispatch but it is not in the allowed "
+                + "set (own manifest tools or host built-ins). The name was dropped; the rest of the "
+                + "dispatch proceeds. "
+                + "This warning is logged once per (plugin, name) per process.",
+            pluginId,
+            name
+        )
+    }
+
+    /// One-shot warning when a plugin supplies `agent_address` / `agent_id`
+    /// to an agent-aware trampoline. The host ignores the override and runs
+    /// under the TLS-resolved invoking agent; surfacing the attempt makes
+    /// cross-agent dispatch attempts visible. Public so tests can pin it.
+    static func warnAgentOverrideOnce(pluginId: String, op: String, supplied: String) {
+        PluginOnceLogger.warnOnce(
+            key: "\(pluginId)|\(op)|agent_override",
+            "[PluginHostAPI] Plugin '%@' supplied an explicit agent identifier '%@' to %@. "
+                + "The host ignores caller-supplied agent_address / agent_id on plugin trampolines "
+                + "and runs the call under the agent that invoked the plugin. "
+                + "This warning is logged once per plugin per op per process.",
+            pluginId,
+            supplied,
+            op
+        )
+    }
+
+    /// One-shot warning when an agent-aware trampoline is called from a
+    /// thread with no TLS-bound active agent (typically a background
+    /// worker the plugin spawned itself at init). The host falls back to
+    /// `Agent.defaultId`; the plugin should originate the call from
+    /// inside `invoke` / `handle_route` / `on_config_changed` /
+    /// `on_task_event` so the agent context propagates.
+    static func warnNoAgentContextOnce(pluginId: String, op: String) {
+        PluginOnceLogger.warnOnce(
+            key: "\(pluginId)|\(op)|no_agent_context",
+            "[PluginHostAPI] Plugin '%@' called %@ from a thread with no resolvable agent context. "
+                + "The host fell back to the default agent. Originate plugin calls from a thread that "
+                + "carries the agent (inside invoke / handle_route / on_config_changed / on_task_event). "
+                + "This warning is logged once per plugin per op per process.",
+            pluginId,
+            op
+        )
+    }
+
+    /// Emit a one-shot warning when a plugin tries to store an
+    /// oversized value via `config_set`. The C ABI is void-returning
+    /// so the plugin author won't see the rejection otherwise.
+    static func warnConfigValueTooLargeOnce(pluginId: String, key: String, size: Int) {
+        PluginOnceLogger.warnOnce(
+            key: "\(pluginId)|config_set|too_large|\(key)",
+            "[PluginHostAPI] Plugin '%@' called config_set('%@', ...) with a %d-byte value, "
+                + "exceeding the 1 MiB config-value cap. The write was dropped. Use db_exec / "
+                + "db_query for larger payloads. This warning is logged once per plugin per key per process.",
+            pluginId,
+            key,
+            size
+        )
+    }
+
     func embed(requestJSON: String) -> String {
         guard tryEnterInflightInference() else {
             return Self.pluginBusyJSON(kind: "embed")
         }
         let pid = self.pluginId
+        // Capture host-enforced agent scope on the calling thread before
+        // crossing into `Self.blockingAsync`. Embed currently uses no
+        // per-agent overrides, but we still warn-on-override so the
+        // boundary is consistent across all plugin trampolines.
+        let activeAgent = Self.activeAgentId()
         let releaseSlot: @Sendable () -> Void = { [weak self] in
             self?.exitInflightInference()
         }
@@ -1645,6 +1961,9 @@ final class PluginHostContext: @unchecked Sendable {
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return Self.jsonString(["error": "invalid_request", "message": "Failed to parse embedding request"])
             }
+
+            // Agent scope is host-enforced — see `auditAgentScope`.
+            Self.auditAgentScope(json: json, pluginId: pid, op: "embed", activeAgent: activeAgent)
 
             var texts: [String] = []
             if let single = json["input"] as? String {
@@ -1748,6 +2067,21 @@ final class PluginHostContext: @unchecked Sendable {
 
         if let ssrfError = Self.checkSSRF(url: url) {
             return Self.jsonString(["error": "ssrf_blocked", "message": ssrfError])
+        }
+
+        // Per-(plugin, agent) HTTP token bucket. Caps the host-side
+        // outbound traffic a single plugin can emit; mirrors the
+        // dispatch limiter's shape. Plugins that need higher
+        // throughput should batch upstream or backoff on
+        // `rate_limit_exceeded` like any other API client.
+        guard checkHttpRateLimit(agentId: resolvedAgentId) else {
+            return Self.jsonString([
+                "error": "rate_limit_exceeded",
+                "message":
+                    "http_request rate limit (\(Self.httpRateLimit)/\(Int(Self.httpRateWindow))s) "
+                    + "exceeded for this plugin and agent.",
+                "retry_after_ms": Int(Self.httpRateWindow * 1000),
+            ])
         }
 
         let timeoutMs = json["timeout_ms"] as? Int ?? 30000
@@ -1901,10 +2235,18 @@ final class PluginHostContext: @unchecked Sendable {
         let ptr = UnsafeMutablePointer<osr_host_api>.allocate(capacity: 1)
         ptr.initialize(
             to: osr_host_api(
-                // v3 surface — frozen layout. Two trampoline slots
+                // v6 surface — frozen layout. Two trampoline slots
                 // (`dispatch_clarify`, `dispatch_add_issue`) remain wired
                 // for ABI compat but return structured `not_supported` JSON.
-                version: 3,
+                // `get_active_agent_id` (v4) lets plugins key per-agent
+                // state without caching across callbacks. `log_structured`
+                // (v5) attaches searchable JSON fields to log entries.
+                // `free_string` (v6) is the host-controlled `free()`
+                // pair for every host-returned `const char*` — added so
+                // plugins don't accidentally route host-allocated
+                // pointers through their own `free_string` callback,
+                // which can corrupt the heap if it isn't plain `free`.
+                version: 6,
                 config_get: PluginHostContext.trampolineConfigGet,
                 config_set: PluginHostContext.trampolineConfigSet,
                 config_delete: PluginHostContext.trampolineConfigDelete,
@@ -1925,7 +2267,10 @@ final class PluginHostContext: @unchecked Sendable {
                 send_draft: PluginHostContext.trampolineSendDraft,
                 dispatch_interrupt: PluginHostContext.trampolineDispatchInterrupt,
                 dispatch_add_issue: PluginHostContext.trampolineDispatchAddIssue,
-                complete_cancel: PluginHostContext.trampolineCompleteCancel
+                complete_cancel: PluginHostContext.trampolineCompleteCancel,
+                get_active_agent_id: PluginHostContext.trampolineGetActiveAgentId,
+                log_structured: PluginHostContext.trampolineLogStructured,
+                free_string: PluginHostContext.trampolineHostFreeString
             )
         )
         hostAPIPtr = ptr
@@ -1942,20 +2287,55 @@ final class PluginHostContext: @unchecked Sendable {
 // MARK: - Rate Limiting
 
 extension PluginHostContext {
+    /// Sliding-window check: returns true and records `now` if there
+    /// are fewer than `limit` recorded timestamps inside `window`,
+    /// false otherwise. The timestamp array is rewritten in place
+    /// under `rateLimitLock` (already held by the caller), so this is
+    /// a pure helper — both `checkDispatchRateLimit` and
+    /// `checkHttpRateLimit` route through it to keep their semantics
+    /// in lockstep.
+    private func consumeSlidingWindow(
+        timestamps: inout [Date],
+        limit: Int,
+        window: TimeInterval
+    ) -> Bool {
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-window)
+        timestamps.removeAll { $0 < cutoff }
+        guard timestamps.count < limit else { return false }
+        timestamps.append(now)
+        return true
+    }
+
     /// Returns true if the dispatch is allowed under the per-agent rate limit.
     func checkDispatchRateLimit(agentId: UUID) -> Bool {
         rateLimitLock.withLock {
-            let now = Date()
-            let cutoff = now.addingTimeInterval(-Self.dispatchRateWindow)
             var timestamps = dispatchTimestamps[agentId, default: []]
-            timestamps.removeAll { $0 < cutoff }
-            guard timestamps.count < Self.dispatchRateLimit else {
-                dispatchTimestamps[agentId] = timestamps
-                return false
-            }
-            timestamps.append(now)
+            let allowed = consumeSlidingWindow(
+                timestamps: &timestamps,
+                limit: Self.dispatchRateLimit,
+                window: Self.dispatchRateWindow
+            )
             dispatchTimestamps[agentId] = timestamps
-            return true
+            return allowed
+        }
+    }
+
+    /// Returns true if an `http_request` call from the current
+    /// `(plugin, agent)` is under the sliding-window rate limit.
+    /// Sharing the same `rateLimitLock` as dispatch keeps both
+    /// counters consistent under concurrency without adding another
+    /// lock.
+    func checkHttpRateLimit(agentId: UUID) -> Bool {
+        rateLimitLock.withLock {
+            var timestamps = httpTimestamps[agentId, default: []]
+            let allowed = consumeSlidingWindow(
+                timestamps: &timestamps,
+                limit: Self.httpRateLimit,
+                window: Self.httpRateWindow
+            )
+            httpTimestamps[agentId] = timestamps
+            return allowed
         }
     }
 }
@@ -1963,27 +2343,101 @@ extension PluginHostContext {
 // MARK: - SSRF Protection
 
 extension PluginHostContext {
-    /// Returns an error message if the URL targets a private/loopback address, nil if safe.
+    /// Returns an error message if the URL targets a private / loopback /
+    /// link-local / IPv6-mapped-private address, nil if safe.
+    ///
+    /// **Known limitation:** this check operates on the URL string only —
+    /// it does NOT resolve the hostname before deciding. A hostname that
+    /// looks public (`evil.example.com`) but resolves to a private IP at
+    /// connection time (DNS rebinding, attacker-controlled DNS, internal
+    /// CNAME) WILL pass this check and the host will issue the request.
+    /// Mitigating that requires a custom URLSession delegate that
+    /// inspects the resolved IP at the network-layer (see
+    /// `URLSessionDelegate.urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)`
+    /// + a `Network.framework` resolution step). Tracked separately;
+    /// document it under HOST_API.md so plugin authors don't assume
+    /// SSRF is end-to-end.
     static func checkSSRF(url: URL) -> String? {
-        guard let host = url.host?.lowercased() else { return "Missing host" }
+        guard let rawHost = url.host?.lowercased() else { return "Missing host" }
+        // URL.host strips the surrounding `[` `]` for IPv6 literals,
+        // but be defensive in case a future call site passes them in.
+        let host = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
 
-        if host == "localhost" || host == "::1" {
+        if host == "localhost" || host == "ip6-localhost" || host == "ip6-loopback" {
             return ssrfBlocked("localhost")
         }
 
-        if host.hasPrefix("fe80:") || host.hasPrefix("[fe80:") {
-            return ssrfBlocked("link-local IPv6")
+        // IPv6 literal handling. URL.host returns the bracket-stripped
+        // form (`::1`, `fe80::1`, `::ffff:127.0.0.1`). We catch the
+        // common loopback / link-local / unique-local prefixes, plus
+        // IPv4-mapped (`::ffff:a.b.c.d`) and IPv4-compatible (`::a.b.c.d`)
+        // forms that point at private IPv4 space — those are the
+        // common SSRF bypass tricks against an IPv4-only blocklist.
+        if host.contains(":") {
+            if host == "::1" { return ssrfBlocked("loopback IPv6") }
+            if host == "::" { return ssrfBlocked("unspecified IPv6") }
+            if host.hasPrefix("fe80:") { return ssrfBlocked("link-local IPv6") }
+            // Unique local (RFC 4193: fc00::/7 — fc00–fdff). We're
+            // already inside the `host.contains(":")` IPv6 branch, so
+            // an `fc`/`fd` prefix is unambiguously the literal — a
+            // hostname like `fcc.gov` would have been routed to the
+            // IPv4 branch above (no colon).
+            if host.hasPrefix("fc") || host.hasPrefix("fd") {
+                return ssrfBlocked("unique-local IPv6")
+            }
+            // IPv4-mapped (`::ffff:a.b.c.d`) and IPv4-compatible (`::a.b.c.d`):
+            // extract the trailing IPv4 dotted-quad and re-run the IPv4 check.
+            if let v4 = embeddedIPv4(in: host),
+                let blocked = ssrfBlockedIPv4(v4)
+            {
+                return ssrfBlocked("IPv6-mapped \(blocked)")
+            }
+            // Any other IPv6 literal we didn't recognize — out of scope
+            // for the IPv4-centric blocklist.
+            return nil
         }
 
         let octets = host.split(separator: ".").compactMap { UInt8($0) }
         guard octets.count == 4 else { return nil }
+        if let blocked = ssrfBlockedIPv4(octets) {
+            return ssrfBlocked(blocked)
+        }
+        return nil
+    }
+
+    /// Pulls the trailing dotted-quad out of an IPv6 literal that
+    /// embeds an IPv4 address (`::ffff:127.0.0.1` or `::127.0.0.1`).
+    /// Returns the four-octet form so the IPv4 blocklist can run.
+    private static func embeddedIPv4(in host: String) -> [UInt8]? {
+        guard let lastColon = host.lastIndex(of: ":") else { return nil }
+        let tail = String(host[host.index(after: lastColon)...])
+        let octets = tail.split(separator: ".").compactMap { UInt8($0) }
+        guard octets.count == 4 else { return nil }
+        return octets
+    }
+
+    /// Returns the human-readable block reason for a given IPv4
+    /// dotted-quad, or nil when the address is public-routable. Pulled
+    /// out so the IPv6-mapped path can reuse the same blocklist.
+    private static func ssrfBlockedIPv4(_ octets: [UInt8]) -> String? {
+        guard octets.count == 4 else { return nil }
         let (a, b) = (octets[0], octets[1])
-
-        let isPrivate =
-            a == 127 || a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) || a == 0
-            || (a == 169 && b == 254)
-
-        return isPrivate ? ssrfBlocked(host) : nil
+        let dotted = "\(octets[0]).\(octets[1]).\(octets[2]).\(octets[3])"
+        if a == 127 { return "IPv4 loopback (\(dotted))" }
+        if a == 10 { return "RFC1918 10.0.0.0/8 (\(dotted))" }
+        if a == 172 && b >= 16 && b <= 31 { return "RFC1918 172.16.0.0/12 (\(dotted))" }
+        if a == 192 && b == 168 { return "RFC1918 192.168.0.0/16 (\(dotted))" }
+        if a == 0 { return "RFC1122 \"this network\" 0.0.0.0/8 (\(dotted))" }
+        if a == 169 && b == 254 {
+            // 169.254.169.254 is the AWS / GCP / Azure / DO instance
+            // metadata IP. The whole 169.254/16 link-local range is
+            // already blocked, but call it out so the message is
+            // diagnosable.
+            return "link-local 169.254.0.0/16 (cloud metadata, \(dotted))"
+        }
+        if a == 100 && b >= 64 && b <= 127 { return "carrier-grade NAT 100.64.0.0/10 (\(dotted))" }
+        if a >= 224 && a <= 239 { return "multicast 224.0.0.0/4 (\(dotted))" }
+        return nil
     }
 
     private static func ssrfBlocked(_ target: String) -> String {
@@ -2120,6 +2574,22 @@ extension PluginHostContext {
     static func serializeProgressEvent(progress: Double, currentStep: String?, taskTitle: String) -> String {
         var dict: [String: Any] = ["progress": progress, "title": taskTitle]
         if let step = currentStep { dict["current_step"] = step }
+        return jsonString(dict)
+    }
+
+    /// Serialize the payload for `OSR_TASK_EVENT_CLARIFICATION` (type 3).
+    /// Emitted when the agent calls the inline `clarify` tool to pause for
+    /// a user response. `options` is omitted entirely when empty so plugins
+    /// can use key-presence as the "free-form vs choice" signal.
+    @MainActor
+    static func serializeClarificationEvent(payload: ClarifyPayload) -> String {
+        var dict: [String: Any] = [
+            "question": payload.question,
+            "allow_multiple": payload.allowMultiple,
+        ]
+        if !payload.options.isEmpty {
+            dict["options"] = payload.options
+        }
         return jsonString(dict)
     }
 
@@ -2320,6 +2790,20 @@ extension PluginHostContext {
         Thread.current.threadDictionary[agentTlsKey] as? UUID
     }
 
+    /// Run `body` with the plugin TLS slots set to `pluginId` and
+    /// `agentId`, then clear them on exit (success or throw). Collapses
+    /// the set / defer-clear pattern repeated by `dispatchPluginCall`,
+    /// `notifyConfigBatch`, and `notifyTaskEvent` in `ExternalPlugin`.
+    static func withTLSScope<R>(pluginId: String, agentId: UUID?, _ body: () -> R) -> R {
+        setActivePlugin(pluginId)
+        if let agentId { setActiveAgent(agentId) }
+        defer {
+            clearActivePlugin()
+            clearActiveAgent()
+        }
+        return body()
+    }
+
     private static func activeContext() -> PluginHostContext? {
         if let pluginId = Thread.current.threadDictionary[tlsKey] as? String {
             return getContext(for: pluginId)
@@ -2357,9 +2841,31 @@ extension PluginHostContext {
     static let contextUnavailableJSON: String =
         #"{"error":"context_unavailable","message":"Plugin host API was called from a thread with no resolvable plugin context. This typically indicates the call originated from a background thread the host did not register; reconsider using thread-local context or call from an invokeQueue/eventQueue thread."}"#
 
+    /// Allocates a fresh NUL-terminated C string the plugin owns and
+    /// must free via `host->free_string` (v6+) or `libc free()`.
+    ///
+    /// We deliberately bounce through `withCString` instead of letting
+    /// the compiler implicitly bridge `String → UnsafePointer<CChar>!`
+    /// for `strdup`. The implicit bridge can route through NSString /
+    /// the bridged buffer pool, and there are subtle interactions
+    /// with autorelease and concurrent invocation that produced a
+    /// `pointer being freed was not allocated` malloc abort in
+    /// production when the plugin freed the returned pointer from a
+    /// `@convention(c)` callback frame. The explicit pattern below
+    /// guarantees:
+    ///   1. `cStrPtr` is a stable, valid C-string pointer for the
+    ///      duration of the `strdup` call (UTF-8 contiguous).
+    ///   2. `strdup` runs against libc directly with no Foundation
+    ///      bridging, returning a freshly malloc'd buffer.
+    ///   3. The returned pointer is independent of any temporary
+    ///      buffer the bridging step might have used, so the plugin
+    ///      can free it from any thread / autorelease frame.
+    /// `nil` only when `strdup` itself fails (process-wide OOM).
     private static func makeCString(_ str: String) -> UnsafePointer<CChar>? {
-        let cStr = strdup(str)
-        return UnsafePointer(cStr)
+        str.withCString { cStrPtr -> UnsafePointer<CChar>? in
+            guard let copy = Darwin.strdup(cStrPtr) else { return nil }
+            return UnsafePointer(copy)
+        }
     }
 
     /// Resolves the active plugin context for a JSON-returning trampoline
@@ -2485,6 +2991,19 @@ extension PluginHostContext {
         ctx.configDelete(key: key)
     }
 
+    // MARK: Agent Context Introspection (v4)
+
+    /// Returns the TLS-resolved active agent UUID as a heap-allocated
+    /// C string the plugin owns (free with `free_string`), or NULL when
+    /// no agent context is bound to the calling thread (init, plugin-
+    /// spawned background work). One-line trampoline against the
+    /// existing TLS getter — no new lookup machinery, no race surface
+    /// beyond what `activeAgentId()` already has.
+    static let trampolineGetActiveAgentId: osr_get_active_agent_id_t = {
+        guard let agentId = activeAgentId() else { return nil }
+        return makeCString(agentId.uuidString)
+    }
+
     // MARK: Database Trampolines
 
     static let trampolineDbExec: osr_db_exec_t = { sqlPtr, paramsPtr in
@@ -2503,18 +3022,27 @@ extension PluginHostContext {
 
     // MARK: Logging Trampoline
 
+    /// Maps the integer log level to the human-readable label and the
+    /// synthetic HTTP status used by Insights filters. Levels mirror
+    /// the documented contract in `osaurus_plugin.h`:
+    /// `0=trace, 1=debug, 2=info, 3=warn, 4=error`. Shared between
+    /// `trampolineLog` and `trampolineLogStructured` so the two log
+    /// sources stay consistent in the dashboard.
+    static func levelMetadata(for level: Int32) -> (name: String, statusCode: Int) {
+        switch level {
+        case 0: return ("TRACE", 200)
+        case 1: return ("DEBUG", 200)
+        case 2: return ("INFO", 200)
+        case 3: return ("WARN", 299)
+        case 4: return ("ERROR", 500)
+        default: return ("LOG", 200)
+        }
+    }
+
     static let trampolineLog: osr_log_t = { level, msgPtr in
         guard let msgPtr, let ctx = activeContext() else { return }
         let message = String(cString: msgPtr)
-        let levelName: String
-        let statusCode: Int
-        switch level {
-        case 0: levelName = "DEBUG"; statusCode = 200
-        case 1: levelName = "INFO"; statusCode = 200
-        case 2: levelName = "WARN"; statusCode = 299
-        case 3: levelName = "ERROR"; statusCode = 500
-        default: levelName = "LOG"; statusCode = 200
-        }
+        let (levelName, statusCode) = levelMetadata(for: level)
         NSLog("[Plugin:%@] [%@] %@", ctx.pluginId, levelName, message)
         logPluginCall(
             pluginId: ctx.pluginId,
@@ -2523,6 +3051,50 @@ extension PluginHostContext {
             statusCode: statusCode,
             durationMs: 0,
             requestBody: message
+        )
+    }
+
+    /// Frees a string the host previously returned to a plugin (v6).
+    /// Internally `libc free()` — which pairs with the `strdup` every
+    /// host trampoline uses to allocate its return value. NULL is a
+    /// no-op so the plugin can wire it into a generic defer block
+    /// without an explicit guard. See `osr_host_free_string_fn` in
+    /// `osaurus_plugin.h` for the contract rationale (plugins should
+    /// never use their own `free_string` callback for host-allocated
+    /// strings — that direction is reversed and may corrupt heap if
+    /// the plugin's `free_string` does anything besides plain `free`).
+    static let trampolineHostFreeString: osr_host_free_string_t = { ptr in
+        guard let ptr else { return }
+        Darwin.free(UnsafeMutableRawPointer(mutating: ptr))
+    }
+
+    /// Structured-log trampoline (v5). The plugin attaches a JSON
+    /// payload that surfaces in Insights as searchable fields. NULL
+    /// payload degrades gracefully to the same shape `trampolineLog`
+    /// produces. Invalid JSON is treated as opaque text — the host
+    /// doesn't reject the call (the plugin author would have no way
+    /// to learn) but the payload appears as-is in the log row.
+    static let trampolineLogStructured: osr_log_structured_t = { level, msgPtr, payloadPtr in
+        guard let msgPtr, let ctx = activeContext() else { return }
+        let message = String(cString: msgPtr)
+        let payload = payloadPtr.map { String(cString: $0) }
+        let (levelName, statusCode) = levelMetadata(for: level)
+
+        // Console line keeps the structured payload visible alongside
+        // the message. Operators reading the unified log want both.
+        if let payload {
+            NSLog("[Plugin:%@] [%@] %@ %@", ctx.pluginId, levelName, message, payload)
+        } else {
+            NSLog("[Plugin:%@] [%@] %@", ctx.pluginId, levelName, message)
+        }
+
+        logPluginCall(
+            pluginId: ctx.pluginId,
+            method: "LOG",
+            path: "[\(levelName)] \(message)",
+            statusCode: statusCode,
+            durationMs: 0,
+            requestBody: payload ?? message
         )
     }
 

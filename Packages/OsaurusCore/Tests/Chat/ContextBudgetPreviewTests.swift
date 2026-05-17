@@ -43,6 +43,25 @@ struct ContextBudgetPreviewTests {
         body: @MainActor @Sendable (UUID) async -> Void
     ) async {
         await SandboxTestLock.runWithStoragePaths {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "osaurus-context-budget-preview-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let previousRoot = OsaurusPaths.overrideRoot
+            OsaurusPaths.overrideRoot = root
+            MemoryConfigurationStore.invalidateCache()
+            var memoryConfig = MemoryConfiguration.default
+            memoryConfig.enabled = true
+            MemoryConfigurationStore.save(memoryConfig)
+            AgentManager.shared.refresh()
+            defer {
+                MemoryConfigurationStore.invalidateCache()
+                OsaurusPaths.overrideRoot = previousRoot
+                AgentManager.shared.refresh()
+                try? FileManager.default.removeItem(at: root)
+            }
+
             let agent = Agent(
                 name: "PreviewTestAgent-\(UUID().uuidString.prefix(6))",
                 systemPrompt: "Test identity",
@@ -126,13 +145,13 @@ struct ContextBudgetPreviewTests {
         }
     }
 
-    /// Manual mode opts out of preflight, which also opts out of the
-    /// capability-discovery nudge (the nudge is gated on auto mode so
-    /// manual agents don't see "go grow your tool list" guidance they
-    /// can't act on). Loop guidance still fires because `todo`/etc.
-    /// are always-loaded built-ins regardless of mode.
-    @Test("preview: manual mode keeps agent loop, drops capability nudge")
-    func toolsOn_manual_dropsCapabilityNudge() async {
+    /// Manual mode opts out of the LLM preflight call, but it still
+    /// includes the capability discovery tools in the schema. The prompt
+    /// must explain those tools whenever they are callable; otherwise the
+    /// model sees an opaque `capabilities_search` function and #789-style
+    /// "search is enabled but never found" failures are hard to diagnose.
+    @Test("preview: manual mode keeps agent loop and capability nudge")
+    func toolsOn_manual_keepsCapabilityNudge() async {
         await withAgent(
             toolSelectionMode: .manual,
             manualToolNames: ["render_chart"]
@@ -143,7 +162,7 @@ struct ContextBudgetPreviewTests {
             )
             let ids = sectionIds(preview)
             #expect(ids.contains("agentLoopGuidance"))
-            #expect(ids.contains("capabilityNudge") == false)
+            #expect(ids.contains("capabilityNudge"))
             #expect(preview.tools.contains { $0.function.name == "render_chart" })
         }
     }

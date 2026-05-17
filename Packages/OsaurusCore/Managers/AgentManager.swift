@@ -14,6 +14,33 @@ import SwiftUI
 extension Notification.Name {
     static let activeAgentChanged = Notification.Name("activeAgentChanged")
     static let agentUpdated = Notification.Name("agentUpdated")
+    /// Posted from `AgentManager.add(_:)` after the new agent is persisted
+    /// and an address has been assigned (best effort). `userInfo["agentId"]`
+    /// is the new agent's UUID. Subscribed by `PluginManager` so plugins
+    /// receive an initial config + tunnel-URL push for the new agent
+    /// (otherwise plugins only see the agent on the next force-reload).
+    static let agentAdded = Notification.Name("agentAdded")
+    /// Posted from `AgentManager.delete(id:)` after the agent record is
+    /// removed. `userInfo["agentId"]` is the deleted agent's UUID.
+    /// Subscribed by `PluginManager` to push `tunnel_url=""` (so plugins
+    /// like Telegram can deregister webhooks) and to clean up per-agent
+    /// keychain secrets that would otherwise be orphaned.
+    static let agentRemoved = Notification.Name("agentRemoved")
+    /// Posted by notification-tap handlers (and any future deep-link
+    /// router) to drive `AgentsView` and `AgentDetailView` to a
+    /// specific agent + tab + optional focused entity (e.g. saved
+    /// view name, run id). userInfo keys: `agentId: UUID` (required),
+    /// `tab: String?` (matches a `DetailTab.rawValue`), `viewRef:
+    /// String?` (saved-view name to highlight on the Views tab).
+    static let agentDetailDeeplink = Notification.Name("agentDetailDeeplink")
+    /// Edge-triggered by `AgentDatabase.enforceStorageQuotaUnlocked`
+    /// when the per-agent DB file crosses `storageWarnPercent` of
+    /// its `storageBytesLimit`. `AgentManager` observes this and
+    /// posts a rate-limited user-facing UNNotification + flips a
+    /// `@Published` flag the Schema/Data tab headers read for the
+    /// badge UI. userInfo: `agentId: UUID`, `usedBytes: Int`,
+    /// `limitBytes: Int`, `percent: Int`.
+    static let agentStorageWarn = Notification.Name("agentStorageWarn")
 }
 
 public struct AgentDeleteResult: Sendable {
@@ -37,6 +64,33 @@ public final class AgentManager: ObservableObject {
         agents.first { $0.id == activeAgentId } ?? Agent.default
     }
 
+    /// Agents currently flagged as "approaching their storage
+    /// quota" (≥ `storageWarnPercent` of `storageBytesLimit`). Driven
+    /// off `.agentStorageWarn` notifications fired by
+    /// `AgentDatabase`. Read by the Schema/Data tab headers for a
+    /// "approaching quota" badge (spec §11.2). Stays sticky until the
+    /// agent's data is wiped or the database resets the latch on a
+    /// subsequent mutation when usage drops back below threshold.
+    @Published public private(set) var storageWarningAgentIds: Set<UUID> = []
+
+    /// Last wall-clock moment we posted a user-visible storage
+    /// warning UNNotification for each agent. The spec asks for
+    /// "rate-limit notifications to one per agent per 24h so
+    /// repeated writes don't spam." Kept in-memory only — relaunch
+    /// resets the throttle, which we accept because relaunching
+    /// itself is rare enough that the user wants to see the warning
+    /// again in the next session if they're still near quota.
+    private var lastStorageWarningAt: [UUID: Date] = [:]
+    private static let storageWarningCooldown: TimeInterval = 24 * 60 * 60
+
+    /// `UserDefaults` keys for the persisted snapshot of every
+    /// tool/skill name the registry has ever reported via
+    /// `.toolsListChanged`. Used by the observer to tell *brand-new*
+    /// capabilities apart from ones the user has explicitly disabled
+    /// (both look "absent from the agent's allowlist" otherwise).
+    private static let knownToolNamesKey = "AgentManager.knownToolNames.v1"
+    private static let knownSkillNamesKey = "AgentManager.knownSkillNames.v1"
+
     private init() {
         refresh()
         migrateAgentAddressesIfNeeded()
@@ -55,6 +109,11 @@ public final class AgentManager: ObservableObject {
         // still fall back to the global registry — see `effectiveEnabledToolNames`.
         // Skills ride this same notification because plugin skills register alongside
         // their tools (see `PluginManager._loadAll`).
+        //
+        // We only grow with names that are *new* relative to the persisted registry
+        // snapshot. On the first observation after this fix shipped the snapshot is
+        // nil, so the diff is empty and we just seed — that protects upgraded users
+        // from having their existing disables clobbered.
         NotificationCenter.default.addObserver(
             forName: .toolsListChanged,
             object: nil,
@@ -62,12 +121,89 @@ public final class AgentManager: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                let liveTools = ToolRegistry.shared.listDynamicTools().map(\.name)
-                self.growEnabledToolNames(Set(liveTools))
-                let liveSkills = SkillManager.shared.skills.map(\.name)
-                self.growEnabledSkillNames(Set(liveSkills))
+                self.growNewlyDiscoveredCapabilities(
+                    live: Set(ToolRegistry.shared.listDynamicTools().map(\.name)),
+                    key: Self.knownToolNamesKey,
+                    grow: self.growEnabledToolNames
+                )
+                self.growNewlyDiscoveredCapabilities(
+                    live: Set(SkillManager.shared.skills.map(\.name)),
+                    key: Self.knownSkillNamesKey,
+                    grow: self.growEnabledSkillNames
+                )
             }
         }
+
+        // Storage soft-warning router. The DB layer is non-isolated;
+        // it edge-triggers `.agentStorageWarn` from whatever queue
+        // the mutating transaction ran on. We hop to MainActor here
+        // so the rate-limit bookkeeping and `@Published` flag mutation
+        // run on a stable actor. The userInfo dict is copied into
+        // local primitives before the hop so we never send the
+        // `Notification` value itself across the isolation boundary.
+        NotificationCenter.default.addObserver(
+            forName: .agentStorageWarn,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let info = note.userInfo,
+                let agentId = info["agentId"] as? UUID
+            else { return }
+            let percent = (info["percent"] as? Int) ?? 0
+            let usedBytes = (info["usedBytes"] as? Int) ?? 0
+            let limitBytes = (info["limitBytes"] as? Int) ?? 0
+            Task { @MainActor in
+                self?.handleStorageWarning(
+                    agentId: agentId,
+                    percent: percent,
+                    usedBytes: usedBytes,
+                    limitBytes: limitBytes
+                )
+            }
+        }
+    }
+
+    @MainActor
+    private func handleStorageWarning(
+        agentId: UUID,
+        percent: Int,
+        usedBytes: Int,
+        limitBytes: Int
+    ) {
+
+        if !storageWarningAgentIds.contains(agentId) {
+            storageWarningAgentIds.insert(agentId)
+        }
+
+        // Rate-limit the user-facing notification to one per agent
+        // per `storageWarningCooldown`. The published badge stays
+        // sticky regardless so the UI stays informative even when
+        // the toast doesn't refire.
+        let now = Date()
+        if let last = lastStorageWarningAt[agentId],
+            now.timeIntervalSince(last) < Self.storageWarningCooldown
+        {
+            return
+        }
+        lastStorageWarningAt[agentId] = now
+
+        let name = agent(for: agentId)?.name ?? "Agent"
+        let usedMB = Double(usedBytes) / 1_048_576.0
+        let limitMB = Double(limitBytes) / 1_048_576.0
+        let body = String(
+            format: "%@ has used %d%% of its storage quota (%.1f / %.1f MB).",
+            name,
+            percent,
+            usedMB,
+            limitMB
+        )
+        NotificationService.shared.postAgentEvent(
+            agentId: agentId,
+            agentName: name,
+            title: "Storage \(percent)% full",
+            body: body,
+            viewRef: nil
+        )
     }
 
     // MARK: - Public API
@@ -122,6 +258,14 @@ public final class AgentManager: ObservableObject {
         AgentStore.save(agent)
         refresh()
         try? assignAddress(to: agent)
+        // Notify subscribers (e.g. PluginManager) so plugins get an
+        // initial config / tunnel-URL push for the new agent without
+        // needing to wait for the next plugin force-reload.
+        NotificationCenter.default.post(
+            name: .agentAdded,
+            object: nil,
+            userInfo: ["agentId": agent.id]
+        )
     }
 
     /// Set or replace the custom avatar image for `agentId`. Writes the bytes
@@ -149,6 +293,18 @@ public final class AgentManager: ObservableObject {
         update(agent)
     }
 
+    /// Assign sequential `order` values (0...N-1) to custom agents in the
+    /// given sequence and refresh once. Built-ins must not be included.
+    public func reorder(orderedIds: [UUID]) {
+        for (index, id) in orderedIds.enumerated() {
+            guard var agent = AgentStore.load(id: id), !agent.isBuiltIn else { continue }
+            guard agent.order != index else { continue }
+            agent.order = index
+            AgentStore.save(agent)
+        }
+        refresh()
+    }
+
     /// Update an existing agent
     public func update(_ agent: Agent) {
         guard !agent.isBuiltIn else {
@@ -159,6 +315,23 @@ public final class AgentManager: ObservableObject {
         updated.updatedAt = Date()
         AgentStore.save(updated)
         refresh()
+        // Push the storage limit + soft-warn threshold down to any
+        // open agent-DB connection (spec §11.2 + §11.3). When the
+        // agent's DB hasn't been opened yet the store's cache miss
+        // is harmless — both values land on the next open.
+        AgentDatabaseStore.shared.setStorageLimit(
+            for: agent.id,
+            bytes: updated.settings.limits.storageBytesLimit
+        )
+        AgentDatabaseStore.shared.setStorageWarnPercent(
+            for: agent.id,
+            percent: updated.settings.limits.storageWarnPercent
+        )
+        // Drop any pre-generated empty-state greetings for this agent.
+        // Persona / system prompt / quick-action edits invalidate the
+        // pool's cached output — the next session open should pop a
+        // freshly generated greeting that reflects the new settings.
+        Task { await GenerativeGreetingPool.shared.invalidate(agentId: agent.id) }
         NotificationCenter.default.post(name: .agentUpdated, object: agent.id)
     }
 
@@ -262,6 +435,29 @@ public final class AgentManager: ObservableObject {
         }
 
         refresh()
+
+        // Sweep every plugin's per-agent secrets for this agent. Without
+        // this, deleting an agent would leave its `bot_token` / OAuth
+        // credentials / `tunnel_url` / etc. in Keychain Access forever.
+        // Done before posting `.agentRemoved` so subscribers see the
+        // post-cleanup keychain state.
+        ToolSecretsKeychain.deleteAllSecrets(forAgent: id)
+
+        // Drop any greetings the pool was holding for this agent. We
+        // can't rely on per-agent settings drift here (the agent is
+        // gone) — explicit invalidation prevents the orphaned entries
+        // from sitting in memory until TTL.
+        await GenerativeGreetingPool.shared.invalidate(agentId: id)
+
+        // Notify subscribers (e.g. PluginManager) so plugins can
+        // deregister webhooks (push tunnel_url=nil) and tear down any
+        // per-agent state of their own.
+        NotificationCenter.default.post(
+            name: .agentRemoved,
+            object: nil,
+            userInfo: ["agentId": id]
+        )
+
         let cleanupNotice = await SandboxAgentProvisioner.shared.unprovision(agentId: id).notice
         return AgentDeleteResult(deleted: true, sandboxCleanupNotice: cleanupNotice)
     }
@@ -455,6 +651,16 @@ extension AgentManager {
         guard let agent = agent(for: agentId) else { return globalDisabled }
         if agent.id == Agent.defaultId { return globalDisabled }
         return (agent.disableTools ?? false) || globalDisabled
+    }
+
+    /// Whether the Agent DB feature is enabled for an agent (spec §5.5).
+    /// The default agent (`Agent.default`) is built-in and not editable, so
+    /// its `Agent.settings.dbEnabled` is hard-wired off — the DB is per-agent
+    /// data and only makes sense for user-created agents.
+    public func effectiveDBEnabled(for agentId: UUID) -> Bool {
+        guard let agent = agent(for: agentId) else { return false }
+        if agent.id == Agent.defaultId { return false }
+        return agent.settings.dbEnabled
     }
 
     /// Whether memory is disabled for an agent.
@@ -693,6 +899,36 @@ extension AgentManager {
         if anyAgentChanged {
             refresh()
         }
+    }
+
+    // MARK: - Known capability registry snapshot
+
+    /// Diff `live` against the persisted snapshot at `key`. Newly discovered
+    /// names are passed to `grow`; the snapshot is then refreshed to `live`.
+    /// A missing snapshot (first observation) seeds without growing, which is
+    /// what protects already-disabled capabilities on the upgrade path.
+    private func growNewlyDiscoveredCapabilities(
+        live: Set<String>,
+        key: String,
+        grow: (Set<String>) -> Void
+    ) {
+        if let known = loadKnownNames(forKey: key) {
+            let newlyDiscovered = live.subtracting(known)
+            if !newlyDiscovered.isEmpty { grow(newlyDiscovered) }
+        }
+        saveKnownNames(live, forKey: key)
+    }
+
+    /// Stored as a sorted `[String]` in `UserDefaults.standard` so the
+    /// on-disk form is stable and diff-friendly. Returns `nil` when no
+    /// snapshot has ever been written.
+    private func loadKnownNames(forKey key: String) -> Set<String>? {
+        guard let arr = UserDefaults.standard.array(forKey: key) as? [String] else { return nil }
+        return Set(arr)
+    }
+
+    private func saveKnownNames(_ names: Set<String>, forKey key: String) {
+        UserDefaults.standard.set(names.sorted(), forKey: key)
     }
 
     /// Update the default model for an agent

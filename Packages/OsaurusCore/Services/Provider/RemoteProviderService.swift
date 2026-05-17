@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import os
 
 /// Errors specific to remote provider operations
 public enum RemoteProviderServiceError: LocalizedError {
@@ -44,8 +45,35 @@ public actor RemoteProviderService: ToolCapableService {
     private var session: URLSession
     private var cachedOAuthTokens: RemoteProviderOAuthTokens?
 
+    /// Race-resistant flag set by `invalidateSession()`. The connect-retry
+    /// loop in `connectWithRetry` MUST consult this before every
+    /// `URLSession.bytes(for:)` attempt: calling `bytes(for:)` on a session
+    /// that has already had `invalidateAndCancel()` called raises an
+    /// uncatchable Obj-C `NSInvalidArgumentException` from
+    /// `-[__NSURLSessionLocal taskForClassInfo:]` (synchronously, inside
+    /// the Swift-generated closure passed to `withTaskCancellationHandler`).
+    /// Swift `try`/`catch` does not catch Obj-C exceptions, so the
+    /// exception unwinds straight into `_objc_terminate` and `abort()`s
+    /// the entire xctest process — an entire test bundle dies. The flag
+    /// is checked across an actor boundary by a non-isolated, lock-backed
+    /// accessor so the producer task can read it without an `await` hop
+    /// (no actor reentrancy, no extra suspension point per retry attempt).
+    /// Closing the residual microsecond TOCTOU window between this check
+    /// and `bytes(for:)` requires an Obj-C `@try`/`@catch` bridge — left
+    /// out here because it would require restructuring the package as
+    /// mixed-source SPM. The flag-based mitigation eliminates the
+    /// dominant 200ms / 800ms backoff-window race that surfaces in
+    /// parallel CI test runs.
+    private let sessionInvalidatedFlag = OSAllocatedUnfairLock<Bool>(initialState: false)
+
     nonisolated public var id: String {
         "remote-\(provider.id.uuidString)"
+    }
+
+    /// Lock-backed sync read of the session-invalidated flag. Safe to call
+    /// from any thread / actor / Task without awaiting the actor.
+    nonisolated public var isSessionInvalidated: Bool {
+        sessionInvalidatedFlag.withLock { $0 }
     }
 
     public init(provider: RemoteProvider, models: [String], resolvedHeaders: [String: String]) {
@@ -88,6 +116,30 @@ public actor RemoteProviderService: ToolCapableService {
         }
     }
 
+    static func chatCompletionsReasoningEffort(
+        providerType: RemoteProviderType,
+        host: String,
+        effort: String?
+    ) -> String? {
+        guard
+            let effort = effort?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            !effort.isEmpty
+        else {
+            return nil
+        }
+
+        switch providerType {
+        case .openaiLegacy, .azureOpenAI:
+            if host.lowercased().contains("deepseek") {
+                let acceptedDeepSeekEfforts: Set<String> = ["low", "medium", "high", "max", "xhigh"]
+                return acceptedDeepSeekEfforts.contains(effort) ? effort : nil
+            }
+            return effort
+        case .anthropic, .openResponses, .openAICodex, .gemini, .osaurus:
+            return effort
+        }
+    }
+
     /// Whether the target provider requires `reasoning_content` to be echoed
     /// back on assistant messages in multi-round conversations. DeepSeek's
     /// thinking mode 400s otherwise (issue #959). Other OpenAI-compat hosts
@@ -102,6 +154,65 @@ public actor RemoteProviderService: ToolCapableService {
         case .anthropic, .openResponses, .openAICodex, .gemini, .osaurus:
             return false
         }
+    }
+
+    /// Translate the local DSV4 `reasoningEffort` value into the on-the-wire
+    /// fields the target remote provider actually understands.
+    ///
+    /// `DSV4ReasoningProfile` exposes three modes — `instruct`, `high`, `max` —
+    /// but DeepSeek's public chat API only accepts `reasoning_effort` of
+    /// `high`/`max` (plus `low`/`medium`/`xhigh` aliases) and toggles reasoning
+    /// via a separate `thinking: { type: "enabled"|"disabled" }` object. Other
+    /// OpenAI-compatible hosts that may serve DSV4-style IDs (e.g. OpenRouter)
+    /// will also reject `instruct`, so we strip it everywhere; the `thinking`
+    /// field is DeepSeek-specific and only injected for DeepSeek hosts to avoid
+    /// 422s on strict schemas.
+    ///
+    /// Direct/off aliases (`instruct`, `no_think`, `none`, etc.) are internal
+    /// local-runtime controls, not portable OpenAI-compatible wire values. They
+    /// are stripped for every remote model; DSV4 on DeepSeek additionally gets
+    /// the provider-specific `thinking.disabled` object.
+    static func dsv4RemoteEffort(
+        host: String,
+        model: String,
+        effort: String?
+    ) -> (effort: String?, thinking: ThinkingConfig?) {
+        guard
+            let normalized = effort?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased(), !normalized.isEmpty
+        else {
+            return (nil, nil)
+        }
+
+        let isDirectRailEffort: Bool
+        switch normalized {
+        case "instruct", "chat", "none", "no_think", "nothink", "off", "disabled", "false":
+            isDirectRailEffort = true
+        default:
+            isDirectRailEffort = false
+        }
+        guard isDirectRailEffort else { return (normalized, nil) }
+        let thinking =
+            host.lowercased().contains("deepseek")
+                && DSV4ReasoningProfile.matches(modelId: model)
+            ? ThinkingConfig(type: "disabled") : nil
+        return (nil, thinking)
+    }
+
+    static func remoteChatReasoningControls(
+        providerType: RemoteProviderType,
+        host: String,
+        model: String,
+        effort: String?
+    ) -> (effort: String?, thinking: ThinkingConfig?) {
+        let translated = Self.dsv4RemoteEffort(host: host, model: model, effort: effort)
+        let providerAcceptedEffort = Self.chatCompletionsReasoningEffort(
+            providerType: providerType,
+            host: host,
+            effort: translated.effort
+        )
+        return (providerAcceptedEffort, translated.thinking)
     }
 
     static func effectiveRequestProviderType(
@@ -126,7 +237,16 @@ public actor RemoteProviderService: ToolCapableService {
 
     /// Invalidate the URLSession to release its strong delegate reference.
     /// Must be called before discarding this service instance to avoid leaking.
+    ///
+    /// Sets `sessionInvalidatedFlag` BEFORE `invalidateAndCancel()` so any
+    /// concurrent connect-retry loop in `connectWithRetry` observes the
+    /// flag on its next pre-attempt check and bails out with a Swift
+    /// `CancellationError` instead of calling `bytes(for:)` on the now-
+    /// invalidated session and triggering the uncatchable Obj-C
+    /// `NSException` abort. See the doc comment on
+    /// `sessionInvalidatedFlag` for the full hazard description.
     public func invalidateSession() {
+        sessionInvalidatedFlag.withLock { $0 = true }
         session.invalidateAndCancel()
     }
 
@@ -511,21 +631,37 @@ public actor RemoteProviderService: ToolCapableService {
     ///
     /// Backoff: 200ms, 800ms (exponential, capped). Total wall time at
     /// `maxAttempts = 3` is therefore ≤ ~1s of added latency on success.
+    ///
+    /// `isCancelled` is consulted after every backoff sleep AND before
+    /// each `bytes(for:)` retry. The owning `RemoteProviderService` passes
+    /// a closure backed by `isSessionInvalidated`; if `invalidateSession()`
+    /// fires while we are sleeping in the retry window, the next
+    /// `bytes(for:)` call would raise an uncatchable Obj-C `NSException`
+    /// from `-[__NSURLSessionLocal taskForClassInfo:]` and `abort()` the
+    /// xctest process. See the long doc comment on
+    /// `RemoteProviderService.sessionInvalidatedFlag` for the full
+    /// hazard. The default (`{ false }`) preserves the previous behaviour
+    /// for any caller that owns its session lifetime explicitly and does
+    /// not invalidate concurrently.
     static func connectWithRetry(
         session: URLSession,
         urlRequest: URLRequest,
-        maxAttempts: Int = 3
+        maxAttempts: Int = 3,
+        isCancelled: @Sendable () -> Bool = { false }
     ) async throws -> (URLSession.AsyncBytes, URLResponse) {
         var lastError: Error?
         for attempt in 0 ..< maxAttempts {
             if attempt > 0 {
                 let delayMs: UInt64 = attempt == 1 ? 200_000_000 : 800_000_000
                 try? await Task.sleep(nanoseconds: delayMs)
+                if Task.isCancelled || isCancelled() {
+                    throw lastError ?? CancellationError()
+                }
             }
             do {
                 return try await session.bytes(for: urlRequest)
             } catch {
-                if Task.isCancelled { throw error }
+                if Task.isCancelled || isCancelled() { throw error }
                 lastError = error
                 // Only retry on classic transient categories. Auth /
                 // bad-request type errors are not retried.
@@ -1221,9 +1357,21 @@ public actor RemoteProviderService: ToolCapableService {
                 // upstream yet, so retrying is safe). Once we start
                 // iterating bytes / dispatching SSE chunks we never
                 // retry — the consumer has already begun seeing output.
+                //
+                // The `isCancelled` closure is the dominant CI-flake
+                // mitigation: between retry attempts (200ms / 800ms
+                // sleeps) the owning service's `invalidateSession()` may
+                // fire from a sibling test's teardown, after which any
+                // further `bytes(for:)` call on this session raises an
+                // uncatchable Obj-C `NSException` and `abort()`s the
+                // entire xctest process. See the doc comment on
+                // `sessionInvalidatedFlag`.
                 let (bytes, response) = try await Self.connectWithRetry(
                     session: currentSession,
-                    urlRequest: urlRequest
+                    urlRequest: urlRequest,
+                    isCancelled: { [weak self] in
+                        self?.isSessionInvalidated ?? true
+                    }
                 )
 
                 guard let httpResponse = response as? HTTPURLResponse else {
@@ -1569,7 +1717,12 @@ public actor RemoteProviderService: ToolCapableService {
         tools: [Tool]?,
         toolChoice: ToolChoiceOption?
     ) -> RemoteChatRequest {
-        let effortValue = parameters.modelOptions["reasoningEffort"]?.stringValue
+        let (effortValue, thinking) = Self.remoteChatReasoningControls(
+            providerType: provider.providerType,
+            host: provider.host,
+            model: model,
+            effort: parameters.modelOptions["reasoningEffort"]?.stringValue
+        )
         let allowsReasoningObject =
             Self.allowsChatCompletionsReasoningObject(
                 providerType: provider.providerType,
@@ -1596,6 +1749,7 @@ public actor RemoteProviderService: ToolCapableService {
             tool_choice: toolChoice,
             reasoning_effort: effortValue,
             reasoning: allowsReasoningObject ? effortValue.map { ReasoningConfig(effort: $0) } : nil,
+            thinking: thinking,
             modelOptions: parameters.modelOptions,
             veniceParameters: buildVeniceParameters(from: parameters.modelOptions)
         )
@@ -2129,6 +2283,15 @@ struct ReasoningConfig: Encodable {
     let effort: String
 }
 
+/// DeepSeek's thinking-mode toggle. Sent as a top-level `thinking` object
+/// with `type` of `"enabled"` or `"disabled"`. DeepSeek's public chat API
+/// does NOT accept `reasoning_effort: "instruct"` (only `high`/`max` plus
+/// the deprecated `low`/`medium`/`xhigh` aliases), so we translate the
+/// local DSV4 `instruct` mode into `thinking.type == "disabled"`.
+struct ThinkingConfig: Encodable, Equatable {
+    let type: String
+}
+
 // Venice-specific parameters injected into the request body for Venice AI providers.
 // See https://docs.venice.ai/api-reference/api-spec
 // Nil values intentionally omit provider-specific flags from the encoded JSON.
@@ -2161,6 +2324,10 @@ struct RemoteChatRequest: Encodable {
     let tool_choice: ToolChoiceOption?
     let reasoning_effort: String?
     let reasoning: ReasoningConfig?
+    /// DeepSeek-only thinking-mode toggle (see `ThinkingConfig`). Encoded
+    /// only when non-nil so other OpenAI-compat providers never see an
+    /// unknown `thinking` field (which 422s on strict schemas).
+    let thinking: ThinkingConfig?
     let modelOptions: [String: ModelOptionValue]
     let veniceParameters: VeniceParameters?
 
@@ -2169,6 +2336,7 @@ struct RemoteChatRequest: Encodable {
         case top_p, frequency_penalty, presence_penalty, stop, tools, tool_choice
         case reasoning_effort
         case reasoning
+        case thinking
         case veniceParameters = "venice_parameters"
     }
 
@@ -2207,6 +2375,7 @@ struct RemoteChatRequest: Encodable {
         try container.encodeIfPresent(tool_choice, forKey: .tool_choice)
         try container.encodeIfPresent(reasoning_effort, forKey: .reasoning_effort)
         try container.encodeIfPresent(reasoning, forKey: .reasoning)
+        try container.encodeIfPresent(thinking, forKey: .thinking)
         try container.encodeIfPresent(veniceParameters, forKey: .veniceParameters)
         // `modelOptions` is intentionally not in `CodingKeys` — it stays
         // in-process for model-specific feature flags.
@@ -2494,7 +2663,7 @@ struct RemoteChatRequest: Encodable {
                 GeminiFunctionDeclaration(
                     name: tool.function.name,
                     description: tool.function.description,
-                    parameters: tool.function.parameters
+                    parameters: Self.geminiCompatibleToolParameters(tool.function.parameters)
                 )
             }
             geminiTools = [GeminiTool(functionDeclarations: declarations)]
@@ -2560,6 +2729,25 @@ struct RemoteChatRequest: Encodable {
             generationConfig: generationConfig,
             safetySettings: nil
         )
+    }
+
+    private static func geminiCompatibleToolParameters(_ parameters: JSONValue?) -> JSONValue? {
+        parameters.map(geminiCompatibleSchema)
+    }
+
+    private static func geminiCompatibleSchema(_ value: JSONValue) -> JSONValue {
+        switch value {
+        case .object(let object):
+            var sanitized: [String: JSONValue] = [:]
+            for (key, child) in object where key != "additionalProperties" {
+                sanitized[key] = geminiCompatibleSchema(child)
+            }
+            return .object(sanitized)
+        case .array(let array):
+            return .array(array.map(geminiCompatibleSchema))
+        case .string, .number, .bool, .null:
+            return value
+        }
     }
 
     /// Convert to Open Responses API request format
@@ -2765,14 +2953,71 @@ extension RemoteProviderService {
             throw RemoteProviderServiceError.invalidResponse
         }
 
-        if httpResponse.statusCode >= 400 {
-            let errorMessage = extractErrorMessage(from: data, statusCode: httpResponse.statusCode)
+        return try decodeOpenAICompatibleModelsResponse(
+            data: data,
+            statusCode: httpResponse.statusCode,
+            provider: provider
+        )
+    }
+
+    static func decodeOpenAICompatibleModelsResponse(
+        data: Data,
+        statusCode: Int,
+        provider: RemoteProvider
+    ) throws -> [String] {
+        if statusCode >= 400 {
+            let errorMessage = extractErrorMessage(from: data, statusCode: statusCode)
+            if canUseManualModelDiscoveryFallback(for: provider, statusCode: statusCode),
+                let fallbackModels = manualModelDiscoveryFallback(for: provider)
+            {
+                return fallbackModels
+            }
             throw RemoteProviderServiceError.requestFailed(errorMessage)
         }
 
-        // Parse models response
-        let modelsResponse = try JSONDecoder().decode(ModelsResponse.self, from: data)
-        return modelsResponse.data.map { $0.id }
+        do {
+            let modelsResponse = try JSONDecoder().decode(ModelsResponse.self, from: data)
+            return modelsResponse.data.map { $0.id }
+        } catch {
+            if let fallbackModels = manualModelDiscoveryFallback(for: provider) {
+                return fallbackModels
+            }
+            throw error
+        }
+    }
+
+    private static func canUseManualModelDiscoveryFallback(
+        for provider: RemoteProvider,
+        statusCode: Int
+    ) -> Bool {
+        guard isOpenAICompatibleModelDiscoveryProvider(provider.providerType) else {
+            return false
+        }
+
+        switch statusCode {
+        case 400, 404, 405, 406, 410, 415, 422, 501:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func manualModelDiscoveryFallback(for provider: RemoteProvider) -> [String]? {
+        guard isOpenAICompatibleModelDiscoveryProvider(provider.providerType) else {
+            return nil
+        }
+
+        let manualModels = provider.mergedModelIds(discovered: [])
+        return manualModels.isEmpty ? nil : manualModels
+    }
+
+    private static func isOpenAICompatibleModelDiscoveryProvider(_ providerType: RemoteProviderType) -> Bool {
+        switch providerType {
+        case .openaiLegacy, .openResponses, .azureOpenAI:
+            return true
+        case .anthropic, .openAICodex, .gemini, .osaurus:
+            return false
+        }
     }
 
     /// Fetch models for a native Osaurus agent.

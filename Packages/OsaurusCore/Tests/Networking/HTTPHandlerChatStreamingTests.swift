@@ -96,6 +96,69 @@ struct HTTPHandlerChatStreamingTests {
         #expect(body.contains("\"done\":true") || body.contains("\"done\": true"))
     }
 
+    @Test func ndjson_api_chat_emits_ollama_tool_calls() async throws {
+        struct ToolCallEngine: ChatEngineProtocol {
+            func streamChat(request: ChatCompletionRequest) async throws -> AsyncThrowingStream<String, Error> {
+                AsyncThrowingStream { continuation in
+                    continuation.finish(
+                        throwing: ServiceToolInvocation(
+                            toolName: "get_weather",
+                            jsonArguments: "{\"city\":\"SF\"}"
+                        )
+                    )
+                }
+            }
+            func completeChat(request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
+                fatalError("not used")
+            }
+        }
+
+        let server = try await startTestServer(with: ToolCallEngine())
+        defer { Task { await server.shutdown() } }
+
+        var request = URLRequest(url: URL(string: "http://\(server.host):\(server.port)/api/chat")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.authenticate()
+        request.disablePersistenceForTests()
+        let reqBody = ChatCompletionRequest(
+            model: "fake",
+            messages: [ChatMessage(role: "user", content: "weather?")],
+            temperature: 0.2,
+            max_tokens: 8,
+            stream: true,
+            top_p: nil,
+            frequency_penalty: nil,
+            presence_penalty: nil,
+            stop: nil,
+            n: nil,
+            tools: [
+                Tool(
+                    type: "function",
+                    function: ToolFunction(
+                        name: "get_weather",
+                        description: nil,
+                        parameters: .object(["city": .string("")])
+                    )
+                )
+            ],
+            tool_choice: .auto,
+            session_id: nil
+        )
+        request.httpBody = try JSONEncoder().encode(reqBody)
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        let body = String(decoding: data, as: UTF8.self)
+        #expect(status == 200)
+        #expect(!body.contains("internal_error"))
+        #expect(!body.contains("ServiceToolInvocation"))
+        #expect(body.contains("\"tool_calls\""))
+        #expect(body.contains("\"name\":\"get_weather\""))
+        #expect(body.contains("\"city\":\"SF\""))
+        #expect(body.contains("\"done\":true") || body.contains("\"done\": true"))
+    }
+
     @Test func sse_path_emits_tool_calls_deltas() async throws {
         // Engine that immediately requests a tool call via throwing stream
         struct MockToolCallEngine: ChatEngineProtocol {
@@ -219,6 +282,53 @@ struct HTTPHandlerChatStreamingTests {
         // The follow-up content chunk still rides on `content`.
         #expect(body.contains("\"content\":\"hello\""))
         // The sentinel itself never makes it onto the wire.
+        #expect(!body.contains("\u{FFFE}"))
+    }
+
+    @Test func sse_path_uses_engine_stats_for_usage_chunk() async throws {
+        struct StatsEngine: ChatEngineProtocol {
+            func streamChat(request: ChatCompletionRequest) async throws -> AsyncThrowingStream<
+                String, Error
+            > {
+                AsyncThrowingStream { continuation in
+                    continuation.yield("hello")
+                    continuation.yield(
+                        StreamingStatsHint.encode(
+                            tokenCount: 77,
+                            tokensPerSecond: 12.5,
+                            stopReason: "length"
+                        )
+                    )
+                    continuation.finish()
+                }
+            }
+            func completeChat(request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
+                fatalError("not used")
+            }
+        }
+
+        let server = try await startTestServer(with: StatsEngine())
+        defer { Task { await server.shutdown() } }
+
+        var request = URLRequest(
+            url: URL(string: "http://\(server.host):\(server.port)/chat/completions")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.authenticate()
+        request.disablePersistenceForTests()
+        request.httpBody = #"""
+            {"model":"fake","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}
+            """#.data(using: .utf8)
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        let body = String(decoding: data, as: UTF8.self)
+        #expect(status == 200)
+        #expect(body.contains("\"content\":\"hello\""))
+        #expect(body.contains("\"completion_tokens\":77"))
+        #expect(body.contains("\"finish_reason\":\"length\""))
         #expect(!body.contains("\u{FFFE}"))
     }
 
@@ -355,6 +465,43 @@ struct HTTPHandlerChatStreamingTests {
         #expect(!body.contains("\u{FFFE}"))
     }
 
+    @Test func anthropic_sse_uses_engine_stats_for_output_tokens() async throws {
+        struct StatsEngine: ChatEngineProtocol {
+            func streamChat(request: ChatCompletionRequest) async throws -> AsyncThrowingStream<
+                String, Error
+            > {
+                AsyncThrowingStream { continuation in
+                    continuation.yield("answer")
+                    continuation.yield(StreamingStatsHint.encode(tokenCount: 77, tokensPerSecond: 12.5))
+                    continuation.finish()
+                }
+            }
+            func completeChat(request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
+                fatalError("not used")
+            }
+        }
+        let server = try await startTestServer(with: StatsEngine())
+        defer { Task { await server.shutdown() } }
+
+        var request = URLRequest(url: URL(string: "http://\(server.host):\(server.port)/messages")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.authenticate()
+        request.disablePersistenceForTests()
+        request.httpBody = #"""
+            {"model":"fake","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}
+            """#.data(using: .utf8)
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        let body = String(decoding: data, as: UTF8.self)
+        #expect(status == 200)
+        #expect(body.contains("\"type\":\"message_delta\""))
+        #expect(body.contains("\"output_tokens\":77"))
+        #expect(!body.contains("\u{FFFE}"))
+    }
+
     @Test func anthropic_sse_emits_multi_tool_batch() async throws {
         struct MultiToolEngine: ChatEngineProtocol {
             func streamChat(request: ChatCompletionRequest) async throws -> AsyncThrowingStream<
@@ -448,6 +595,43 @@ struct HTTPHandlerChatStreamingTests {
         #expect(body.contains("\"type\":\"response.reasoning_summary_text.done\""))
         #expect(body.contains("\"type\":\"response.output_text.delta\""))
         #expect(body.contains("\"delta\":\"answer\""))
+    }
+
+    @Test func openresponses_sse_uses_engine_stats_for_output_tokens() async throws {
+        struct StatsEngine: ChatEngineProtocol {
+            func streamChat(request: ChatCompletionRequest) async throws -> AsyncThrowingStream<
+                String, Error
+            > {
+                AsyncThrowingStream { continuation in
+                    continuation.yield("answer")
+                    continuation.yield(StreamingStatsHint.encode(tokenCount: 77, tokensPerSecond: 12.5))
+                    continuation.finish()
+                }
+            }
+            func completeChat(request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
+                fatalError("not used")
+            }
+        }
+        let server = try await startTestServer(with: StatsEngine())
+        defer { Task { await server.shutdown() } }
+
+        var request = URLRequest(url: URL(string: "http://\(server.host):\(server.port)/responses")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.authenticate()
+        request.disablePersistenceForTests()
+        request.httpBody = #"""
+            {"model":"fake","stream":true,"input":"hi"}
+            """#.data(using: .utf8)
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        let body = String(decoding: data, as: UTF8.self)
+        #expect(status == 200)
+        #expect(body.contains("\"type\":\"response.completed\""))
+        #expect(body.contains("\"output_tokens\":77"))
+        #expect(!body.contains("\u{FFFE}"))
     }
 
     @Test func openresponses_sse_does_not_open_message_item_when_only_reasoning() async throws {

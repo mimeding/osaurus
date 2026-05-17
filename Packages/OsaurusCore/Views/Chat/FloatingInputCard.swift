@@ -174,6 +174,17 @@ struct FloatingInputCard: View {
     @State private var lastConfirmedLength: Int = 0
 
     @State private var pauseTimerCancellable: AnyCancellable? = nil
+    @State private var liveVoiceAttachmentId: UUID?
+    /// Active pasted-content attachment whose preview sheet is showing.
+    /// Set on chip tap; cleared on dismiss.
+    @State private var pastedContentPreview: Attachment?
+    @State private var pastedContentEdit: Attachment?
+    /// Character threshold above which clipboard text is converted to a
+    /// pasted-content attachment instead of being inlined into the input.
+    private static let pastedContentThreshold: Int = 400
+    @State private var liveVoicePreencodeTask: Task<Void, Never>?
+    @State private var lastLiveVoicePreencodeAt: Date = .distantPast
+    @State private var lastLiveVoicePreencodeSampleCount: Int = 0
 
     // TextEditor should grow up to ~6 lines before scrolling
     private var inputFontSize: CGFloat { CGFloat(theme.bodySize) }
@@ -428,6 +439,7 @@ struct FloatingInputCard: View {
                     print("[FloatingInputCard] onDisappear: Stopping active voice recording")
                     // Don't use cancelVoiceInput() here as it forces continuous mode off.
                     // Instead, just stop recording but preserve the mode.
+                    cancelLiveVoicePreencodeSession(removeRegistryEntry: true)
                     Task {
                         _ = await speechService.stopStreamingTranscription()
                         speechService.clearTranscription()
@@ -521,6 +533,7 @@ struct FloatingInputCard: View {
                             checkForPause()
                             checkForSilenceTimeout()
                             handlePauseCountdown()
+                            scheduleLiveVoicePreencodeIfNeeded()
                         }
                 } else {
                     pauseTimerCancellable = nil
@@ -660,6 +673,9 @@ extension FloatingInputCard {
         if speechService.isRecording {
             print("[FloatingInputCard] startVoiceInput: Recording already active, ensuring UI is visible")
             showVoiceOverlay = true
+            if liveVoiceAttachmentId == nil {
+                beginLiveVoicePreencodeSession()
+            }
             if voiceInputState == .idle {
                 voiceInputState = .recording
                 lastVoiceActivityTime = Date()
@@ -674,6 +690,7 @@ extension FloatingInputCard {
         // Show overlay immediately for visual feedback, but don't set recording state yet.
         // Recording state will be set when speechService.isRecording becomes true.
         showVoiceOverlay = true
+        beginLiveVoicePreencodeSession()
 
         Task {
             do {
@@ -704,11 +721,92 @@ extension FloatingInputCard {
         }
     }
 
+    private func beginLiveVoicePreencodeSession() {
+        if let oldId = liveVoiceAttachmentId {
+            LiveVoiceAudioInputRegistry.shared.remove(for: oldId)
+        }
+        liveVoicePreencodeTask?.cancel()
+        liveVoicePreencodeTask = nil
+        liveVoiceAttachmentId = UUID()
+        lastLiveVoicePreencodeAt = .distantPast
+        lastLiveVoicePreencodeSampleCount = 0
+    }
+
+    private func cancelLiveVoicePreencodeSession(removeRegistryEntry: Bool) {
+        liveVoicePreencodeTask?.cancel()
+        liveVoicePreencodeTask = nil
+        if removeRegistryEntry, let id = liveVoiceAttachmentId {
+            LiveVoiceAudioInputRegistry.shared.remove(for: id)
+        }
+        liveVoiceAttachmentId = nil
+        lastLiveVoicePreencodeAt = .distantPast
+        lastLiveVoicePreencodeSampleCount = 0
+    }
+
+    @discardableResult
+    private func scheduleLiveVoicePreencodeIfNeeded(
+        force: Bool = false,
+        snapshot providedSnapshot: LiveVoiceAudioSnapshot? = nil,
+        attachmentId providedAttachmentId: UUID? = nil
+    ) -> Task<Void, Never>? {
+        guard mediaCapabilities.supportsAudio,
+            let modelName = selectedModel,
+            ModelFamilyNames.isNemotronOmniFamily(modelName)
+        else {
+            return nil
+        }
+
+        guard let snapshot = providedSnapshot ?? speechService.currentLiveAudioSnapshot(),
+            !snapshot.samples.isEmpty
+        else {
+            return nil
+        }
+
+        let attachmentId: UUID
+        if let providedAttachmentId {
+            attachmentId = providedAttachmentId
+        } else if let existing = liveVoiceAttachmentId {
+            attachmentId = existing
+        } else {
+            let newId = UUID()
+            liveVoiceAttachmentId = newId
+            attachmentId = newId
+        }
+
+        let sampleCount = snapshot.samples.count
+        let minSampleDelta = max(4_000, snapshot.sampleRate / 2)
+        if !force {
+            guard sampleCount >= minSampleDelta else { return nil }
+            guard Date().timeIntervalSince(lastLiveVoicePreencodeAt) >= 0.75 else { return nil }
+            guard sampleCount - lastLiveVoicePreencodeSampleCount >= minSampleDelta else { return nil }
+        }
+
+        lastLiveVoicePreencodeAt = Date()
+        lastLiveVoicePreencodeSampleCount = sampleCount
+
+        let samples = snapshot.samples
+        let sampleRate = snapshot.sampleRate
+        let task = Task.detached(priority: .utility) {
+            let result = await ModelRuntime.shared.preencodeLiveVoiceAudioIfResident(
+                modelName: modelName,
+                attachmentId: attachmentId,
+                samples: samples,
+                sampleRate: sampleRate
+            )
+            print(
+                "[Osaurus][LiveVoice] preencode_status=\(result.status.rawValue) samples=\(result.sampleCount) sample_rate=\(result.sampleRate) encode_ms=\(result.encodeMs) message=\(result.message ?? "")"
+            )
+        }
+        liveVoicePreencodeTask = task
+        return task
+    }
+
     private func cancelVoiceInput() {
         print("[FloatingInputCard] User cancelled voice input - disabling continuous mode")
         hasDetectedSpeechThisTurn = false
         lastConfirmedLength = 0
         isContinuousVoiceMode = false
+        cancelLiveVoicePreencodeSession(removeRegistryEntry: true)
         Task {
             _ = await speechService.stopStreamingTranscription()
             speechService.clearTranscription()
@@ -830,6 +928,7 @@ extension FloatingInputCard {
     }
 
     private func stopVoiceInputFromTimeout() {
+        cancelLiveVoicePreencodeSession(removeRegistryEntry: true)
         Task {
             _ = await speechService.stopStreamingTranscription(force: false)
             speechService.clearTranscription()
@@ -841,6 +940,28 @@ extension FloatingInputCard {
     private func sendVoiceMessage(_ message: String) {
         print("[FloatingInputCard] Sending voice message. Continuous mode: \(isContinuousVoiceMode)")
         logVoiceState(trigger: "sendVoiceMessage-start")
+        let voiceCaptureStart = CFAbsoluteTimeGetCurrent()
+        let voiceSnapshot = mediaCapabilities.supportsAudio ? speechService.currentLiveAudioSnapshot() : nil
+        let snapshotMs = Int((CFAbsoluteTimeGetCurrent() - voiceCaptureStart) * 1000)
+        let wavEncodeStart = CFAbsoluteTimeGetCurrent()
+        let voiceAudioData = voiceSnapshot?.wavData()
+        let wavEncodeMs = Int((CFAbsoluteTimeGetCurrent() - wavEncodeStart) * 1000)
+        let voiceAttachmentId = liveVoiceAttachmentId ?? UUID()
+        liveVoiceAttachmentId = voiceAttachmentId
+        let finalPreencodeTask = voiceSnapshot.flatMap {
+            scheduleLiveVoicePreencodeIfNeeded(
+                force: true,
+                snapshot: $0,
+                attachmentId: voiceAttachmentId
+            )
+        }
+        if mediaCapabilities.supportsAudio {
+            let wavBytes = voiceAudioData?.count ?? 0
+            let durationMs = Int((voiceSnapshot?.durationSeconds ?? 0) * 1000)
+            print(
+                "[Osaurus][LiveVoice] snapshot_ms=\(snapshotMs) wav_encode_ms=\(wavEncodeMs) wav_bytes=\(wavBytes) sample_rate=\(voiceSnapshot?.sampleRate ?? 0) duration_ms=\(durationMs)"
+            )
+        }
 
         // show sending state first
         voiceInputState = .sending
@@ -854,6 +975,7 @@ extension FloatingInputCard {
             print("[FloatingInputCard] Invoking cleanup for voice message (\(message.count) chars)")
             let cleanedMessage = await TranscriptionCleanupService.shared.clean(message)
             print("[FloatingInputCard] Cleanup done. Original: \(message) | Cleaned: \(cleanedMessage)")
+            await finalPreencodeTask?.value
 
             await MainActor.run {
                 voiceInputState = .idle
@@ -861,6 +983,24 @@ extension FloatingInputCard {
 
                 let existing = localText.trimmingCharacters(in: .whitespacesAndNewlines)
                 let fullMessage = existing.isEmpty ? cleanedMessage : "\(existing) \(cleanedMessage)"
+
+                if let voiceAudioData {
+                    let voiceAttachment = Attachment(
+                        id: voiceAttachmentId,
+                        kind: .audio(
+                            voiceAudioData,
+                            format: "wav",
+                            filename: "voice-input.wav"
+                        )
+                    )
+                    if let voiceSnapshot {
+                        LiveVoiceAudioInputRegistry.shared.store(
+                            snapshot: voiceSnapshot,
+                            for: voiceAttachment.id
+                        )
+                    }
+                    pendingAttachments.append(voiceAttachment)
+                }
 
                 // try to paste. if it fails (permissions), we fall back to direct text setting
                 if KeyboardSimulationService.shared.pasteText(cleanedMessage) {
@@ -879,6 +1019,7 @@ extension FloatingInputCard {
                     text = ""
                     onSend(fullMessage)
                 }
+                cancelLiveVoicePreencodeSession(removeRegistryEntry: voiceAudioData == nil)
             }
         }
     }
@@ -1064,11 +1205,22 @@ extension FloatingInputCard {
                             )
                         }
                     case .document, .documentRef:
-                        DocumentChip(attachment: attachment) {
-                            withAnimation(theme.springAnimation()) {
-                                _ = pendingAttachments.remove(at: index)
-                            }
-                        }
+                        DocumentChip(
+                            attachment: attachment,
+                            onRemove: {
+                                withAnimation(theme.springAnimation()) {
+                                    _ = pendingAttachments.remove(at: index)
+                                }
+                            },
+                            onTap: attachment.isPastedContent
+                                ? {
+                                    pastedContentPreview = attachment
+                                } : nil,
+                            onEdit: attachment.isPastedContent
+                                ? {
+                                    pastedContentEdit = attachment
+                                } : nil
+                        )
                     case .audio, .audioRef, .video, .videoRef:
                         // Audio/video attachments display as a labeled chip
                         // with a media-type icon. Inline-bytes are kept on
@@ -1085,6 +1237,23 @@ extension FloatingInputCard {
             }
         }
         .frame(height: 48)
+        .sheet(item: $pastedContentPreview) { attachment in
+            PastedContentSheet(attachment: attachment) {
+                pastedContentPreview = nil
+            }
+        }
+        .sheet(item: $pastedContentEdit) { attachment in
+            PastedContentSheet(
+                attachment: attachment,
+                onDismiss: { pastedContentEdit = nil },
+                onSave: { updated in
+                    if let idx = pendingAttachments.firstIndex(where: { $0.id == attachment.id }) {
+                        pendingAttachments[idx] = .pastedContent(updated)
+                    }
+                    pastedContentEdit = nil
+                }
+            )
+        }
     }
 
     // MARK: - Selector Row (Model + Tools)
@@ -1297,8 +1466,9 @@ extension FloatingInputCard {
         if let model = selectedModel,
             let thinkingOpt = ModelProfileRegistry.profile(for: model)?.thinkingOption
         {
-            let isCurrentlyEnabled = activeModelOptions[thinkingOpt.id]?.boolValue ?? false
-            let isEnabled = thinkingOpt.inverted ? !isCurrentlyEnabled : isCurrentlyEnabled
+            let isEnabled =
+                ModelProfileRegistry.thinkingEnabled(for: model, values: activeModelOptions)
+                ?? false
 
             SelectorChip(isActive: isEnabled) {
                 toggleThinking(id: thinkingOpt.id)
@@ -1342,7 +1512,10 @@ extension FloatingInputCard {
     }
 
     private func toggleThinking(id: String) {
-        let current = activeModelOptions[id]?.boolValue ?? false
+        let current =
+            selectedModel.flatMap {
+                ModelProfileRegistry.boolOptionValue(for: $0, optionId: id, values: activeModelOptions)
+            } ?? false
         let newVal = !current
 
         withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) {
@@ -1801,7 +1974,13 @@ extension FloatingInputCard {
                 switch content {
                 case .text(let text):
                     Button {
-                        localText += text
+                        if text.count >= Self.pastedContentThreshold {
+                            withAnimation(theme.springAnimation()) {
+                                pendingAttachments.append(.pastedContent(text))
+                            }
+                        } else {
+                            localText += text
+                        }
                         clipboardService.markAsRead()
                     } label: {
                         Text("Paste to Input", bundle: .module)
@@ -1864,18 +2043,29 @@ extension FloatingInputCard {
 
         switch content {
         case .text(let text):
-            // Inject directly into the text input area for better UX (editing)
-            withAnimation(theme.springAnimation()) {
-                if localText.isEmpty {
-                    localText = text
-                } else {
-                    if !localText.hasSuffix("\n") {
-                        localText += "\n"
-                    }
-                    localText += text
+            if text.count >= Self.pastedContentThreshold {
+                // Large paste → convert to a "pasted content" attachment.
+                // Lets the user view / remove the snippet without polluting
+                // the input field with hundreds of lines of text.
+                withAnimation(theme.springAnimation()) {
+                    pendingAttachments.append(.pastedContent(text))
+                    clipboardService.markAsRead()
+                    isFocused = true
                 }
-                clipboardService.markAsRead()
-                isFocused = true
+            } else {
+                // Inject directly into the text input area for better UX (editing)
+                withAnimation(theme.springAnimation()) {
+                    if localText.isEmpty {
+                        localText = text
+                    } else {
+                        if !localText.hasSuffix("\n") {
+                            localText += "\n"
+                        }
+                        localText += text
+                    }
+                    clipboardService.markAsRead()
+                    isFocused = true
+                }
             }
 
         case .image(let data):
@@ -2132,27 +2322,29 @@ extension FloatingInputCard {
     }
 
     /// Capability-gated UTType allowlist for both the file picker and
-    /// the drop zone. Resolves from `selectedModel`; non-multimodal
-    /// models stay at images + documents only. Audio appears only for
-    /// Nemotron-3-Nano-Omni; video appears for Qwen-VL family +
-    /// SmolVLM 2 + Nemotron-Omni.
+    /// the drop zone. Resolves from `selectedModel` plus the session's
+    /// already-known image support bit. Text-only models keep document
+    /// attach support but reject image/audio/video media.
     ///
     /// See `Models/Configuration/ModelMediaCapabilities.swift` for the
     /// substring/regex matcher; tests pin the boundary at
     /// `ModelMediaCapabilitiesMCDCTests`.
     private var mediaCapabilities: ModelMediaCapabilities.Capabilities {
-        guard let modelId = selectedModel else { return .imageOnly }
-        return ModelMediaCapabilities.from(modelId: modelId)
+        ModelMediaCapabilities.composerCapabilities(
+            modelId: selectedModel,
+            fallbackSupportsImages: supportsImages
+        )
     }
 
-    /// UTTypes the drop zone advertises. Image + fileURL always — image
-    /// is universally supported across multimodal models, fileURL covers
-    /// document parsing. Audio + movie/video are conditional on the
-    /// loaded model's capabilities so users can't drop a wav onto a
-    /// dense LLM and have it silently ignored.
+    /// UTTypes the drop zone advertises. `fileURL` stays enabled for
+    /// documents, while image/audio/video are advertised only when the
+    /// selected model can consume them.
     private var dropAcceptedTypes: [UTType] {
-        var types: [UTType] = [UTType.image, UTType.fileURL]
+        var types: [UTType] = [UTType.fileURL]
         let cap = mediaCapabilities
+        if cap.supportsImage {
+            types.append(.image)
+        }
         if cap.supportsAudio {
             types.append(.audio)
             // explicit common audio formats so HEIF-style "any audio"
@@ -2175,9 +2367,12 @@ extension FloatingInputCard {
     /// only). Picker shows audio/video formats only when the loaded
     /// model can actually consume them.
     private var pickerAllowedTypes: [UTType] {
-        var types: [UTType] = [UTType.image]
-        types.append(contentsOf: DocumentParser.supportedDocumentTypes)
+        var types: [UTType] = []
         let cap = mediaCapabilities
+        if cap.supportsImage {
+            types.append(.image)
+        }
+        types.append(contentsOf: DocumentParser.supportedDocumentTypes)
         if cap.supportsAudio {
             types.append(.audio)
             types.append(.mp3)
@@ -2219,8 +2414,18 @@ extension FloatingInputCard {
         let ext = url.pathExtension.lowercased()
         let cap = mediaCapabilities
 
-        // Image fast path — universally supported among VLMs.
+        // Image fast path — only for image-capable models.
         if DocumentParser.isImageFile(url: url) {
+            guard cap.supportsImage else {
+                ToastManager.shared.error(
+                    "Cannot attach \(url.lastPathComponent)",
+                    message:
+                        cap.anyMedia
+                        ? "The current model supports \(cap.summary) only."
+                        : "The current model is text-only."
+                )
+                return
+            }
             if let data = try? Data(contentsOf: url), data.count <= maxImageSize,
                 let nsImage = NSImage(data: data),
                 let pngData = nsImage.pngData()
@@ -2321,7 +2526,9 @@ extension FloatingInputCard {
         let cap = mediaCapabilities
 
         for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+            if cap.supportsImage,
+                provider.hasItemConformingToTypeIdentifier(UTType.image.identifier)
+            {
                 handled = true
                 provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, error in
                     guard let data = data, error == nil, data.count <= maxImageSize else { return }
@@ -2417,7 +2624,14 @@ extension FloatingInputCard {
                     localText = ""
                     text = ""
                     return true
-                } : nil
+                } : nil,
+            onPasteText: { pasted in
+                guard pasted.count >= Self.pastedContentThreshold else { return false }
+                withAnimation(theme.springAnimation()) {
+                    pendingAttachments.append(.pastedContent(pasted))
+                }
+                return true
+            }
         )
         .frame(maxHeight: maxHeight)
         .overlay(alignment: .topLeading) {
@@ -2433,7 +2647,7 @@ extension FloatingInputCard {
         }
         .background(
             PasteboardImageMonitor(
-                supportsImages: supportsImages,
+                supportsImages: mediaCapabilities.supportsImage,
                 onImagePaste: { imageData in
                     withAnimation(theme.springAnimation()) {
                         pendingAttachments.append(.image(imageData))
@@ -2505,6 +2719,13 @@ extension FloatingInputCard {
 
     private var cardBackground: some View {
         ZStack {
+            // NSVisualEffectView-backed glass behind everything, only when
+            // the prompt card's own glass toggle is on. The fill above is
+            // already semi-transparent so the material shows through.
+            if theme.glassInputEnabled {
+                ThemedGlassSurface(cornerRadius: 20)
+            }
+
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(theme.primaryBackground.opacity(theme.isDark ? 0.82 : 0.94))
 
@@ -2616,23 +2837,23 @@ struct CachedImageThumbnail: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             if let nsImage = cachedImage {
+                let thumbSize = AttachmentThumbnailLayout.size(for: nsImage, longAxis: size)
                 Image(nsImage: nsImage)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: size, height: size)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: thumbSize.width, height: thumbSize.height)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(theme.primaryBorder.opacity(0.3), lineWidth: 1)
                     )
             } else {
-                // Placeholder while loading
+                // Square placeholder — aspect is unknown until decode completes.
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(theme.secondaryBackground)
                     .frame(width: size, height: size)
             }
 
-            // Remove button
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
                     .font(theme.font(size: 16, weight: .regular))
@@ -2649,7 +2870,6 @@ struct CachedImageThumbnail: View {
         .padding(.top, 4)
         .padding(.trailing, 4)
         .task(id: imageData) {
-            // Decode image only once when data changes
             cachedImage = NSImage(data: imageData)
         }
     }

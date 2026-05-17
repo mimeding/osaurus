@@ -24,6 +24,51 @@ final class VisibleBlocksStore: ObservableObject {
     @Published var groupHeaderMap: [UUID: UUID] = [:]
 }
 
+/// Lifecycle of the generative greeting for a single chat session. Drives
+/// the empty-state UI: `.idle` and `.failed` render the static greeting +
+/// the agent's configured quick actions, `.loading` renders an animated
+/// skeleton, and `.ready` renders the freshly produced AI payload with a
+/// shimmer fade-in. A separate `.failed` (vs `.idle`) lets the UI know the
+/// loader actually completed without a result so it doesn't re-trigger
+/// from a stale state.
+enum GenerativeGreetingState: Equatable {
+    case idle
+    case loading
+    case ready(GenerativeGreeting)
+    case failed
+}
+
+/// Lifts the empty-state's "kick off a generative greeting" wiring out of
+/// `ChatView.body` so the closure stays small enough for the type checker.
+/// Re-runs `loadGenerativeGreetingIfNeeded` whenever the selected model or
+/// active agent changes; the session-level cache key absorbs idempotent
+/// re-fires (re-appearing the empty state, scrolling, etc.).
+private struct GenerativeGreetingTrigger: ViewModifier {
+    @ObservedObject var session: ChatSession
+    @ObservedObject var windowState: ChatWindowState
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { trigger() }
+            .onChange(of: session.selectedModel) { _, _ in trigger() }
+            .onChange(of: windowState.agentId) { _, _ in trigger() }
+    }
+
+    private func trigger() {
+        // The master "enable generative greetings" toggle in Settings was
+        // retired in favor of a per-agent on/off (auto-on when a Core
+        // Model is configured). The Core-Model presence check here is
+        // the canonical sync proxy used elsewhere — see
+        // `MemoryService.hasCoreModel()`.
+        let coreModelConfigured =
+            AppConfiguration.shared.chatConfig.coreModelIdentifier != nil
+        session.loadGenerativeGreetingIfNeeded(
+            agent: windowState.activeAgent,
+            coreModelConfigured: coreModelConfigured
+        )
+    }
+}
+
 @MainActor
 final class ChatSession: ObservableObject {
     @Published var turns: [ChatTurn] = []
@@ -45,6 +90,17 @@ final class ChatSession: ObservableObject {
     /// mutually exclusive — the queue ensures arrival order is honored
     /// without two cards stacking. See `PromptQueue.swift`.
     @Published var promptQueue: PromptQueue = PromptQueue()
+
+    /// Set by the agent-loop `clarify` intercept when the chat is paused
+    /// for a clarify question. Cleared by `send(...)` before the next
+    /// user turn so the loop can resume cleanly. Observed by
+    /// `BackgroundTaskManager.observeChatTask` to flip the task status to
+    /// `.awaitingClarification`, emit the type-3 CLARIFICATION event with
+    /// the parsed payload to the source plugin, and suppress the spurious
+    /// COMPLETED that would otherwise fire when `isStreaming` goes false
+    /// on the intercept.
+    @Published var awaitingClarify: ClarifyPayload?
+
     /// Tracks expand/collapse state for tool calls, thinking blocks, etc.
     /// Lives on the session so state survives NSTableView cell reuse.
     let expandedBlocksStore = ExpandedBlocksStore()
@@ -88,6 +144,16 @@ final class ChatSession: ObservableObject {
     // MARK: - Memoization Cache
     private let blockMemoizer = BlockMemoizer()
     private var cachedContext: ComposedContext?
+
+    private var thinkingEnabledForCurrentModel: Bool {
+        guard let selectedModel else {
+            return activeModelOptions["disableThinking"]?.boolValue == false
+        }
+        return ModelProfileRegistry.thinkingEnabled(
+            for: selectedModel,
+            values: activeModelOptions
+        ) ?? false
+    }
     /// Estimated memory-section token cost for the next send. Populated by
     /// `refreshMemoryTokens` and surfaced through `estimatedContextBreakdown`
     /// so the Context Budget popover shows a "Memory" line even before the
@@ -134,6 +200,23 @@ final class ChatSession: ObservableObject {
     /// `ChatView` observes this to drive auto-speak. Not set on stop/error.
     @Published var lastCompletedAssistantTurnId: UUID?
 
+    /// Lifecycle of the generative greeting for the current empty state.
+    /// Drives skeleton vs static vs AI-produced rendering — see
+    /// `GenerativeGreetingState`. Populated by
+    /// `loadGenerativeGreetingIfNeeded(...)`, reset on `reset()`.
+    @Published var generativeGreetingState: GenerativeGreetingState = .idle
+
+    /// In-flight generation, retained so we can cancel it on reset / send /
+    /// teardown. The state machine on `generativeGreetingState` is what the
+    /// UI observes; the task is kept here purely for cooperative cancel.
+    private var generativeGreetingTask: Task<Void, Never>?
+
+    /// Cache key for the most recently kicked-off generation. Encodes
+    /// session id, agent id, and model so the call only re-runs when one
+    /// of those actually changed (re-appearing the empty state for the
+    /// same context is a no-op).
+    private var generativeGreetingKey: String?
+
     /// Weak back-reference to the owning window state (set by ChatWindowState).
     weak var windowState: ChatWindowState?
 
@@ -146,6 +229,7 @@ final class ChatSession: ObservableObject {
     // nonisolated(unsafe) allows deinit to access these for cleanup
     nonisolated(unsafe) private var remoteModelsObserver: NSObjectProtocol?
     nonisolated(unsafe) private var modelSelectionCancellable: AnyCancellable?
+    nonisolated(unsafe) private var agentAutoSpeakCancellable: AnyCancellable?
     /// Flag to prevent auto-persist during initial load or programmatic resets
     private var isLoadingModel: Bool = false
 
@@ -201,6 +285,21 @@ final class ChatSession: ObservableObject {
             }
         }
 
+        // when the active agent opts into auto-speak, force the per-session
+        // toggle on and suppress the first-tap prompt. agents that haven't
+        // opted in leave the per-chat toggle alone.
+        agentAutoSpeakCancellable =
+            $agentId
+            .sink { [weak self] newAgentId in
+                guard let self else { return }
+                let id = newAgentId ?? Agent.defaultId
+                let agent = AgentManager.shared.agent(for: id)
+                if agent?.autoSpeak == true {
+                    self.autoSpeakAssistant = true
+                    self.hasAskedAutoSpeak = true
+                }
+            }
+
         // Auto-persist model selection and unload unused models on switch
         modelSelectionCancellable =
             $selectedModel
@@ -248,6 +347,7 @@ final class ChatSession: ObservableObject {
     deinit {
         print("[ChatSession] deinit")
         currentTask?.cancel()
+        generativeGreetingTask?.cancel()
         if let observer = remoteModelsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -258,6 +358,7 @@ final class ChatSession: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
         }
         modelSelectionCancellable = nil
+        agentAutoSpeakCancellable = nil
         promptQueueCancellable = nil
     }
 
@@ -361,9 +462,20 @@ final class ChatSession: ObservableObject {
     var selectedModelSupportsImages: Bool {
         guard let model = selectedModel else { return false }
         if model.lowercased() == "foundation" { return false }
+        if ModelMediaCapabilities.from(modelId: model).supportsImage { return true }
         guard let option = pickerItems.first(where: { $0.id == model }) else { return false }
         if case .remote = option.source { return true }
         return option.isVLM
+    }
+
+    var selectedModelSupportsAudio: Bool {
+        guard let model = selectedModel else { return false }
+        return ModelMediaCapabilities.from(modelId: model).supportsAudio
+    }
+
+    var selectedModelSupportsVideo: Bool {
+        guard let model = selectedModel else { return false }
+        return ModelMediaCapabilities.from(modelId: model).supportsVideo
     }
 
     /// Get the currently selected ModelPickerItem
@@ -423,7 +535,7 @@ final class ChatSession: ObservableObject {
                 from: mockTurns,
                 streamingTurnId: nil,
                 agentName: displayName,
-                thinkingEnabled: activeModelOptions["disableThinking"]?.boolValue == false
+                thinkingEnabled: thinkingEnabledForCurrentModel
             )
             let newHeaderMap = blockMemoizer.groupHeaderMap
             withAnimation(.none) {
@@ -437,7 +549,7 @@ final class ChatSession: ObservableObject {
             from: turns,
             streamingTurnId: streamingTurnId,
             agentName: displayName,
-            thinkingEnabled: activeModelOptions["disableThinking"]?.boolValue == false
+            thinkingEnabled: thinkingEnabledForCurrentModel
         )
         let newHeaderMap = blockMemoizer.groupHeaderMap
 
@@ -529,6 +641,77 @@ final class ChatSession: ObservableObject {
         }
 
         return parts.joined(separator: "\n\n")
+    }
+
+    static func buildUserChatMessage(
+        content: String,
+        attachments: [Attachment],
+        supportsImages: Bool,
+        supportsAudio: Bool,
+        supportsVideo: Bool
+    ) -> ChatMessage {
+        let messageText = buildUserMessageText(content: content, attachments: attachments)
+        let imageData = supportsImages ? attachments.images : []
+        let audioPayloads =
+            supportsAudio
+            ? attachments.compactMap(audioPayload)
+            : []
+        let audios = audioPayloads.map { (data: $0.data, format: $0.format) }
+        let localAudioSamples = audioPayloads.map(\.localSamples)
+        let videos: [(data: Data, mimeSubtype: String)] =
+            supportsVideo
+            ? attachments.compactMap(videoPayload)
+            : []
+
+        if !imageData.isEmpty || !audios.isEmpty || !videos.isEmpty {
+            return ChatMessage(
+                role: "user",
+                text: messageText,
+                imageData: imageData,
+                audios: audios,
+                localAudioSamples: localAudioSamples,
+                videos: videos
+            )
+        }
+
+        return ChatMessage(role: "user", content: messageText)
+    }
+
+    private static func audioPayload(from attachment: Attachment) -> (
+        data: Data,
+        format: String,
+        localSamples: LocalAudioSamples?
+    )? {
+        guard attachment.isAudio, let data = attachment.loadAudioData() else { return nil }
+        let format = attachment.audioFormat?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return (
+            data,
+            (format?.isEmpty == false) ? format! : "wav",
+            LiveVoiceAudioInputRegistry.shared.samples(for: attachment.id)
+        )
+    }
+
+    private static func videoPayload(from attachment: Attachment) -> (data: Data, mimeSubtype: String)? {
+        guard attachment.isVideo, let data = attachment.loadVideoData() else { return nil }
+        return (data, videoMimeSubtype(for: attachment.filename))
+    }
+
+    private static func videoMimeSubtype(for filename: String?) -> String {
+        let ext = ((filename ?? "") as NSString).pathExtension
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch ext {
+        case "mov", "qt", "quicktime":
+            return "quicktime"
+        case "m4v":
+            return "mp4"
+        case "":
+            return "mp4"
+        default:
+            return ext
+        }
     }
 
     private static func escapeAttachmentName(_ raw: String) -> String {
@@ -626,6 +809,8 @@ final class ChatSession: ObservableObject {
         visibleBlocksStore.blocks = []
         visibleBlocksStore.groupHeaderMap = [:]
 
+        resetGenerativeGreeting()
+
         applyEffectiveModel(for: agentId)
         rebuildVisibleBlocks()
     }
@@ -641,6 +826,137 @@ final class ChatSession: ObservableObject {
         // new one now that turns/sessionId are cleared.
         applyEffectiveModel(for: newAgentId)
         Task { [weak self] in await self?.refreshContextEstimates() }
+    }
+
+    // MARK: - Generative Greeting
+
+    /// Asynchronously fetch (and cache) a delightful greeting + four quick
+    /// actions for the current empty state. Idempotent for a given
+    /// `(session, agent, model)` combination — re-appearing the empty
+    /// state, scrolling, or theme changes won't re-fire the inference.
+    ///
+    /// State machine: `idle` (feature off / no model) → `loading` (task in
+    /// flight) → `ready(payload)` on success, `failed` on any throw or
+    /// cancellation. The UI uses `loading` to render a skeleton, and both
+    /// `idle` and `failed` to render the static fallback.
+    func loadGenerativeGreetingIfNeeded(agent: Agent, coreModelConfigured: Bool) {
+        guard agent.shouldUseGenerativeGreetings(coreModelConfigured: coreModelConfigured) else {
+            generativeGreetingState = .idle
+            generativeGreetingKey = nil
+            generativeGreetingTask?.cancel()
+            generativeGreetingTask = nil
+            return
+        }
+
+        guard hasAnyModel else { return }
+        guard let model = selectedModel, !model.isEmpty else { return }
+
+        let sessionPart = sessionId?.uuidString ?? "draft"
+        let key = "\(sessionPart):\(agent.id.uuidString):\(model)"
+        if key == generativeGreetingKey { return }
+
+        generativeGreetingKey = key
+        generativeGreetingTask?.cancel()
+
+        let snapshot = agent
+        generativeGreetingTask = Task { [weak self] in
+            // Tell the pool which (agent, model) the user is looking
+            // at so its periodic ticker has a refill target even when
+            // no popFresh / warmUp call is in flight.
+            await GenerativeGreetingPool.shared.setActive(
+                agent: snapshot,
+                model: model
+            )
+
+            // Hot path: a pre-generated greeting is already waiting.
+            // Skip the loading skeleton entirely and ride straight to
+            // `.ready`, then fire a background warmUp to top the pool
+            // back up to target.
+            if let cached = await GenerativeGreetingPool.shared.popFresh(
+                for: snapshot,
+                model: model
+            ) {
+                // Commit to the UI atomically: only assign `.ready` if
+                // the task hasn't been cancelled and the cache key
+                // still matches. If it doesn't match (rapid hide/show,
+                // agent switch landed mid-pop), push the cached entry
+                // BACK into the pool — it cost us a model call to
+                // produce, throwing it away on every fast switch is
+                // wasteful. Returning a `Bool` from `MainActor.run`
+                // lets us keep the commit guard atomic without
+                // splitting it across two hops.
+                let didCommit = await MainActor.run { () -> Bool in
+                    guard let self = self else { return false }
+                    guard !Task.isCancelled,
+                        self.generativeGreetingKey == key
+                    else { return false }
+                    self.generativeGreetingState = .ready(cached)
+                    return true
+                }
+                if !didCommit {
+                    await GenerativeGreetingPool.shared.seed(
+                        cached,
+                        for: snapshot,
+                        model: model
+                    )
+                    return
+                }
+                await GenerativeGreetingPool.shared.warmUp(
+                    for: snapshot,
+                    model: model
+                )
+                return
+            }
+
+            // Cold path: pool was empty (first session of the run, or
+            // an invalidation just landed). Flip to `.loading` so the
+            // empty state renders the skeleton, then generate inline
+            // and seed the pool with the result so the *next* session
+            // open is hot.
+            await MainActor.run {
+                guard let self = self else { return }
+                guard self.generativeGreetingKey == key else { return }
+                self.generativeGreetingState = .loading
+            }
+            do {
+                let result = try await GenerativeGreetingService.shared.generate(
+                    agent: snapshot,
+                    fallbackModel: model
+                )
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self = self else { return }
+                    guard self.generativeGreetingKey == key else { return }
+                    self.generativeGreetingState = .ready(result)
+                }
+                await GenerativeGreetingPool.shared.warmUp(
+                    for: snapshot,
+                    model: model
+                )
+            } catch {
+                guard !Task.isCancelled else { return }
+                // Silent fallback — `.failed` flips the empty state back
+                // to the static greeting + the agent's configured quick
+                // actions. `.idle` is reserved for "feature is off" so
+                // the UI can distinguish the two.
+                await MainActor.run {
+                    guard let self = self else { return }
+                    guard self.generativeGreetingKey == key else { return }
+                    self.generativeGreetingState = .failed
+                }
+            }
+        }
+    }
+
+    /// Cancel any in-flight greeting generation and clear cached output.
+    /// Called from `reset()`, `deinit`, and `ChatWindowManager.hideWindow`
+    /// — the latter so re-opening the window pops a fresh entry from the
+    /// pool instead of briefly flashing the previous session's greeting.
+    func resetGenerativeGreeting() {
+        generativeGreetingTask?.cancel()
+        generativeGreetingTask = nil
+        generativeGreetingKey = nil
+        generativeGreetingState = .idle
     }
 
     /// Invalidate the token cache (called when tools/skills change)
@@ -1000,9 +1316,11 @@ final class ChatSession: ObservableObject {
     private func trimTrailingEmptyAssistantTurn() {
         if let lastTurn = turns.last,
             lastTurn.role == .assistant,
-            lastTurn.contentIsEmpty,
+            lastTurn.contentIsBlank,
             lastTurn.toolCalls == nil,
-            !lastTurn.hasThinking
+            !lastTurn.hasRenderableThinking,
+            lastTurn.generationTokenCount == nil,
+            lastTurn.generationTokensPerSecond == nil
         {
             turns.removeLast()
         }
@@ -1054,7 +1372,12 @@ final class ChatSession: ObservableObject {
     }
 
     private func finalizeRun(runId: UUID?, persistConversationArtifacts: Bool) {
-        guard let runId, activeRunId == runId else { return }
+        guard let runId, activeRunId == runId else {
+            if activeRunId == nil, isStreaming {
+                completeRunCleanup()
+            }
+            return
+        }
 
         let context = activeRunContext
         activeRunId = nil
@@ -1064,7 +1387,7 @@ final class ChatSession: ObservableObject {
         guard persistConversationArtifacts, let context else { return }
 
         if let lastAssistant = turns.last(where: { $0.role == .assistant }),
-            !lastAssistant.contentIsEmpty
+            !lastAssistant.contentIsBlank || lastAssistant.hasRenderableThinking
         {
             lastCompletedAssistantTurnId = lastAssistant.id
         }
@@ -1306,6 +1629,7 @@ final class ChatSession: ObservableObject {
                     let now = Date()
                     if firstDeltaTime == nil {
                         firstDeltaTime = now
+                        ttftTrace?.set("first_chunk_ms", Int(now.timeIntervalSince(streamStartTime) * 1000))
                         ttftTrace?.mark("first_text_delta")
                         ttftTrace?.set("model", selectedModel ?? "unknown")
                         ttftTrace?.emit()
@@ -1326,6 +1650,7 @@ final class ChatSession: ObservableObject {
                     let now = Date()
                     if firstDeltaTime == nil {
                         firstDeltaTime = now
+                        ttftTrace?.set("first_chunk_ms", Int(now.timeIntervalSince(streamStartTime) * 1000))
                         ttftTrace?.mark("first_text_delta")
                         ttftTrace?.set("model", selectedModel ?? "unknown")
                         ttftTrace?.emit()
@@ -1396,6 +1721,7 @@ final class ChatSession: ObservableObject {
         let hasContent = !trimmed.isEmpty || !attachments.isEmpty
         let isRegeneration = !hasContent && !turns.isEmpty
         guard hasContent || isRegeneration else { return }
+        guard activeRunId == nil, !isStreaming else { return }
 
         // Any new user input clears a prior completion banner — we're
         // moving on to a follow-up. Clarify prompts (when active) live
@@ -1409,6 +1735,12 @@ final class ChatSession: ObservableObject {
         if promptQueue.current != nil {
             promptQueue.drainAll()
         }
+        // Resume from any prior clarify pause BEFORE the new run starts so
+        // the BTM streaming-state sink sees `.awaitingClarification`
+        // cleared and the next streaming tick transitions the task back
+        // to `.running` cleanly. Redundant nil → nil writes are
+        // collapsed downstream by `removeDuplicates`.
+        awaitingClarify = nil
 
         if hasContent {
             turns.append(ChatTurn(role: .user, content: trimmed, attachments: attachments))
@@ -1518,8 +1850,28 @@ final class ChatSession: ObservableObject {
                 )
                 guard isRunActive(runId) else { return }
 
-                // Inject one-off skill if the user selected one via slash command
                 var sys = context.prompt
+
+                // Plugin-dispatched tasks (host->dispatch) carry their
+                // source plugin id on the session. Append that plugin's
+                // instructions so the dispatched chat sees the same
+                // contract the plugin would have published via
+                // host->complete. Mirrors `PluginHostAPI.prepareInference`
+                // through the shared `PluginInstructionsResolver`. Without
+                // this, plugin manifest `instructions` are silently
+                // dropped on the dispatch path, leaving the model
+                // unaware of plugin-specific contracts (e.g. Telegram's
+                // `[reply_token …]` / `reply` / `reply_typing` flow).
+                if let pid = sourcePluginId,
+                    let pluginInstructions = PluginInstructionsResolver.instructions(
+                        pluginId: pid,
+                        agentId: agentId
+                    )
+                {
+                    sys = sys.isEmpty ? pluginInstructions : sys + "\n\n" + pluginInstructions
+                }
+
+                // Inject one-off skill if the user selected one via slash command
                 if let skillId = pendingOneOffSkillId {
                     pendingOneOffSkillId = nil
                     if let skill = SkillManager.shared.skill(for: skillId) {
@@ -1567,20 +1919,20 @@ final class ChatSession: ObservableObject {
                     switch t.role {
                     case .assistant:
                         // Skip the last assistant turn if it's empty (it's the streaming placeholder)
-                        if isLastTurn && t.contentIsEmpty && t.toolCalls == nil {
+                        if isLastTurn && t.contentIsBlank && t.thinkingIsBlank && t.toolCalls == nil {
                             return nil
                         }
 
-                        if t.contentIsEmpty && (t.toolCalls == nil || t.toolCalls!.isEmpty) {
+                        if t.contentIsBlank && t.thinkingIsBlank && (t.toolCalls == nil || t.toolCalls!.isEmpty) {
                             return nil
                         }
 
-                        let content: String? = t.contentIsEmpty ? nil : t.content
+                        let content: String? = t.contentIsBlank ? nil : t.content
                         // DeepSeek's thinking mode requires echoing the
                         // previous `reasoning_content` on follow-ups
                         // (issue #959). `RemoteProviderService` strips it
                         // again for providers that don't need it.
-                        let reasoning: String? = t.thinkingIsEmpty ? nil : t.thinking
+                        let reasoning: String? = t.thinkingIsBlank ? nil : t.thinking
 
                         return ChatMessage(
                             role: "assistant",
@@ -1597,13 +1949,13 @@ final class ChatSession: ObservableObject {
                             tool_call_id: t.toolCallId
                         )
                     case .user:
-                        let messageText = Self.buildUserMessageText(content: t.content, attachments: t.attachments)
-                        let imageData = selectedModelSupportsImages ? t.attachments.images : []
-                        if !imageData.isEmpty {
-                            return ChatMessage(role: "user", text: messageText, imageData: imageData)
-                        } else {
-                            return ChatMessage(role: t.role.rawValue, content: messageText)
-                        }
+                        return Self.buildUserChatMessage(
+                            content: t.content,
+                            attachments: t.attachments,
+                            supportsImages: selectedModelSupportsImages,
+                            supportsAudio: selectedModelSupportsAudio,
+                            supportsVideo: selectedModelSupportsVideo
+                        )
                     default:
                         return ChatMessage(role: t.role.rawValue, content: t.content)
                     }
@@ -1909,6 +2261,14 @@ final class ChatSession: ObservableObject {
                                     // answer in history.
                                     turns.append(recordToolTurn(resultText))
                                     rebuildVisibleBlocks()
+                                    // Surface the parsed payload on the
+                                    // session BEFORE breaking the loop so
+                                    // the BackgroundTaskManager observer
+                                    // sees the clarify state ahead of the
+                                    // streaming-end tick — that ordering
+                                    // is what gates the COMPLETED-suppression
+                                    // path for plugin-dispatched runs.
+                                    self.awaitingClarify = payload
                                     let clarifyState = ClarifyPromptState(
                                         question: payload.question,
                                         options: payload.options,
@@ -2186,6 +2546,17 @@ struct ChatView: View {
                 primaryButton: .primary("Yes") { session.autoSpeakAssistant = true },
                 secondaryButton: .cancel("No")
             )
+            .themedAlert(
+                "Keep this chat running?",
+                isPresented: $windowState.showCloseConfirmation,
+                message:
+                    "The model is still generating a reply. Continue in the background and track progress in the menu-bar notch, or stop now.",
+                buttons: [
+                    .primary("Continue in Background") { windowState.confirmCloseInBackground() },
+                    .destructive("Stop and Close") { windowState.confirmCloseAndStop() },
+                    .cancel("Cancel"),
+                ]
+            )
             .themedAlertScope(.chat(windowState.windowId))
             .overlay(ThemedAlertHost(scope: .chat(windowState.windowId)))
             .overlay { promptOverlayLayer }
@@ -2296,38 +2667,7 @@ struct ChatView: View {
                         // Content area (show immediately, model discovery is async)
                         if session.hasAnyModel || session.isDiscoveringModels {
                             if !session.hasVisibleThreadMessages {
-                                // Empty state
-                                ChatEmptyState(
-                                    hasModels: true,
-                                    selectedModel: session.selectedModel,
-                                    agents: windowState.agents,
-                                    activeAgentId: windowState.agentId,
-                                    quickActions: windowState.activeAgent.chatQuickActions
-                                        ?? AgentQuickAction.defaultChatQuickActions,
-                                    onOpenModelManager: {
-                                        AppDelegate.shared?.showManagementWindow(initialTab: .models)
-                                    },
-                                    onUseFoundation: windowState.foundationModelAvailable
-                                        ? {
-                                            session.selectedModel =
-                                                session.pickerItems.firstChatCapable?.id
-                                                ?? "foundation"
-                                        } : nil,
-                                    onQuickAction: { prompt in
-                                        session.input = prompt
-                                    },
-                                    onSelectAgent: { newAgentId in
-                                        windowState.switchAgent(to: newAgentId)
-                                    },
-                                    onOpenOnboarding: nil,
-                                    discoveredAgents: windowState.discoveredAgents,
-                                    onSelectDiscoveredAgent: { agent in selectDiscoveredAgent(agent) },
-                                    activeDiscoveredAgent: windowState.selectedDiscoveredAgent,
-                                    pairedRelayAgents: windowState.pairedRelayAgents,
-                                    onSelectRelayAgent: { relay in connectToRelayAgent(relay) },
-                                    activeRelayAgent: windowState.selectedRelayAgent
-                                )
-                                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                                emptyStateView
                             } else {
                                 // Message thread. While a prompt
                                 // overlay is mounted, blur the thread
@@ -2400,9 +2740,6 @@ struct ChatView: View {
                                         session.selectedModel = session.pickerItems.firstChatCapable?.id ?? "foundation"
                                     } : nil,
                                 onQuickAction: { _ in },
-                                onSelectAgent: { newAgentId in
-                                    windowState.switchAgent(to: newAgentId)
-                                },
                                 onOpenOnboarding: {
                                     // If onboarding was already completed, just refresh models
                                     // Don't reset onboarding - the user just finished it
@@ -2419,10 +2756,6 @@ struct ChatView: View {
                                     // Show onboarding window
                                     AppDelegate.shared?.showOnboardingWindow()
                                 },
-                                discoveredAgents: windowState.discoveredAgents,
-                                onSelectDiscoveredAgent: { agent in selectDiscoveredAgent(agent) },
-                                pairedRelayAgents: windowState.pairedRelayAgents,
-                                onSelectRelayAgent: { relay in connectToRelayAgent(relay) }
                             )
                         }
                     }
@@ -2444,6 +2777,20 @@ struct ChatView: View {
             // Lightweight state updates only - refreshAll() removed to prevent excessive re-renders
             focusTrigger &+= 1
             isPinnedToBottom = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatToolbarSelectDiscoveredAgent)) { notification in
+            guard let targetWindowId = notification.userInfo?["windowId"] as? UUID,
+                targetWindowId == windowState.windowId,
+                let agent = notification.object as? DiscoveredAgent
+            else { return }
+            selectDiscoveredAgent(agent)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatToolbarSelectRelayAgent)) { notification in
+            guard let targetWindowId = notification.userInfo?["windowId"] as? UUID,
+                targetWindowId == windowState.windowId,
+                let relay = notification.object as? PairedRelayAgent
+            else { return }
+            connectToRelayAgent(relay)
         }
         .onReceive(NotificationCenter.default.publisher(for: .vadStartNewSession)) { notification in
             // VAD requested a new session for a specific agent
@@ -2662,6 +3009,48 @@ struct ChatView: View {
         Task { await session.refreshPickerItems() }
     }
 
+    // MARK: - Empty State
+
+    /// The chat empty-state surface, lifted into its own `@ViewBuilder`
+    /// helper so the cumulative type-checker work in `body` stays under
+    /// the budget — adding modifiers to the inline `ChatEmptyState(...)`
+    /// here previously tipped the surrounding ZStack expression past the
+    /// "unable to type-check in reasonable time" threshold.
+    @ViewBuilder
+    private var emptyStateView: some View {
+        ChatEmptyState(
+            hasModels: true,
+            selectedModel: session.selectedModel,
+            agents: windowState.agents,
+            activeAgentId: windowState.agentId,
+            quickActions: windowState.activeAgent.chatQuickActions
+                ?? AgentQuickAction.defaultChatQuickActions,
+            generativeGreetingState: session.generativeGreetingState,
+            onOpenModelManager: {
+                AppDelegate.shared?.showManagementWindow(initialTab: .models)
+            },
+            onUseFoundation: windowState.foundationModelAvailable
+                ? {
+                    session.selectedModel =
+                        session.pickerItems.firstChatCapable?.id
+                        ?? "foundation"
+                } : nil,
+            onQuickAction: { prompt in
+                session.input = prompt
+            },
+            onOpenOnboarding: nil,
+            activeDiscoveredAgent: windowState.selectedDiscoveredAgent,
+            activeRelayAgent: windowState.selectedRelayAgent
+        )
+        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+        .modifier(
+            GenerativeGreetingTrigger(
+                session: session,
+                windowState: windowState
+            )
+        )
+    }
+
     // MARK: - Background
 
     private var chatBackground: some View {
@@ -2727,38 +3116,60 @@ struct ChatView: View {
         let blocks = session.visibleBlocks
         let minimapMarkers = buildMinimapMarkers(from: blocks)
 
+        let inlineInsetHeight = agentInlineInsetHeight
+
         return ZStack {
-            VStack(spacing: 8) {
-                agentInlineBlocks
-                IsolatedThreadView(
-                    store: session.visibleBlocksStore,
-                    width: width,
-                    agentName: displayName,
-                    agentAvatar: windowState.cachedActiveAgent.avatar,
-                    agentCustomAvatarPath: windowState.cachedActiveAgent.customAvatarURL?.path,
-                    isStreaming: session.isStreaming,
-                    lastAssistantTurnId: lastAssistantTurnId,
-                    expandedBlocksStore: session.expandedBlocksStore,
-                    scrollToBottomTrigger: scrollToBottomTrigger,
-                    onScrolledToBottom: { isPinnedToBottom = true },
-                    onScrolledAwayFromBottom: { isPinnedToBottom = false },
-                    onCopy: copyTurnContent,
-                    onRegenerate: regenerateTurn,
-                    onEdit: beginEditingTurn,
-                    onDelete: deleteTurn,
-                    onSpeak: speakTurnContent,
-                    editingTurnId: editingTurnId,
-                    editText: $editText,
-                    onConfirmEdit: confirmEditAndRegenerate,
-                    onCancelEdit: cancelEditing,
-                    onUserImagePreview: openUserAttachmentPreview(attachmentId:),
-                    onVisibleTopUserTurnChanged: { turnId in
-                        activeMinimapTurnId = turnId
-                    },
-                    scrollToTurnId: scrollToTurnId,
-                    scrollToTurnTrigger: scrollToTurnTrigger
-                )
+            // Thread reserves a small top inset matching the *collapsed*
+            // pill stack height so the topmost message stays visible
+            // above the floating chrome. Expanded cards float over
+            // content (semi-transparent material lets the conversation
+            // read through). The inset animates with the same spring
+            // as the pill mount/unmount so the thread visibly slides
+            // when the agent emits a todo or completes.
+            IsolatedThreadView(
+                store: session.visibleBlocksStore,
+                width: width,
+                agentName: displayName,
+                agentAvatar: windowState.cachedActiveAgent.avatar,
+                agentCustomAvatarPath: windowState.cachedActiveAgent.customAvatarURL?.path,
+                isStreaming: session.isStreaming,
+                lastAssistantTurnId: lastAssistantTurnId,
+                expandedBlocksStore: session.expandedBlocksStore,
+                scrollToBottomTrigger: scrollToBottomTrigger,
+                onScrolledToBottom: { isPinnedToBottom = true },
+                onScrolledAwayFromBottom: { isPinnedToBottom = false },
+                onCopy: copyTurnContent,
+                onRegenerate: regenerateTurn,
+                onEdit: beginEditingTurn,
+                onDelete: deleteTurn,
+                onSpeak: speakTurnContent,
+                editingTurnId: editingTurnId,
+                editText: $editText,
+                onConfirmEdit: confirmEditAndRegenerate,
+                onCancelEdit: cancelEditing,
+                onUserImagePreview: openUserAttachmentPreview(attachmentId:),
+                onVisibleTopUserTurnChanged: { turnId in
+                    activeMinimapTurnId = turnId
+                },
+                scrollToTurnId: scrollToTurnId,
+                scrollToTurnTrigger: scrollToTurnTrigger
+            )
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Color.clear
+                    .frame(height: inlineInsetHeight)
+                    .animation(theme.springAnimation(), value: inlineInsetHeight)
             }
+
+            // Floating agent-loop chrome (Todo / Done) — top-anchored
+            // overlay. Lives in the ZStack as a sibling to the thread
+            // so it doesn't consume vertical space; pills compact, cards
+            // expand on hover/pin (see `AgentInlineBlocks.swift`).
+            VStack(spacing: AgentInlineBlockMetrics.stackSpacing) {
+                agentInlineBlocks
+            }
+            .padding(.top, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .allowsHitTesting(session.lastCompletionSummary != nil || session.currentTodo != nil)
 
             // Minimap overlay — sits at vertical center, right edge
             if minimapMarkers.count >= 2 {
@@ -2813,11 +3224,15 @@ struct ChatView: View {
         }
     }
 
-    /// Inline agent-loop blocks rendered above the message thread. Each
+    /// Floating agent-loop chrome rendered as a top-anchored overlay
+    /// over the message thread (see `messageThread(_:)`). Each block
     /// is gated on the corresponding `@Published` state on
     /// `ChatSession`; nothing renders when the state is nil/empty.
-    /// Order: completion banner first (most recent terminal event),
-    /// then todo (ongoing state).
+    ///
+    /// Order: Todo at the top (compact, persistent state); the Done
+    /// banner sits below the Todo as a translucent overlay. The thread
+    /// inset only reserves space for the Todo pill — the Done banner
+    /// floats over conversation content until the user dismisses it.
     ///
     /// `clarify` used to live here too but has been promoted to a
     /// bottom-pinned overlay (see `promptOverlayLayer`) so the question
@@ -2825,16 +3240,46 @@ struct ChatView: View {
     /// thread.
     @ViewBuilder
     private var agentInlineBlocks: some View {
-        if let summary = session.lastCompletionSummary {
-            InlineCompleteBlock(summary: summary)
-                .padding(.top, 8)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-        }
         if let todo = session.currentTodo {
             InlineTodoBlock(todo: todo)
-                .padding(.top, 8)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(
+                    .opacity
+                        .combined(with: .move(edge: .top))
+                        .combined(with: .scale(scale: 0.96, anchor: .top))
+                )
         }
+        if let summary = session.lastCompletionSummary {
+            InlineCompleteBlock(
+                summary: summary,
+                onDismiss: { [weak session] in
+                    session?.lastCompletionSummary = nil
+                }
+            )
+            // Asymmetric transition: appear with a soft slide+scale so
+            // arrival reads as "new event"; dismiss with pure opacity
+            // so it cleanly fades away when the user clicks ×.
+            .transition(
+                .asymmetric(
+                    insertion: .opacity
+                        .combined(with: .move(edge: .top))
+                        .combined(with: .scale(scale: 0.96, anchor: .top)),
+                    removal: .opacity
+                )
+            )
+        }
+    }
+
+    /// Top safe-area inset reserved for the floating Todo pill so the
+    /// topmost message stays visible underneath it. The Done banner
+    /// (when present) intentionally overlays content beneath the Todo
+    /// — it's a transient notification the user dismisses, not a
+    /// persistent layout fixture, so reserving space for it would just
+    /// chop the visible chat. Returns 0 when no Todo is active.
+    private var agentInlineInsetHeight: CGFloat {
+        guard session.currentTodo != nil else { return 0 }
+        let topPadding: CGFloat = 4
+        let bottomBuffer: CGFloat = 6
+        return topPadding + AgentInlineBlockMetrics.collapsedPillHeight + bottomBuffer
     }
 
 }
@@ -2952,14 +3397,14 @@ extension ChatView {
     private func copyTurnContent(turnId: UUID) {
         guard let turn = session.turns.first(where: { $0.id == turnId }) else { return }
         var textToCopy = ""
-        if turn.hasThinking {
+        if turn.hasRenderableThinking {
             textToCopy += turn.thinking
         }
-        if !turn.contentIsEmpty {
+        if !turn.contentIsBlank {
             if !textToCopy.isEmpty { textToCopy += "\n\n" }
             textToCopy += turn.visibleContent
         }
-        guard !textToCopy.isEmpty else { return }
+        guard !textToCopy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(textToCopy, forType: .string)
     }
@@ -2973,13 +3418,17 @@ extension ChatView {
     /// TTSService posts a notification that opens the TTS settings tab.
     private func speakTurnContent(turnId: UUID) {
         guard let turn = session.turns.first(where: { $0.id == turnId }) else { return }
-        guard !turn.contentIsEmpty else { return }
+        guard !turn.contentIsBlank else { return }
         let isStartingPlayback = TTSService.shared.playingMessageId != turnId
         if isStartingPlayback && !session.hasAskedAutoSpeak {
             session.hasAskedAutoSpeak = true
             showAutoSpeakPrompt = true
         }
-        TTSService.shared.toggleSpeak(text: turn.visibleContent, messageId: turnId)
+        TTSService.shared.toggleSpeak(
+            text: turn.visibleContent,
+            messageId: turnId,
+            voiceOverride: agentTTSVoiceOverride()
+        )
     }
 
     /// Auto-speak the just-finished assistant turn when the per-session
@@ -2992,9 +3441,19 @@ extension ChatView {
         guard TTSService.shared.isModelReady else { return }
         guard TTSService.shared.playingMessageId == nil else { return }
         guard let turn = session.turns.first(where: { $0.id == turnId }),
-            !turn.contentIsEmpty
+            !turn.contentIsBlank
         else { return }
-        TTSService.shared.toggleSpeak(text: turn.visibleContent, messageId: turnId)
+        TTSService.shared.toggleSpeak(
+            text: turn.visibleContent,
+            messageId: turnId,
+            voiceOverride: agentTTSVoiceOverride()
+        )
+    }
+
+    /// active agent's voice override, or nil to use the global voice.
+    private func agentTTSVoiceOverride() -> String? {
+        let id = session.agentId ?? Agent.defaultId
+        return AgentManager.shared.agent(for: id)?.ttsVoice
     }
 
     /// Stop any active generation and remove the turn (plus all subsequent turns)

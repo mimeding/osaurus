@@ -10,8 +10,14 @@ import Foundation
 struct GenerationParameters: Sendable {
     let temperature: Float?
     let maxTokens: Int
+    /// Whether `maxTokens` came from an explicit client request. When false,
+    /// local MLX services may replace the hardcoded app fallback with the
+    /// model bundle's `generation_config.json.max_new_tokens`.
+    let maxTokensExplicit: Bool
     /// Optional per-request top_p override (falls back to server configuration when nil)
     let topPOverride: Float?
+    /// Optional per-request min_p override (falls back to model configuration when nil).
+    let minPOverride: Float?
     /// Optional repetition penalty (applies when supported by backend).
     /// Mapped from OpenAI `frequency_penalty` only — `presence_penalty`
     /// has no MLX analog. The raw OpenAI values below are kept on the
@@ -45,7 +51,9 @@ struct GenerationParameters: Sendable {
     init(
         temperature: Float?,
         maxTokens: Int,
+        maxTokensExplicit: Bool = true,
         topPOverride: Float? = nil,
+        minPOverride: Float? = nil,
         repetitionPenalty: Float? = nil,
         frequencyPenalty: Float? = nil,
         presencePenalty: Float? = nil,
@@ -57,7 +65,9 @@ struct GenerationParameters: Sendable {
     ) {
         self.temperature = temperature
         self.maxTokens = maxTokens
+        self.maxTokensExplicit = maxTokensExplicit
         self.topPOverride = topPOverride
+        self.minPOverride = minPOverride
         self.repetitionPenalty = repetitionPenalty
         self.frequencyPenalty = frequencyPenalty
         self.presencePenalty = presencePenalty
@@ -186,27 +196,46 @@ enum StreamingReasoningHint: Sendable {
 /// Wire format: `<sentinel>stats:<tokenCount>;<tokensPerSecond>[;<flags>]`.
 /// The optional third field carries comma-separated flags so future
 /// observability signals can be added without breaking older decoders —
-/// today's only flag is `unclosed`, set when vmlx's
+/// current flags are `unclosed`, set when vmlx's
 /// `GenerateCompletionInfo.unclosedReasoning == true` (the model ended
-/// the stream still inside a `<think>` block, i.e. trapped-thinking).
+/// the stream still inside a `<think>` block, i.e. trapped-thinking),
+/// and `stop=<reason>`, which preserves vmlx's terminal stop reason so
+/// HTTP writers can distinguish `length` from a natural `stop`.
 enum StreamingStatsHint: Sendable {
     private static let statsPrefix = "\u{FFFE}stats:"
     private static let posixLocale = Locale(identifier: "en_US_POSIX")
     private static let unclosedFlag = "unclosed"
+    private static let stopFlagPrefix = "stop="
 
     static func encode(
         tokenCount: Int,
         tokensPerSecond: Double,
-        unclosedReasoning: Bool = false
+        unclosedReasoning: Bool = false,
+        stopReason: String? = nil
     ) -> String {
         let tps = String(format: "%.4f", locale: posixLocale, tokensPerSecond)
-        let suffix = unclosedReasoning ? ";\(unclosedFlag)" : ""
+        var flags: [String] = []
+        if unclosedReasoning {
+            flags.append(unclosedFlag)
+        }
+        if let stopReason {
+            let normalized = stopReason.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty {
+                flags.append("\(stopFlagPrefix)\(normalized)")
+            }
+        }
+        let suffix = flags.isEmpty ? "" : ";\(flags.joined(separator: ","))"
         return "\(statsPrefix)\(tokenCount);\(tps)\(suffix)"
     }
 
     static func decode(
         _ delta: String
-    ) -> (tokenCount: Int, tokensPerSecond: Double, unclosedReasoning: Bool)? {
+    ) -> (
+        tokenCount: Int,
+        tokensPerSecond: Double,
+        unclosedReasoning: Bool,
+        stopReason: String?
+    )? {
         guard delta.hasPrefix(statsPrefix) else { return nil }
         let payload = delta.dropFirst(statsPrefix.count)
         // Split into at most 3 parts: count, tps, optional flags. `maxSplits=2`
@@ -219,7 +248,13 @@ enum StreamingStatsHint: Sendable {
         else { return nil }
         let flags = parts.count >= 3 ? parts[2].split(separator: ",") : []
         let unclosed = flags.contains { $0 == Substring(unclosedFlag) }
-        return (count, tps, unclosed)
+        let stopReason = flags.compactMap { flag -> String? in
+            guard flag.hasPrefix(stopFlagPrefix) else { return nil }
+            let value = flag.dropFirst(stopFlagPrefix.count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }.first
+        return (count, tps, unclosed, stopReason)
     }
 }
 

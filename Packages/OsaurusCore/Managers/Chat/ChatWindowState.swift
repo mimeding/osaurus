@@ -24,6 +24,12 @@ final class ChatWindowState: ObservableObject {
 
     @Published var showSidebar: Bool = false
 
+    /// Drives the in-chat "Keep this chat running?" confirmation overlay
+    /// that intercepts a close while `session.isStreaming` is true. Set
+    /// from `ChatWindowManager.shouldAllowClose`; cleared by the alert's
+    /// button actions in `ChatView`.
+    @Published var showCloseConfirmation: Bool = false
+
     // MARK: - Agent State
 
     @Published var agentId: UUID
@@ -131,6 +137,21 @@ final class ChatWindowState: ObservableObject {
         selectedRelayAgent = nil
         session.stop()
         session.onSessionChanged = nil
+    }
+
+    // MARK: - Close-Confirmation Actions
+
+    /// "Continue in Background" — adopt the live session as a background
+    /// task (visible in the notch) and dismiss the window.
+    func confirmCloseInBackground() {
+        BackgroundTaskManager.shared.detachChatWindow(windowId: windowId)
+        ChatWindowManager.shared.closeWindow(id: windowId)
+    }
+
+    /// "Stop and Close" — cancel the in-flight stream, then dismiss.
+    func confirmCloseAndStop() {
+        session.stop()
+        ChatWindowManager.shared.closeWindow(id: windowId)
     }
 
     // MARK: - API
@@ -415,16 +436,18 @@ final class ChatWindowState: ObservableObject {
                 queue: .main
             ) { [weak self] _ in Task { @MainActor in self?.refreshAgentConfig() } }
         )
-        // Refresh theme when global theme changes (only if agent uses global theme)
+        // refresh theme when any theme on disk changes. refreshTheme()
+        // re-resolves from `installedThemes`/`currentTheme` and no ops via its
+        // config equality guard if this window's effective theme is unchanged,
+        // so windows pinned to an agent specific theme also pick up live edits
+        // to that theme without waiting for a reopen
         notificationObservers.append(
             NotificationCenter.default.addObserver(
                 forName: .globalThemeChanged,
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in
-                    if self?.themeId == nil { self?.refreshTheme() }
-                }
+                Task { @MainActor in self?.refreshTheme() }
             }
         )
         // Note: `.agentUpdated` is intentionally not observed here.

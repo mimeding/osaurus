@@ -45,8 +45,44 @@ public final class ChatWindowManager: NSObject, ObservableObject {
     private var windowStates: [UUID: ChatWindowState] = [:]
     private var sessionCallbacks: [UUID: () -> Void] = [:]
 
+    /// Sleep/wake observers on `NSWorkspace.shared.notificationCenter`.
+    /// Held so we can detach them in `deinit`. Pause the greeting pool
+    /// on sleep so a closed laptop doesn't keep firing background
+    /// inferences against the GPU.
+    nonisolated(unsafe) private var sleepObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var wakeObserver: NSObjectProtocol?
+
     private override init() {
         super.init()
+        installSleepWakeObservers()
+    }
+
+    deinit {
+        let nc = NSWorkspace.shared.notificationCenter
+        if let token = sleepObserver { nc.removeObserver(token) }
+        if let token = wakeObserver { nc.removeObserver(token) }
+    }
+
+    /// Hook NSWorkspace's sleep/wake notifications to the pool's
+    /// pause/resume seam. Notifications from `NSWorkspace` arrive on
+    /// the main thread, but the pool is an actor so we hop through
+    /// `Task` to call into it.
+    private func installSleepWakeObservers() {
+        let nc = NSWorkspace.shared.notificationCenter
+        sleepObserver = nc.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { await GenerativeGreetingPool.shared.pause() }
+        }
+        wakeObserver = nc.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { await GenerativeGreetingPool.shared.resume() }
+        }
     }
 
     // MARK: - Public API
@@ -139,11 +175,19 @@ public final class ChatWindowManager: NSObject, ObservableObject {
         window.close()
     }
 
-    /// Check if window close should be allowed. Chat sessions can always
-    /// be safely closed; users keep work running by leaving the window open.
+    /// Gate the close: if the session is mid-stream and not already
+    /// detached to a background task, surface the in-chat confirmation
+    /// overlay and tell AppKit to keep the window open. The user's pick
+    /// (Continue in Background / Stop and Close) re-enters via
+    /// `closeWindow(id:)`, which now passes this gate.
     private func shouldAllowClose(id: UUID) -> Bool {
-        _ = id
-        return true
+        guard let state = windowStates[id] else { return true }
+        if BackgroundTaskManager.shared.isWindowDetachedToBackground(windowId: id) {
+            return true
+        }
+        guard state.session.isStreaming else { return true }
+        state.showCloseConfirmation = true
+        return false
     }
 
     /// Show/focus a window by ID
@@ -179,6 +223,25 @@ public final class ChatWindowManager: NSObject, ObservableObject {
     /// Hide a window by ID
     public func hideWindow(id: UUID) {
         guard let window = nsWindows[id] else { return }
+        // Drop any cached AI-generated empty-state content so re-opening
+        // the window pops a fresh entry from `GenerativeGreetingPool`
+        // instead of flashing the previous session's greeting before
+        // the trigger replaces it. Idempotent — clearing an already
+        // `.idle` session is a no-op.
+        if let state = windowStates[id] {
+            state.session.resetGenerativeGreeting()
+        }
+        // Tell the pool the user no longer has THIS window's agent on
+        // screen so the 5-min ticker stops topping up its cache. The
+        // pool scopes the clear to the matching agent so a second
+        // visible window for a different agent keeps its active
+        // pointer; same-agent multi-window is rare enough that any
+        // residual over-clearing is recovered on the next empty-state
+        // appearance via `setActive`.
+        if let info = windows[id] {
+            let agentId = info.agentId
+            Task { await GenerativeGreetingPool.shared.clearActive(agentId: agentId) }
+        }
         window.orderOut(nil)
         print("[ChatWindowManager] Hid window \(id)")
     }
@@ -217,6 +280,15 @@ public final class ChatWindowManager: NSObject, ObservableObject {
     /// Check if any windows are visible
     public var hasVisibleWindows: Bool {
         nsWindows.values.contains { $0.isVisible }
+    }
+
+    /// True when any open chat session is currently streaming a model
+    /// response. Read by `GenerativeGreetingPool` to defer background
+    /// refills while an interactive turn is in flight — both calls
+    /// share the same MLX context and unboxing them concurrently
+    /// degrades token-per-second on the user's active conversation.
+    public var isAnySessionStreaming: Bool {
+        windowStates.values.contains { $0.session.isStreaming }
     }
 
     /// Get the count of active windows
@@ -434,6 +506,10 @@ public final class ChatWindowManager: NSObject, ObservableObject {
         let toolbar = NSToolbar(identifier: "ChatToolbar")
         toolbar.allowsUserCustomization = false
         toolbar.autosavesConfiguration = false
+        // Anchor the agent pill at the toolbar's geometric center; without
+        // this it drifts off-axis because of the asymmetric leading/trailing
+        // items and the traffic-light area.
+        toolbar.centeredItemIdentifier = ChatToolbarDelegate.agentItem
 
         let toolbarDelegate = ChatToolbarDelegate(windowState: windowState, session: windowState.session)
         toolbar.delegate = toolbarDelegate
@@ -502,7 +578,7 @@ public final class ChatWindowManager: NSObject, ObservableObject {
     fileprivate func windowWillClose(id: UUID) {
         print("[ChatWindowManager] Window \(id) will close")
 
-        let isDetachedToBackground = BackgroundTaskManager.shared.isBackgroundTask(id)
+        let isDetachedToBackground = BackgroundTaskManager.shared.isWindowDetachedToBackground(windowId: id)
 
         // Only invoke save callback and cleanup if NOT detached to background
         // (background task needs the session to keep running)
@@ -533,8 +609,13 @@ public final class ChatWindowManager: NSObject, ObservableObject {
                 // next compose pass.
                 await MemoryContextAssembler.shared.invalidateCache(agentId: aid.uuidString)
             }
-            let active = self.activeLocalModelNames()
-            await ModelRuntime.shared.unloadModelsNotIn(active)
+            let idlePolicy =
+                ServerConfigurationStore.load()?.modelIdleResidencyPolicy
+                ?? ServerConfiguration.default.modelIdleResidencyPolicy
+            if idlePolicy == .immediately {
+                let active = self.activeLocalModelNames()
+                await ModelRuntime.shared.unloadModelsNotIn(active)
+            }
         }
 
         // Sever NSWindow -> NSHostingController link so the SwiftUI view tree
@@ -573,9 +654,20 @@ private final class ChatPanel: NSPanel {
 /// so macOS applies native per-item styling (pill backgrounds, spacing).
 @MainActor
 private final class ChatToolbarDelegate: NSObject, NSToolbarDelegate {
-    private static let sidebarItem = NSToolbarItem.Identifier("ChatToolbar.sidebar")
-    private static let actionItem = NSToolbarItem.Identifier("ChatToolbar.action")
-    private static let pinItem = NSToolbarItem.Identifier("ChatToolbar.pin")
+    fileprivate static let sidebarItem = NSToolbarItem.Identifier("ChatToolbar.sidebar")
+    fileprivate static let agentItem = NSToolbarItem.Identifier("ChatToolbar.agent")
+    fileprivate static let actionItem = NSToolbarItem.Identifier("ChatToolbar.action")
+    fileprivate static let pinItem = NSToolbarItem.Identifier("ChatToolbar.pin")
+
+    /// Layout: sidebar on the leading edge, agent pill centered (via the
+    /// toolbar's `centeredItemIdentifier`), action + pin on the trailing edge.
+    /// The flexible spaces let the trailing items hug the right edge.
+    /// Any stale identifiers AppKit may have persisted in user defaults
+    /// fall through to `default: nil` in `itemForItemIdentifier`, which
+    /// renders them as no-ops rather than crashing.
+    private static let itemIdentifiers: [NSToolbarItem.Identifier] = [
+        sidebarItem, .flexibleSpace, agentItem, .flexibleSpace, actionItem, pinItem,
+    ]
 
     private weak var windowState: ChatWindowState?
     private weak var session: ChatSession?
@@ -587,22 +679,11 @@ private final class ChatToolbarDelegate: NSObject, NSToolbarDelegate {
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // Chat/Work toggle removed: the agentic loop (todo / complete /
-        // clarify) now lives inside Chat itself, so a separate Work tab
-        // is redundant. The toggle case below still resolves so any
-        // stale toolbar identifiers in user defaults render as no-ops
-        // instead of crashing.
-        [
-            Self.sidebarItem, .flexibleSpace, .flexibleSpace, Self.actionItem,
-            Self.pinItem,
-        ]
+        Self.itemIdentifiers
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [
-            Self.sidebarItem, .flexibleSpace, .flexibleSpace, Self.actionItem,
-            Self.pinItem,
-        ]
+        Self.itemIdentifiers
     }
 
     func toolbar(
@@ -618,6 +699,13 @@ private final class ChatToolbarDelegate: NSObject, NSToolbarDelegate {
                 identifier: itemIdentifier,
                 rootView:
                     ChatToolbarSidebarView(windowState: windowState)
+            )
+
+        case Self.agentItem:
+            return makeHostingItem(
+                identifier: itemIdentifier,
+                rootView:
+                    ChatToolbarAgentView(windowState: windowState, session: session)
             )
 
         case Self.actionItem:
@@ -647,6 +735,9 @@ private final class ChatToolbarDelegate: NSObject, NSToolbarDelegate {
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.frame = NSRect(origin: .zero, size: hostingView.fittingSize)
         item.view = hostingView
+        if #available(macOS 13.0, *) {
+            item.isBordered = false
+        }
         return item
     }
 }
@@ -669,6 +760,46 @@ private struct ChatToolbarSidebarView: View {
         )
         .environment(\.theme, windowState.theme)
     }
+}
+
+/// Agent selector pill that lives in the toolbar's centered slot.
+private struct ChatToolbarAgentView: View {
+    @ObservedObject var windowState: ChatWindowState
+    @ObservedObject var session: ChatSession
+
+    var body: some View {
+        AgentPill(
+            agents: windowState.agents,
+            activeAgentId: windowState.agentId,
+            onSelectAgent: { newAgentId in
+                windowState.switchAgent(to: newAgentId)
+            },
+            discoveredAgents: windowState.discoveredAgents,
+            onSelectDiscoveredAgent: { agent in
+                NotificationCenter.default.post(
+                    name: .chatToolbarSelectDiscoveredAgent,
+                    object: agent,
+                    userInfo: ["windowId": windowState.windowId]
+                )
+            },
+            activeDiscoveredAgent: windowState.selectedDiscoveredAgent,
+            pairedRelayAgents: windowState.pairedRelayAgents,
+            onSelectRelayAgent: { relay in
+                NotificationCenter.default.post(
+                    name: .chatToolbarSelectRelayAgent,
+                    object: relay,
+                    userInfo: ["windowId": windowState.windowId]
+                )
+            },
+            activeRelayAgent: windowState.selectedRelayAgent
+        )
+        .environment(\.theme, windowState.theme)
+    }
+}
+
+extension Notification.Name {
+    static let chatToolbarSelectDiscoveredAgent = Notification.Name("chatToolbarSelectDiscoveredAgent")
+    static let chatToolbarSelectRelayAgent = Notification.Name("chatToolbarSelectRelayAgent")
 }
 
 /// Contextual action button: settings (empty state) or new-chat plus.

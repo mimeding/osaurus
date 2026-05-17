@@ -31,12 +31,37 @@ final class PluginManager {
     struct FailedPlugin: Sendable {
         let pluginId: String
         let error: String
+        /// Last manifest the host successfully decoded for this plugin
+        /// before the failure. Populated for failures that happen AFTER
+        /// `get_manifest` (compatibility check, web/route conflict,
+        /// first-delivery handshake), nil for failures that happen
+        /// before (dlopen / init / parse manifest / quarantine). Lets
+        /// the agent detail view filter failed plugins the same way it
+        /// filters loaded ones (routes / secrets / instructions /
+        /// config / web), and surface a meaningful name.
+        let lastKnownManifest: PluginManifest?
+
+        init(pluginId: String, error: String, lastKnownManifest: PluginManifest? = nil) {
+            self.pluginId = pluginId
+            self.error = error
+            self.lastKnownManifest = lastKnownManifest
+        }
     }
 
     /// Error type for plugin loading failures
     struct PluginLoadError: Error, CustomStringConvertible, Sendable {
         let message: String
+        /// Manifest that was successfully decoded before the failure was
+        /// raised, if any. Surfaced through `FailedPlugin.lastKnownManifest`
+        /// so the UI can show the plugin's display name and filter it the
+        /// same way loaded plugins are filtered.
+        let manifest: PluginManifest?
         var description: String { message }
+
+        init(message: String, manifest: PluginManifest? = nil) {
+            self.message = message
+            self.manifest = manifest
+        }
 
         static let consentRequiredPrefix = "consent_required:"
     }
@@ -48,6 +73,61 @@ final class PluginManager {
     private(set) var failedPlugins: [String: FailedPlugin] = [:]
 
     private var tunnelObserver: AnyCancellable?
+
+    /// NotificationCenter tokens for `.agentAdded` / `.agentRemoved`. Held for
+    /// the lifetime of the singleton so the closures stay live.
+    private var agentLifecycleObservers: [NSObjectProtocol] = []
+
+    /// Last `tunnel_url` value we pushed to each `(pluginId, agentId)` pair.
+    /// Used to dedup `pushTunnelURL` calls *against the host's own delivery
+    /// history* rather than against the keychain entry — which the plugin
+    /// can mutate via `config_delete`, defeating the dedup and causing
+    /// repeated webhook setups during launch races. The inner Optional
+    /// stores `String?` (nil = "tunnel down was the last thing we pushed").
+    /// Internal so unit tests can inspect the cache structure.
+    var lastPushedTunnelURL: [String: [UUID: String?]] = [:]
+
+    /// Last `AgentRelayStatus` per agent, so `handleTunnelStatusChange`
+    /// can detect `non-.connected -> .connected(U)` reconnect
+    /// transitions (the agent's URL is usually unchanged across the
+    /// gap, so value-equality dedup would otherwise swallow the
+    /// redelivery and leave Telegram-style webhooks stale).
+    /// Internal for unit tests.
+    var lastObservedTunnelStatus: [UUID: AgentRelayStatus] = [:]
+
+    /// True when `status` is `.connected(_)`.
+    static func isConnectedStatus(_ status: AgentRelayStatus?) -> Bool {
+        guard let status else { return false }
+        if case .connected = status { return true }
+        return false
+    }
+
+    /// Relay-reconnect signal: `non-.connected -> .connected(_)` for
+    /// an agent we've already observed. First-ever observations
+    /// (`from == nil`) are NOT reconnects — `runFirstDeliverySweep`
+    /// already pushed the launch snapshot.
+    static func isReconnectTransition(
+        from old: AgentRelayStatus?,
+        to new: AgentRelayStatus
+    ) -> Bool {
+        guard old != nil else { return false }
+        return !isConnectedStatus(old) && isConnectedStatus(new)
+    }
+
+    /// Pure decision function for `handleTunnelStatusChange`: returns
+    /// true when the host should push `url` to `(pluginId, agentId)`,
+    /// false when the prior push was identical and we should dedup.
+    /// Extracted as a static helper so the dedup contract can be unit
+    /// tested without a real plugin.
+    static func shouldPushTunnelURL(
+        url: String?,
+        pluginId: String,
+        agentId: UUID,
+        cache: [String: [UUID: String?]]
+    ) -> Bool {
+        let lastPushed: String? = cache[pluginId]?[agentId] ?? nil
+        return lastPushed != url
+    }
 
     /// Serializes reload operations to prevent concurrent `performPluginScan`
     /// calls from overwriting and deallocating each other's host contexts.
@@ -64,6 +144,40 @@ final class PluginManager {
     func loadedPlugin(for pluginId: String) -> LoadedPlugin? {
         return plugins.first { $0.plugin.id == pluginId }
     }
+
+    #if DEBUG
+        /// Test-only: insert a pre-built `LoadedPlugin` so regression tests
+        /// can exercise the `BackgroundTaskManager` → `emitPluginEvent` →
+        /// `ExternalPlugin.notifyTaskEvent` chain without going through
+        /// dlopen + the full scan pipeline. The matched `removeLoadedPluginForTesting`
+        /// must be called in `defer` so the singleton is left clean.
+        func injectLoadedPluginForTesting(_ loaded: LoadedPlugin) {
+            plugins.append(loaded)
+        }
+
+        /// Test-only: matched cleanup for `injectLoadedPluginForTesting`.
+        /// Removes the plugin without touching `ToolRegistry` / `SkillManager`
+        /// (the fake plugin never registered with either).
+        ///
+        /// IMPORTANT: synchronously drains the plugin's per-task event
+        /// queues and config event queue BEFORE removing it from `plugins`.
+        /// Tests that pass a `TaskEventRecorder` (or any other captured
+        /// state) through the opaque `ctx` pointer release their
+        /// `Unmanaged.passRetained(...)` retain in the same `defer` block —
+        /// any `notifyTaskEvent` callback still queued on a per-task
+        /// dispatch queue would otherwise fire AFTER the recorder is
+        /// deallocated and segfault the entire xctest process. This is
+        /// the regression that surfaced as the "100+ tests crashed with
+        /// signal segv" pattern in CI runs 25738325529 (PR #1066) and
+        /// 25742705850 (PR #1068); see `ExternalPlugin
+        /// .drainEventQueuesForTesting()` for the full root-cause writeup.
+        func removeLoadedPluginForTesting(pluginId: String) {
+            if let plugin = plugins.first(where: { $0.plugin.id == pluginId })?.plugin {
+                plugin.drainEventQueuesForTesting()
+            }
+            plugins.removeAll { $0.plugin.id == pluginId }
+        }
+    #endif
 
     // MARK: - Loading
 
@@ -115,6 +229,7 @@ final class PluginManager {
                 }
                 await loaded.plugin.shutdown()
                 PluginHostContext.getContext(for: loaded.plugin.id)?.teardown()
+                lastPushedTunnelURL.removeValue(forKey: loaded.plugin.id)
                 // Do not dlclose here. The plugin is already unloaded from the
                 // registry, but dlclose on macOS ARM64 causes stale PAC
                 // signatures if the same path is ever reloaded.
@@ -153,6 +268,7 @@ final class PluginManager {
                 }
                 await loaded.plugin.shutdown()
                 PluginHostContext.getContext(for: loaded.plugin.id)?.teardown()
+                lastPushedTunnelURL.removeValue(forKey: loaded.plugin.id)
                 // Do not dlclose here. The plugin is already unloaded from the
                 // registry, but dlclose on macOS ARM64 causes stale PAC
                 // signatures if the same path is ever reloaded.
@@ -186,7 +302,11 @@ final class PluginManager {
 
             case .failure(let error):
                 let pluginId = Self.extractPluginId(from: entry.url)
-                failedPlugins[pluginId] = FailedPlugin(pluginId: pluginId, error: error.message)
+                failedPlugins[pluginId] = FailedPlugin(
+                    pluginId: pluginId,
+                    error: error.message,
+                    lastKnownManifest: error.manifest
+                )
             }
         }
 
@@ -195,74 +315,204 @@ final class PluginManager {
         }
 
         migrateGlobalConfigToPerAgent()
-        notifyNewPluginsWithAgentConfig(from: scanResult)
         observeTunnelStatus()
-        sendCurrentTunnelURLToNewPlugins(from: scanResult)
+        // Per-plugin first-delivery sweep, each step bracketed by the
+        // `.currently_loading` marker. A SIGABRT inside the plugin's
+        // `on_config_changed` (e.g. misaligned ABI mirror calling
+        // `host->free_string` on a non-malloc pointer) leaves the marker
+        // on disk; the next launch reads it via `promoteStaleLoadingMarker`
+        // and quarantines the plugin instead of crash-looping the host.
+        runFirstDeliverySweep(from: scanResult)
     }
 
-    /// For each newly loaded plugin, re-deliver its config for every agent.
-    /// `initPlugin` runs before any agent is wired up, so `configGet` falls
-    /// back to `Agent.defaultId` and misses secrets stored under custom agents.
-    /// Sending the batch here (for all agents) corrects that.
-    private func notifyNewPluginsWithAgentConfig(from scanResult: PluginScanResult) {
+    /// Synthetic config key the host pushes once per plugin at load time
+    /// to exercise the plugin's view of `host->get_active_agent_id` +
+    /// `host->free_string` round-trip BEFORE the first real config push.
+    /// Plugins should treat any unknown key as a no-op (per
+    /// `osaurus_plugin.h`), but most plugins call `host->get_active_agent_id`
+    /// at the top of `on_config_changed` to resolve the active agent —
+    /// so a misaligned `osr_host_api` mirror trips the libmalloc abort
+    /// here, INSIDE the loading marker, which then quarantines the
+    /// plugin on the next launch instead of crash-looping.
+    ///
+    /// Plugins that explicitly want to opt out of the probe can match
+    /// `key == "__osaurus_abi_probe__"` and early-return; the value is
+    /// always a fresh UUID with no semantic meaning. Documented under
+    /// `docs/plugins/HOST_API.md` so authors know to ignore it.
+    ///
+    /// `nonisolated` because the constant is a literal string — safe
+    /// to read from any actor / queue, including plugin-author tests
+    /// that match against it from a non-MainActor context.
+    nonisolated static let abiProbeKey = "__osaurus_abi_probe__"
+
+    /// Per-plugin first-delivery sweep. The synthetic ABI probe is
+    /// delivered SYNCHRONOUSLY inside a `.currently_loading` marker so
+    /// that a misaligned `osr_host_api` mirror — the production
+    /// crash-loop signature where `host->free_string` resolves to the
+    /// wrong slot and `libc free()` aborts on a non-malloc pointer —
+    /// quarantines the plugin on the next launch instead of crash-
+    /// looping the host. The real per-agent config snapshot and the
+    /// relay tunnel URL push run AFTER the probe via the existing
+    /// async path so a plugin's expensive `on_config_changed` work
+    /// (Telegram `setupWebhook`, OAuth refresh, etc.) does not block
+    /// the launch sequence.
+    ///
+    /// The probe is fast (a single `(__osaurus_abi_probe__, <UUID>)`
+    /// pair through the plugin's serial `configEventQueue`) and runs
+    /// the same code path the first real config push would: top of
+    /// `on_config_changed` → `host->get_active_agent_id()` →
+    /// `host->free_string(ptr)`. Plugins that resolve the agent at
+    /// the top of `on_config_changed` (the documented pattern) will
+    /// trip the misalignment here. Plugins that short-circuit unknown
+    /// keys before the host call avoid the probe but also avoid the
+    /// production crash signature, so the trade-off is acceptable.
+    ///
+    /// Sequenced per plugin (not interleaved) so the marker file —
+    /// which holds at most one plugin id at a time — always reflects
+    /// the plugin currently inside the danger zone.
+    private func runFirstDeliverySweep(from scanResult: PluginScanResult) {
         let agents = AgentManager.shared.agents
+        let statuses = RelayTunnelManager.shared.agentStatuses
 
         for entry in scanResult.loadResults {
             guard case .success(let loaded) = entry.result else { continue }
+
             let pluginId = loaded.plugin.id
-            guard let configSpec = loaded.plugin.manifest.capabilities.config,
-                PluginHostContext.getContext(for: pluginId) != nil
-            else { continue }
+            Self.writeLoadingMarker(pluginId: pluginId)
+            // Deliberately no `defer`: the marker must persist on the
+            // SIGABRT path. It is cleared only after the probe returns
+            // cleanly below.
+            runAbiHandshakeProbe(loaded: loaded, agentId: agents.first?.id ?? Agent.defaultId)
+            Self.clearLoadingMarker()
 
-            let allFieldKeys = Set(configSpec.sections.flatMap { $0.fields.map { $0.key } })
-
+            // Real per-agent config + tunnel URL pushes resume the
+            // existing async fire-and-forget path. The probe above
+            // already exercised the misalignment-prone host call
+            // pattern, so this fan-out preserves perf without giving
+            // up the crash-loop guard.
             for agent in agents {
-                let agentId = agent.id
-                var values = ToolSecretsKeychain.getAllSecrets(for: pluginId, agentId: agentId)
-
-                for section in configSpec.sections {
-                    for field in section.fields {
-                        if values[field.key] == nil, field.type != .readonly, field.type != .status,
-                            let val = ToolSecretsKeychain.getSecret(id: field.key, for: pluginId, agentId: agentId)
-                        {
-                            values[field.key] = val
-                        }
-                        if values[field.key] == nil, let def = field.default {
-                            values[field.key] = def.stringValue
-                        }
-                        if let connKey = field.connected_when, values[connKey] == nil,
-                            let val = ToolSecretsKeychain.getSecret(id: connKey, for: pluginId, agentId: agentId)
-                        {
-                            values[connKey] = val
-                        }
-                    }
-                }
-
-                let changes: [(key: String, value: String)] = values.compactMap { key, value in
-                    allFieldKeys.contains(key) ? (key: key, value: value) : nil
-                }
-                guard !changes.isEmpty else { continue }
-                loaded.plugin.notifyConfigBatch(changes, agentId: agentId)
+                deliverInitialConfig(to: loaded, agentId: agent.id)
             }
+
+            if !loaded.routes.isEmpty {
+                for agent in agents {
+                    guard case .connected(let url) = statuses[agent.id] else { continue }
+                    pushTunnelURL(url, to: loaded, agentId: agent.id)
+                }
+            }
+        }
+    }
+
+    /// One-shot synthetic `on_config_changed` push that exercises the
+    /// plugin's view of the host vtable on the same code path the first
+    /// real config push would take. The plugin's body is invoked via
+    /// `notifyConfigBatchSync` so the call returns inside the loading
+    /// marker window — a SIGABRT here writes the quarantine marker
+    /// instead of crash-looping the host on every subsequent launch.
+    ///
+    /// No-op for v1 plugins (no `on_config_changed` slot to dispatch to).
+    private func runAbiHandshakeProbe(loaded: LoadedPlugin, agentId: UUID) {
+        guard loaded.plugin.abiVersion >= 2 else { return }
+        loaded.plugin.notifyConfigBatchSync(
+            [(key: Self.abiProbeKey, value: UUID().uuidString)],
+            agentId: agentId
+        )
+    }
+
+    /// Push the resolved config for `(plugin, agent)` to the plugin via
+    /// `notifyConfigBatch`. Reads agent-scoped secrets, falls back to
+    /// per-key keychain entries and field defaults, and filters by the
+    /// plugin's declared config field keys. No-op when the plugin has no
+    /// config spec, no host context, or yields zero changes.
+    ///
+    /// `sync == true` routes through `notifyConfigBatchSync` so the call
+    /// returns inside the load-time `.currently_loading` marker window
+    /// — used by `runFirstDeliverySweep` so a plugin abort during initial
+    /// delivery quarantines the plugin on the next launch instead of
+    /// crash-looping the host. Runtime callers (agent added,
+    /// PluginConfigView save) leave `sync == false` to keep the existing
+    /// fire-and-forget semantics.
+    private func deliverInitialConfig(
+        to loaded: LoadedPlugin,
+        agentId: UUID,
+        sync: Bool = false,
+        force: Bool = false
+    ) {
+        let pluginId = loaded.plugin.id
+        guard let configSpec = loaded.plugin.manifest.capabilities.config,
+            PluginHostContext.getContext(for: pluginId) != nil
+        else { return }
+
+        let allFieldKeys = Set(configSpec.sections.flatMap { $0.fields.map { $0.key } })
+        var values = ToolSecretsKeychain.getAllSecrets(for: pluginId, agentId: agentId)
+
+        for section in configSpec.sections {
+            for field in section.fields {
+                if values[field.key] == nil, field.type != .readonly, field.type != .status,
+                    let val = ToolSecretsKeychain.getSecret(id: field.key, for: pluginId, agentId: agentId)
+                {
+                    values[field.key] = val
+                }
+                if values[field.key] == nil, let def = field.default {
+                    values[field.key] = def.stringValue
+                }
+                if let connKey = field.connected_when, values[connKey] == nil,
+                    let val = ToolSecretsKeychain.getSecret(id: connKey, for: pluginId, agentId: agentId)
+                {
+                    values[connKey] = val
+                }
+            }
+        }
+
+        let changes: [(key: String, value: String)] = values.compactMap { key, value in
+            allFieldKeys.contains(key) ? (key: key, value: value) : nil
+        }
+        guard !changes.isEmpty else { return }
+        if sync {
+            loaded.plugin.notifyConfigBatchSync(changes, agentId: agentId, force: force)
+        } else {
+            loaded.plugin.notifyConfigBatch(changes, agentId: agentId, force: force)
         }
     }
 
     // MARK: - One-Time Migration (global config → per-agent)
 
-    private static var hasMigrated = false
+    /// UserDefaults key tracking which plugin ids have already been
+    /// migrated from legacy global keychain entries to per-agent ones.
+    /// Persisted (not a process-lifetime static) so plugins installed
+    /// AFTER startup also get migrated on the next `_loadAll` pass —
+    /// the old once-per-process gate would skip them entirely.
+    /// Internal so unit tests can read/write the persisted set
+    /// directly without needing to construct fake plugins. Production
+    /// callers go through `migrateGlobalConfigToPerAgent()`.
+    static let migratedPluginIdsDefaultsKey = "PluginManager.migratedPluginIds"
+
+    static func loadMigratedPluginIds() -> Set<String> {
+        let raw = UserDefaults.standard.array(forKey: migratedPluginIdsDefaultsKey) as? [String] ?? []
+        return Set(raw)
+    }
+
+    static func saveMigratedPluginIds(_ ids: Set<String>) {
+        UserDefaults.standard.set(Array(ids), forKey: migratedPluginIdsDefaultsKey)
+    }
 
     /// Copies legacy global keychain entries (`{pluginId}.{key}`) into
     /// agent-scoped entries (`{agentId}.{pluginId}.{key}`) for every agent
     /// that has the plugin enabled, then removes the legacy entries.
+    /// Tracks migration state per plugin id in UserDefaults so a plugin
+    /// installed mid-session still receives migration on its first scan.
     private func migrateGlobalConfigToPerAgent() {
-        guard !Self.hasMigrated else { return }
-        Self.hasMigrated = true
-
+        var migrated = Self.loadMigratedPluginIds()
         let agents = AgentManager.shared.agents
         let pluginIds = plugins.map { $0.plugin.id }
 
-        for pluginId in pluginIds {
+        var didChange = false
+        for pluginId in pluginIds where !migrated.contains(pluginId) {
             let legacySecrets = ToolSecretsKeychain.legacySecrets(for: pluginId)
+            // Mark migrated even if there are no legacy secrets — we've
+            // checked once and there's nothing to do on subsequent runs.
+            migrated.insert(pluginId)
+            didChange = true
             guard !legacySecrets.isEmpty else { continue }
 
             let destinations = agents.map { $0.id }
@@ -278,56 +528,163 @@ final class PluginManager {
 
             ToolSecretsKeychain.deleteLegacySecrets(for: pluginId)
         }
+
+        if didChange {
+            Self.saveMigratedPluginIds(migrated)
+        }
     }
 
     // MARK: - Tunnel URL Propagation
 
     /// Observes relay tunnel status changes and propagates the tunnel URL
     /// to plugins that declare routes, so they can register webhooks with
-    /// external services (e.g. Telegram).
+    /// external services (e.g. Telegram). Also subscribes to agent
+    /// lifecycle notifications so newly added / removed agents trigger a
+    /// per-agent config push (or webhook deregister) on every loaded plugin.
     private func observeTunnelStatus() {
         guard tunnelObserver == nil else { return }
+
+        // Seed before wiring the sink so the first delivery on launch
+        // hits the no-op first-observation branch in
+        // `isReconnectTransition` instead of force-redelivering work
+        // `runFirstDeliverySweep` just performed synchronously.
+        lastObservedTunnelStatus = RelayTunnelManager.shared.agentStatuses
+
         tunnelObserver = RelayTunnelManager.shared.$agentStatuses
             .receive(on: DispatchQueue.main)
             .sink { [weak self] statuses in
                 self?.handleTunnelStatusChange(statuses)
             }
+
+        // Idempotent — the only writer is `_loadAll`, which only ever
+        // calls this once because of the `tunnelObserver == nil` guard
+        // above. The same guard protects the agent observers.
+        if agentLifecycleObservers.isEmpty {
+            agentLifecycleObservers.append(
+                subscribeAgentLifecycle(.agentAdded) { $0.handleAgentAdded($1) }
+            )
+            agentLifecycleObservers.append(
+                subscribeAgentLifecycle(.agentRemoved) { $0.handleAgentRemoved($1) }
+            )
+        }
+    }
+
+    /// Wires a `NotificationCenter` observer for `name` that decodes
+    /// `userInfo["agentId"]` and hops to the main actor before invoking
+    /// `handler` against the live `PluginManager` instance. Collapses
+    /// the two near-identical observer blocks for `.agentAdded` /
+    /// `.agentRemoved` and keeps both behind a single weak self capture.
+    private func subscribeAgentLifecycle(
+        _ name: Notification.Name,
+        _ handler: @escaping @MainActor (PluginManager, UUID) -> Void
+    ) -> NSObjectProtocol {
+        NotificationCenter.default.addObserver(
+            forName: name,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self, let agentId = note.userInfo?["agentId"] as? UUID else { return }
+            Task { @MainActor in handler(self, agentId) }
+        }
+    }
+
+    /// Deliver the full per-agent config + current tunnel URL to every
+    /// loaded plugin for a freshly added agent. Mirrors what `_loadAll`
+    /// does at startup, scoped to a single agent.
+    private func handleAgentAdded(_ agentId: UUID) {
+        deliverFullAgentSnapshot(
+            agentId: agentId,
+            status: RelayTunnelManager.shared.agentStatuses[agentId],
+            force: false
+        )
+    }
+
+    /// Tear down per-agent state on every loaded plugin when an agent is
+    /// deleted: push `tunnel_url=""` so plugins can deregister their
+    /// webhooks. Per-agent keychain secrets are swept by
+    /// `AgentManager.delete(id:)` itself before this handler runs.
+    private func handleAgentRemoved(_ agentId: UUID) {
+        for loaded in plugins where !loaded.routes.isEmpty {
+            pushTunnelURL(nil, to: loaded, agentId: agentId)
+        }
+        // Drop the dedup entry for this agent across every plugin slot
+        // so a future agent re-using this UUID (extremely unlikely, but
+        // possible if a user restores from backup) gets a fresh push.
+        for pluginId in lastPushedTunnelURL.keys {
+            lastPushedTunnelURL[pluginId]?.removeValue(forKey: agentId)
+        }
     }
 
     private func handleTunnelStatusChange(_ statuses: [UUID: AgentRelayStatus]) {
-        for loaded in plugins where !loaded.routes.isEmpty {
-            for (agentId, status) in statuses {
+        for (agentId, status) in statuses {
+            let oldStatus = lastObservedTunnelStatus[agentId]
+            lastObservedTunnelStatus[agentId] = status
+
+            // Reconnect: force-redeliver the full per-agent snapshot
+            // so plugins re-assert upstream registrations (Telegram
+            // `setWebhook`, OAuth refresh) even when the URL is
+            // unchanged across the disconnect window.
+            if Self.isReconnectTransition(from: oldStatus, to: status) {
+                deliverFullAgentSnapshot(agentId: agentId, status: status, force: true)
+                continue
+            }
+
+            for loaded in plugins where !loaded.routes.isEmpty {
                 let tunnelURL: String? = if case .connected(let url) = status { url } else { nil }
 
-                let storedValue = ToolSecretsKeychain.getSecret(
-                    id: "tunnel_url",
-                    for: loaded.plugin.id,
-                    agentId: agentId
-                )
-                guard storedValue != tunnelURL else { continue }
+                // Dedup against the value we last pushed for this
+                // `(plugin, agent)` pair, NOT the keychain entry — the
+                // plugin can mutate the keychain via `config_delete` and
+                // we still need to deliver the next status change.
+                guard
+                    Self.shouldPushTunnelURL(
+                        url: tunnelURL,
+                        pluginId: loaded.plugin.id,
+                        agentId: agentId,
+                        cache: lastPushedTunnelURL
+                    )
+                else { continue }
 
                 pushTunnelURL(tunnelURL, to: loaded, agentId: agentId)
             }
         }
     }
 
-    /// Delivers the current tunnel URL to freshly loaded plugins that declare
-    /// routes, bypassing the keychain dedup so that newly-loaded plugins
-    /// always receive the URL when the relay is already connected.
-    private func sendCurrentTunnelURLToNewPlugins(from scanResult: PluginScanResult) {
-        let statuses = RelayTunnelManager.shared.agentStatuses
-
-        for entry in scanResult.loadResults {
-            guard case .success(let loaded) = entry.result, !loaded.routes.isEmpty else { continue }
-
-            for (agentId, status) in statuses {
-                guard case .connected(let url) = status else { continue }
-                pushTunnelURL(url, to: loaded, agentId: agentId)
-            }
+    /// Push the full per-agent config snapshot to every loaded plugin
+    /// and (if `status` is connected) the tunnel URL to plugins that
+    /// declare routes. Shared body for `handleAgentAdded` (force=false)
+    /// and the relay-reconnect branch in `handleTunnelStatusChange`
+    /// (force=true). With `force: true` both dedup layers are bypassed
+    /// so plugins re-fire `on_config_changed` on identical values —
+    /// documented under `docs/plugins/HOST_API.md`; plugin authors
+    /// must keep `on_config_changed` idempotent for repeat values.
+    private func deliverFullAgentSnapshot(
+        agentId: UUID,
+        status: AgentRelayStatus?,
+        force: Bool
+    ) {
+        for loaded in plugins {
+            deliverInitialConfig(to: loaded, agentId: agentId, force: force)
+        }
+        guard case .connected(let url) = status else { return }
+        for loaded in plugins where !loaded.routes.isEmpty {
+            pushTunnelURL(url, to: loaded, agentId: agentId, force: force)
         }
     }
 
-    private func pushTunnelURL(_ url: String?, to loaded: LoadedPlugin, agentId: UUID) {
+    /// `sync == true` routes through `notifyConfigBatchSync` so the call
+    /// returns inside the load-time loading marker window, matching the
+    /// crash-loop-guard contract `runFirstDeliverySweep` relies on.
+    /// Runtime callers (`handleAgentAdded`, `handleTunnelStatusChange`)
+    /// leave `sync == false` to preserve the existing fire-and-forget
+    /// semantics.
+    private func pushTunnelURL(
+        _ url: String?,
+        to loaded: LoadedPlugin,
+        agentId: UUID,
+        sync: Bool = false,
+        force: Bool = false
+    ) {
         let pluginId = loaded.plugin.id
 
         if let url {
@@ -336,17 +693,32 @@ final class PluginManager {
             ToolSecretsKeychain.deleteSecret(id: "tunnel_url", for: pluginId, agentId: agentId)
         }
 
+        // Record the value we pushed so `handleTunnelStatusChange` can
+        // dedup. Setting `[agentId] = nil` removes the entry; that's
+        // intentional — an absent entry is treated as "last pushed = nil"
+        // by the dedup, which preserves correctness.
+        lastPushedTunnelURL[pluginId, default: [:]][agentId] = url
+
         NotificationCenter.default.post(
             name: .pluginConfigDidChange,
             object: nil,
             userInfo: ["pluginId": pluginId, "key": "tunnel_url", "value": url ?? ""]
         )
 
-        loaded.plugin.notifyConfigChanged(
-            key: "tunnel_url",
-            value: url ?? "",
-            agentId: agentId
-        )
+        if sync {
+            loaded.plugin.notifyConfigBatchSync(
+                [(key: "tunnel_url", value: url ?? "")],
+                agentId: agentId,
+                force: force
+            )
+        } else {
+            loaded.plugin.notifyConfigChanged(
+                key: "tunnel_url",
+                value: url ?? "",
+                agentId: agentId,
+                force: force
+            )
+        }
     }
 
     // MARK: - Artifact Handler Notifications
@@ -429,6 +801,137 @@ final class PluginManager {
         let versionDir = url.deletingLastPathComponent()
         let pluginDir = versionDir.deletingLastPathComponent()
         return pluginDir.lastPathComponent
+    }
+
+    // MARK: - Manifest Compatibility Enforcement
+
+    /// Reads the host's `CFBundleShortVersionString` for `min_osaurus`
+    /// comparison. Falls back to a sentinel that compares as 0.0.0 so
+    /// Returns the empty string when bundle metadata is absent —
+    /// `compatibilityFailure` interprets that as "host version
+    /// unknown" and fails *open* with a one-shot warning rather than
+    /// rejecting every plugin that declares `min_osaurus`. Erroring
+    /// closed (the previous behavior) bricked dev builds where
+    /// `Bundle.main` is the swiftpm helper or an Xcode build that
+    /// only sets `MARKETING_VERSION = 1.0`.
+    nonisolated static func currentHostVersionString() -> String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+    }
+
+    /// Lenient semver parser for the *host* version. The strict
+    /// `SemanticVersion.parse` requires `M.m.p`, but Xcode's default
+    /// `MARKETING_VERSION` is often `1.0` (or even `1`). Treat missing
+    /// components as zero so `"1.0"` → `1.0.0`, matching how Apple
+    /// itself expresses bundle versions. Returns nil only when the
+    /// leading component isn't an integer.
+    nonisolated static func parseHostVersion(_ s: String) -> SemanticVersion? {
+        if let strict = SemanticVersion.parse(s) { return strict }
+        let core = s.split(separator: "-", maxSplits: 1).first.map(String.init) ?? s
+        let parts = core.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard let major = parts.first.flatMap(Int.init) else { return nil }
+        let minor = parts.count > 1 ? Int(parts[1]) ?? 0 : 0
+        let patch = parts.count > 2 ? Int(parts[2]) ?? 0 : 0
+        return SemanticVersion(major: major, minor: minor, patch: patch)
+    }
+
+    /// Returns a `PluginLoadError` when the manifest declares a
+    /// `min_osaurus` or `min_macos` constraint that the running host
+    /// does not satisfy. Returns nil when both constraints are met
+    /// (or absent). Unparseable declarations on *either* side are not
+    /// treated as a hard failure — we log a one-off warning so the
+    /// developer sees it but the plugin still loads. This matters for
+    /// dev builds where the host's bundle metadata may be missing or
+    /// shaped like `1.0` instead of `1.0.0`. Pure function: takes
+    /// injected host / OS versions so unit tests can drive every
+    /// branch without touching real bundle metadata.
+    nonisolated static func compatibilityFailure(
+        manifest: PluginManifest,
+        hostVersion: String,
+        osVersion: OperatingSystemVersion
+    ) -> PluginLoadError? {
+        if let minHost = manifest.min_osaurus, !minHost.isEmpty {
+            if let required = SemanticVersion.parse(minHost) {
+                if let current = parseHostVersion(hostVersion) {
+                    if current < required {
+                        return PluginLoadError(
+                            message:
+                                "Plugin \(manifest.plugin_id) requires Osaurus \(required) or later; "
+                                + "this host is \(current). Update Osaurus to load this plugin."
+                        )
+                    }
+                } else {
+                    // Unknown host version (no bundle metadata, or a
+                    // shape we can't make sense of). Fail open so dev
+                    // builds aren't blocked, but make it visible.
+                    NSLog(
+                        "[Osaurus] Cannot enforce min_osaurus='%@' for %@ — host version "
+                            + "'%@' is empty or unparseable. Allowing load (dev build?).",
+                        minHost,
+                        manifest.plugin_id,
+                        hostVersion
+                    )
+                }
+            } else {
+                NSLog(
+                    "[Osaurus] Plugin %@ has unparseable min_osaurus '%@' — ignoring constraint.",
+                    manifest.plugin_id,
+                    minHost
+                )
+            }
+        }
+
+        if let minOS = manifest.min_macos, !minOS.isEmpty {
+            if let required = parseOSVersion(minOS) {
+                if !osVersionAtLeast(current: osVersion, required: required) {
+                    let req = "\(required.majorVersion).\(required.minorVersion).\(required.patchVersion)"
+                    let cur =
+                        "\(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)"
+                    return PluginLoadError(
+                        message:
+                            "Plugin \(manifest.plugin_id) requires macOS \(req) or later; "
+                            + "this Mac is on \(cur). Update macOS to load this plugin."
+                    )
+                }
+            } else {
+                NSLog(
+                    "[Osaurus] Plugin %@ has unparseable min_macos '%@' — ignoring constraint.",
+                    manifest.plugin_id,
+                    minOS
+                )
+            }
+        }
+
+        return nil
+    }
+
+    /// Parses a "MAJOR[.MINOR[.PATCH]]" macOS version string into an
+    /// `OperatingSystemVersion`. Trailing components default to zero,
+    /// matching how Apple expresses min-required SDK versions
+    /// (`"14"` / `"14.5"` / `"14.5.1"` are all valid). Returns nil
+    /// when no leading integer can be parsed.
+    nonisolated static func parseOSVersion(_ s: String) -> OperatingSystemVersion? {
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard let major = parts.first.flatMap(Int.init) else { return nil }
+        let minor = parts.count > 1 ? Int(parts[1]) ?? 0 : 0
+        let patch = parts.count > 2 ? Int(parts[2]) ?? 0 : 0
+        return OperatingSystemVersion(majorVersion: major, minorVersion: minor, patchVersion: patch)
+    }
+
+    /// `OperatingSystemVersion` doesn't conform to `Comparable`, so we
+    /// roll a small lexicographic comparison rather than pulling in
+    /// `Foundation`'s `isOperatingSystemAtLeast(_:)` which always reads
+    /// the live system version (untestable).
+    nonisolated static func osVersionAtLeast(
+        current: OperatingSystemVersion,
+        required: OperatingSystemVersion
+    ) -> Bool {
+        if current.majorVersion != required.majorVersion {
+            return current.majorVersion > required.majorVersion
+        }
+        if current.minorVersion != required.minorVersion {
+            return current.minorVersion > required.minorVersion
+        }
+        return current.patchVersion >= required.patchVersion
     }
 
     /// Loads a single plugin from a dylib URL via dlopen + C ABI handshake.
@@ -571,6 +1074,28 @@ final class PluginManager {
             PluginHostContext.rekeyContext(from: hc.pluginId, to: manifest.plugin_id)
         }
 
+        // Enforce manifest-declared compatibility constraints. Authors
+        // declare `min_osaurus` and `min_macos` so they can opt into ABI
+        // surfaces that older hosts don't have (e.g. the v4
+        // `get_active_agent_id` callback). Without enforcement the
+        // declarations were purely advisory and the plugin would crash
+        // at the first call to a missing slot. Fail the load with a
+        // structured message instead — surfaced in `failedPlugins` and
+        // visible in the UI.
+        if let compatError = compatibilityFailure(
+            manifest: manifest,
+            hostVersion: currentHostVersionString(),
+            osVersion: ProcessInfo.processInfo.operatingSystemVersion
+        ) {
+            print("[Osaurus] \(compatError.message)")
+            api.destroy?(ctx)
+            hostContext?.teardown()
+            dlclose(handle)
+            return .failure(
+                PluginLoadError(message: compatError.message, manifest: manifest)
+            )
+        }
+
         // Validate that web mount paths don't silently shadow dynamic routes.
         // The runtime checks the static branch first, so any overlap means
         // the plugin's `handle_route` for that path can never fire.
@@ -590,7 +1115,7 @@ final class PluginManager {
                     api.destroy?(ctx)
                     hostContext?.teardown()
                     dlclose(handle)
-                    return .failure(PluginLoadError(message: errorMsg))
+                    return .failure(PluginLoadError(message: errorMsg, manifest: manifest))
                 }
             }
         }
@@ -793,6 +1318,27 @@ final class PluginManager {
         try? FileManager.default.removeItem(at: currentlyLoadingURL())
     }
 
+    /// Removes a single plugin from the quarantine list. Used by the
+    /// per-plugin "Retry" button surfaced in `AgentDetailView` for
+    /// failed plugins. Whole-list `clearQuarantine()` would unhide
+    /// every other quarantined plugin too, which surprises users who
+    /// only intended to retry one.
+    nonisolated static func removeFromQuarantine(_ pluginId: String) {
+        var ids = quarantinedPluginIds()
+        guard ids.remove(pluginId) != nil else { return }
+        let url = quarantineURL()
+        if ids.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+        } else if let data = try? JSONEncoder().encode(Array(ids)) {
+            try? data.write(to: url)
+        }
+        // Wipe the loading marker too — it's the matched cause for
+        // most quarantine entries (a SIGABRT inside init or
+        // `on_config_changed`), and leaving it would re-quarantine
+        // this plugin on the next launch even though we just cleared.
+        try? FileManager.default.removeItem(at: currentlyLoadingURL())
+    }
+
     /// If a `.currently_loading` marker was left behind by a crash during
     /// dlopen/init, quarantine that plugin so it is skipped on future launches.
     private nonisolated static func promoteStaleLoadingMarker() {
@@ -805,12 +1351,50 @@ final class PluginManager {
         try? FileManager.default.removeItem(at: markerURL)
     }
 
+    /// Writes the `.currently_loading` marker so that if the plugin
+    /// crashes the host inside `runFirstDeliverySweep`, the next launch
+    /// can quarantine it. Durability matters here: a SIGABRT may fire
+    /// milliseconds after the write, well before the page cache is
+    /// naturally flushed. We tmp-write → fsync the bytes → atomic
+    /// rename → fsync the parent directory so the marker survives a
+    /// hard process abort. Falls back to a plain `Data.write` if the
+    /// durable path fails for any reason — partial protection beats
+    /// none.
     private nonisolated static func writeLoadingMarker(pluginId: String) {
-        try? pluginId.data(using: .utf8)?.write(to: currentlyLoadingURL())
+        let url = currentlyLoadingURL()
+        let data = Data(pluginId.utf8)
+        let fm = FileManager.default
+        let tmpURL = url.appendingPathExtension("tmp-\(UUID().uuidString)")
+        do {
+            try data.write(to: tmpURL, options: [.atomic])
+            if let handle = try? FileHandle(forUpdating: tmpURL) {
+                try? handle.synchronize()
+                try? handle.close()
+            }
+            if fm.fileExists(atPath: url.path) {
+                _ = try fm.replaceItemAt(url, withItemAt: tmpURL)
+            } else {
+                try fm.moveItem(at: tmpURL, to: url)
+            }
+            fsyncDirectory(url.deletingLastPathComponent())
+        } catch {
+            try? data.write(to: url)
+        }
     }
 
     private nonisolated static func clearLoadingMarker() {
         try? FileManager.default.removeItem(at: currentlyLoadingURL())
+    }
+
+    /// `fsync()`s the directory containing `url` so a preceding atomic
+    /// rename is durable across a hard abort. macOS does not flush
+    /// directory metadata implicitly when the contained file is
+    /// fsynced, so this needs to be done as a separate step.
+    private nonisolated static func fsyncDirectory(_ url: URL) {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { return }
+        _ = fsync(fd)
+        close(fd)
     }
 
     /// Returns dylib URLs to load and a dictionary of verification failures (pluginId -> error message)
@@ -837,7 +1421,13 @@ final class PluginManager {
             let pluginId = pluginDir.lastPathComponent
 
             if quarantined.contains(pluginId) {
-                failures[pluginId] = "Plugin quarantined after a crash during load — run `osaurus tools reset` to retry"
+                // Surfaced verbatim in PluginsView and the AgentsView
+                // "Failed" tab — point users at the in-app Retry /
+                // Uninstall buttons rather than the legacy
+                // `osaurus tools reset` CLI (which unquarantines all
+                // failed plugins at once).
+                failures[pluginId] =
+                    "Plugin quarantined after a crash during load — use the Retry or Uninstall button below to recover."
                 continue
             }
 

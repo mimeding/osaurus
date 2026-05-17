@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import os
 
 // MARK: - C ABI Mirror
 //
@@ -109,6 +110,25 @@ typealias osr_dispatch_add_issue_t =
 // Streaming control
 typealias osr_complete_cancel_t = @convention(c) (UnsafePointer<CChar>?) -> Void
 
+// Agent context introspection (added in v4)
+typealias osr_get_active_agent_id_t = @convention(c) () -> UnsafePointer<CChar>?
+
+// Structured logging (added in v5)
+typealias osr_log_structured_t =
+    @convention(c) (
+        Int32,
+        UnsafePointer<CChar>?,
+        UnsafePointer<CChar>?
+    ) -> Void
+
+// Host-side string free (added in v6)
+typealias osr_host_free_string_t = @convention(c) (UnsafePointer<CChar>?) -> Void
+
+/// Frozen layout — field order and padding must match `osaurus_plugin.h`
+/// exactly (see `PluginHostAPIStructLayoutTests`). Swift plugins that mirror
+/// this struct must not skip middle fields (e.g. omitting v5 `log_structured`
+/// but adding v6 `free_string`); misaligned slots cause wrong `host` calls
+/// and heap aborts when freeing returned strings.
 struct osr_host_api {
     var version: UInt32
 
@@ -152,6 +172,15 @@ struct osr_host_api {
 
     // Streaming control (added in v3)
     var complete_cancel: osr_complete_cancel_t?
+
+    // Agent context introspection (added in v4)
+    var get_active_agent_id: osr_get_active_agent_id_t?
+
+    // Structured logging (added in v5)
+    var log_structured: osr_log_structured_t?
+
+    // Host-side string free (added in v6)
+    var free_string: osr_host_free_string_t?
 }
 
 struct osr_plugin_api {
@@ -513,13 +542,41 @@ final class ExternalPlugin: @unchecked Sendable {
     private let handle: UnsafeMutableRawPointer
     private let api: osr_plugin_api
     private let ctx: osr_plugin_ctx_t
-    private var isShutDown = false
+
+    /// Atomic latch flipped exactly once by `shutdown()`. Read from
+    /// `dispatchPluginCall` (invokeQueue), `notifyConfigBatch`
+    /// (configEventQueue), and `notifyTaskEvent` (per-task queues) — three
+    /// distinct queues, so a plain `Bool` would race per Swift 6 strict
+    /// concurrency / TSan. The unfair lock matches the pattern used for
+    /// `dbOpenLogLock` in `PluginHostContext`.
+    private let isShutDown = OSAllocatedUnfairLock<Bool>(initialState: false)
 
     /// Per-plugin concurrent queue for C ABI calls. Each plugin gets its own
     /// queue so that long-running operations (e.g. agentic inference) in one
     /// plugin don't block other plugins or additional requests to the same plugin.
     /// Concurrent (not serial) so multiple route handlers can run in parallel.
     private let invokeQueue: DispatchQueue
+
+    /// Per-plugin **serial** queue for `on_config_changed` delivery.
+    ///
+    /// Config-change callbacks routinely mutate plugin-scoped state
+    /// (HTTP clients, caches, webhook registrations) without internal
+    /// locking, so two parallel invocations on the concurrent
+    /// `invokeQueue` can race and corrupt that state. Routing config
+    /// events through their own serial queue gives the plugin a one-at-a-
+    /// time guarantee for the same plugin while leaving `invoke` /
+    /// `handle_route` concurrency untouched. Contract is documented on
+    /// `on_config_changed` in `osaurus_plugin.h`.
+    private let configEventQueue: DispatchQueue
+
+    /// Per `(agentId, key)` snapshot of the last value we successfully
+    /// delivered through `on_config_changed`. Used by `notifyConfigBatch`
+    /// to drop no-op pairs (same value as the prior delivery), so that a
+    /// single rapid `Save` click — or the launch-time fan-out from
+    /// `PluginManager` — does not cause the plugin to redo an expensive
+    /// `setupWebhook` for a value it already saw. Cleared on shutdown.
+    /// The key format is `"<agentId-or-default>|<configKey>"`.
+    private let lastDeliveredConfig = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
 
     /// Per-task serial queues for event delivery. Each task gets its own queue
     /// so a slow event handler (e.g. http_request inside on_task_event) for one
@@ -567,16 +624,59 @@ final class ExternalPlugin: @unchecked Sendable {
             qos: .userInitiated,
             attributes: .concurrent
         )
+        self.configEventQueue = DispatchQueue(
+            label: "com.osaurus.plugin.config.\(manifest.plugin_id)",
+            qos: .userInitiated
+        )
     }
 
     var hasRouteHandler: Bool { abiVersion >= 2 && api.handle_route != nil }
     var hasTaskEventHandler: Bool { abiVersion >= 2 && api.on_task_event != nil }
 
-    /// Tears down the plugin context by draining all per-task event queues
-    /// first, then the invoke queue (barrier), before calling `destroy`.
-    /// Uses async dispatch so the destroy callback (which may call host API
-    /// trampolines like httpRequest) never runs on the main thread, avoiding
-    /// deadlocks with `blockingAsync`.
+    #if DEBUG
+        /// Test-only: synchronously drains every per-task event queue and the
+        /// config event queue, then returns. Intended to be called from the
+        /// matched `removeLoadedPluginForTesting` cleanup so that any
+        /// pending `notifyTaskEvent` / `notifyConfigBatch` callbacks have
+        /// fired BEFORE the test's `Unmanaged.passRetained(...).release()`
+        /// runs on the recorder it owns.
+        ///
+        /// Why this exists: the test seam in `PluginManager`
+        /// (`removeLoadedPluginForTesting`) historically just dropped the
+        /// plugin from `plugins`. The test then released its
+        /// `Unmanaged<TaskEventRecorder>` retain in the same `defer`. Any
+        /// event already enqueued on this plugin's per-task serial queue
+        /// (typically a terminal event from `BackgroundTaskManager
+        /// .finalizeTask` running in the inner `defer`) would fire AFTER
+        /// the recorder was deallocated, dereferencing freed memory through
+        /// the opaque `ctx` pointer and SIGSEGV-ing the xctest process.
+        /// Symptom: 100+ tests across 50+ unrelated suites tagged
+        /// "Test crashed with signal segv." in CI run 25738325529 (PR
+        /// #1066). The actual offender — `PluginClarifyEmissionTests
+        /// .clarifyEvent_emittedOnce_noTerminalFollows()` — was running in
+        /// parallel with the dying batch, which xctest cannot identify on
+        /// its own.
+        ///
+        /// `q.sync(flags: .barrier)` blocks the caller until the queue is
+        /// idle. Safe to call from a `@MainActor` test body because the
+        /// per-task event closures are pure CPU work (lock + Array
+        /// append) and never re-enter the main actor.
+        func drainEventQueuesForTesting() {
+            let queues: [DispatchQueue] = taskEventQueuesLock.withLock {
+                Array(taskEventQueues.values)
+            }
+            for q in queues {
+                q.sync(flags: .barrier) {}
+            }
+            configEventQueue.sync {}
+        }
+    #endif
+
+    /// Tears down the plugin context by draining the per-task event queues
+    /// and the config event queue first, then the invoke queue (barrier),
+    /// before calling `destroy`. Uses async dispatch so the destroy callback
+    /// (which may call host API trampolines like httpRequest) never runs on
+    /// the main thread, avoiding deadlocks with `blockingAsync`.
     func shutdown() async {
         let queues: [DispatchQueue] = taskEventQueuesLock.withLock {
             Array(taskEventQueues.values)
@@ -588,12 +688,28 @@ final class ExternalPlugin: @unchecked Sendable {
                 group.enter()
                 q.async(flags: .barrier) { group.leave() }
             }
+            // configEventQueue is serial, so a plain async tail-blocks
+            // until every queued on_config_changed callback has returned.
+            group.enter()
+            configEventQueue.async { group.leave() }
             group.notify(flags: .barrier, queue: self.invokeQueue) { [self] in
-                guard !self.isShutDown else {
+                // Flip the latch atomically. `firstShutdown` is true only
+                // for the caller that won the race; all other concurrent
+                // shutdown attempts (re-entry from PluginManager hot
+                // reload, etc.) become no-ops. Pre-existing behavior.
+                let firstShutdown = self.isShutDown.withLock { wasDown -> Bool in
+                    if wasDown { return false }
+                    wasDown = true
+                    return true
+                }
+                guard firstShutdown else {
                     continuation.resume()
                     return
                 }
-                self.isShutDown = true
+                // Drop the dedup snapshot so a future re-load of the
+                // same plugin path does not see stale "already delivered"
+                // entries against a fresh ctx pointer.
+                self.lastDeliveredConfig.withLock { $0.removeAll(keepingCapacity: false) }
                 self.api.destroy?(self.ctx)
                 continuation.resume()
             }
@@ -616,7 +732,7 @@ final class ExternalPlugin: @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             self.invokeQueue.async { [self] in
-                guard !self.isShutDown else {
+                guard !self.isShutDown.withLock({ $0 }) else {
                     continuation.resume(
                         throwing: NSError(
                             domain: "ExternalPlugin",
@@ -626,16 +742,10 @@ final class ExternalPlugin: @unchecked Sendable {
                     )
                     return
                 }
-                PluginHostContext.setActivePlugin(pluginId)
-                if let agentId {
-                    PluginHostContext.setActiveAgent(agentId)
+                let resPtr = PluginHostContext.withTLSScope(pluginId: pluginId, agentId: agentId) {
+                    call(ctx)
                 }
-                defer {
-                    PluginHostContext.clearActivePlugin()
-                    PluginHostContext.clearActiveAgent()
-                }
-
-                guard let resPtr = call(ctx) else {
+                guard let resPtr else {
                     continuation.resume(
                         throwing: NSError(
                             domain: "ExternalPlugin",
@@ -734,35 +844,145 @@ final class ExternalPlugin: @unchecked Sendable {
         }
     }
 
-    func notifyConfigChanged(key: String, value: String, agentId: UUID? = nil) {
-        notifyConfigBatch([(key: key, value: value)], agentId: agentId)
+    func notifyConfigChanged(
+        key: String,
+        value: String,
+        agentId: UUID? = nil,
+        force: Bool = false
+    ) {
+        notifyConfigBatch([(key: key, value: value)], agentId: agentId, force: force)
     }
 
-    func notifyConfigBatch(_ changes: [(key: String, value: String)], agentId: UUID? = nil) {
-        guard abiVersion >= 2, let configFn = api.on_config_changed, !changes.isEmpty else { return }
-        nonisolated(unsafe) let ctx = self.ctx
+    /// `force == true` bypasses the value-equality dedup in
+    /// `prepareConfigDelivery` so `on_config_changed` re-fires even
+    /// when every pair matches the prior delivery. Used by
+    /// `PluginManager.handleAgentReconnected` so plugins re-assert
+    /// upstream registrations after a relay reconnect.
+    func notifyConfigBatch(
+        _ changes: [(key: String, value: String)],
+        agentId: UUID? = nil,
+        force: Bool = false
+    ) {
+        guard
+            let prep = prepareConfigDelivery(changes: changes, agentId: agentId, force: force)
+        else { return }
+        nonisolated(unsafe) let ctx = prep.ctx
+        let configFn = prep.configFn
+        let filtered = prep.filtered
         let pluginId = self.id
 
-        invokeQueue.async { [self] in
-            guard !self.isShutDown else { return }
+        // Serial — see `configEventQueue` for the rationale and contract.
+        configEventQueue.async { [self] in
+            self.runConfigDelivery(
+                configFn: configFn,
+                ctx: ctx,
+                filtered: filtered,
+                pluginId: pluginId,
+                agentId: agentId
+            )
+            withExtendedLifetime(self) {}
+        }
+    }
 
-            PluginHostContext.setActivePlugin(pluginId)
-            if let agentId {
-                PluginHostContext.setActiveAgent(agentId)
-            }
-            defer {
-                PluginHostContext.clearActivePlugin()
-                PluginHostContext.clearActiveAgent()
-            }
+    /// Synchronous variant of `notifyConfigBatch` — blocks the caller until
+    /// the plugin's `on_config_changed` returns. Used by `PluginManager`
+    /// during the load-time first-delivery window so that any plugin
+    /// `abort()` (e.g. misaligned `osr_host_api` mirror calling
+    /// `host->free_string` on a non-malloc pointer) leaves the
+    /// `.currently_loading` marker on disk and quarantines the plugin on
+    /// the next launch instead of crash-looping the host. Runtime config
+    /// changes continue to use the async variant.
+    ///
+    /// Callers MUST hold the per-plugin loading marker around this call
+    /// (see `PluginManager.runFirstDeliverySweep`); without it the
+    /// crash-loop guard does nothing.
+    ///
+    /// Safe to call from any thread that is not the plugin's own
+    /// `configEventQueue` (would deadlock). Plugins that do heavy work in
+    /// `on_config_changed` (HTTP, OAuth refresh) will block the caller —
+    /// the load path accepts that cost as part of a one-shot launch
+    /// sweep; runtime callers should keep using the async variant.
+    func notifyConfigBatchSync(
+        _ changes: [(key: String, value: String)],
+        agentId: UUID? = nil,
+        force: Bool = false
+    ) {
+        guard
+            let prep = prepareConfigDelivery(changes: changes, agentId: agentId, force: force)
+        else { return }
+        nonisolated(unsafe) let ctx = prep.ctx
+        let configFn = prep.configFn
+        let filtered = prep.filtered
+        let pluginId = self.id
 
-            for (key, value) in changes {
+        configEventQueue.sync { [self] in
+            self.runConfigDelivery(
+                configFn: configFn,
+                ctx: ctx,
+                filtered: filtered,
+                pluginId: pluginId,
+                agentId: agentId
+            )
+            withExtendedLifetime(self) {}
+        }
+    }
+
+    /// Runs the dedup pass and returns the trio of (callback, ctx,
+    /// filtered changes) the queue body needs. Pulled out so `notifyConfigBatch`
+    /// (async) and `notifyConfigBatchSync` (sync, used by the load-time
+    /// crash-loop guard) share the same dedup contract — Telegram-style
+    /// expensive-on-config_changed work must not re-run on no-op pushes
+    /// regardless of which path delivered them.
+    private func prepareConfigDelivery(
+        changes: [(key: String, value: String)],
+        agentId: UUID?,
+        force: Bool = false
+    ) -> (configFn: osr_on_config_changed_t, ctx: osr_plugin_ctx_t, filtered: [(key: String, value: String)])? {
+        guard abiVersion >= 2, let configFn = api.on_config_changed, !changes.isEmpty else { return nil }
+        let agentScope = agentId?.uuidString ?? "default"
+
+        // Drop pairs that match the prior delivery for the same
+        // `(agent, key)` so the plugin's `on_config_changed` body
+        // doesn't re-run expensive work (Telegram `setupWebhook`,
+        // OAuth refresh, etc.) on no-op pushes from
+        // `PluginConfigView.loadConfig()` or the launch-time fan-out.
+        // `force == true` skips the filter but still updates the
+        // cache — opted in on relay reconnect, see callers.
+        let filtered: [(key: String, value: String)] = self.lastDeliveredConfig.withLock {
+            last -> [(key: String, value: String)] in
+            var keep: [(key: String, value: String)] = []
+            keep.reserveCapacity(changes.count)
+            for change in changes {
+                let cacheKey = "\(agentScope)|\(change.key)"
+                if !force, last[cacheKey] == change.value { continue }
+                last[cacheKey] = change.value
+                keep.append(change)
+            }
+            return keep
+        }
+        guard !filtered.isEmpty else { return nil }
+        return (configFn, ctx, filtered)
+    }
+
+    /// Body of the dispatch — checks the shutdown latch, scopes TLS,
+    /// drives `on_config_changed` for each filtered pair. Shared between
+    /// the async and sync delivery paths.
+    private func runConfigDelivery(
+        configFn: osr_on_config_changed_t,
+        ctx: osr_plugin_ctx_t,
+        filtered: [(key: String, value: String)],
+        pluginId: String,
+        agentId: UUID?
+    ) {
+        guard !self.isShutDown.withLock({ $0 }) else { return }
+        PluginHostContext.withTLSScope(pluginId: pluginId, agentId: agentId) {
+            for (key, value) in filtered {
                 key.withCString { keyPtr in
                     value.withCString { valuePtr in
                         configFn(ctx, keyPtr, valuePtr)
                     }
                 }
             }
-            withExtendedLifetime(self) {}
         }
     }
 
@@ -774,22 +994,14 @@ final class ExternalPlugin: @unchecked Sendable {
         let isTerminal = eventType == .completed || eventType == .failed || eventType == .cancelled
 
         eventQueue(for: taskId).async { [self] in
-            guard !self.isShutDown else { return }
-            PluginHostContext.setActivePlugin(pluginId)
-            if let agentId {
-                PluginHostContext.setActiveAgent(agentId)
-            }
-            defer {
-                PluginHostContext.clearActivePlugin()
-                PluginHostContext.clearActiveAgent()
-            }
-
-            taskId.withCString { taskIdPtr in
-                eventJSON.withCString { jsonPtr in
-                    eventFn(ctx, taskIdPtr, rawType, jsonPtr)
+            guard !self.isShutDown.withLock({ $0 }) else { return }
+            PluginHostContext.withTLSScope(pluginId: pluginId, agentId: agentId) {
+                taskId.withCString { taskIdPtr in
+                    eventJSON.withCString { jsonPtr in
+                        eventFn(ctx, taskIdPtr, rawType, jsonPtr)
+                    }
                 }
             }
-
             if isTerminal {
                 self.removeEventQueue(for: taskId)
             }

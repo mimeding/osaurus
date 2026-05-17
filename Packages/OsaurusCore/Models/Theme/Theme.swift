@@ -64,6 +64,8 @@ protocol ThemeProtocol {
 
     // Glass specific
     var glassEnabled: Bool { get }
+    var glassSidebarEnabled: Bool { get }
+    var glassInputEnabled: Bool { get }
     var glassOpacityPrimary: Double { get }
     var glassOpacitySecondary: Double { get }
     var glassOpacityTertiary: Double { get }
@@ -123,6 +125,8 @@ protocol ThemeProtocol {
     var showEdgeLight: Bool { get }
     var showInlineAvatar: Bool { get }
     var inlineAvatarSize: Double { get }
+    var showAgentName: Bool { get }
+    var agentNameSize: Double { get }
 
     // Border customization
     var defaultBorderWidth: Double { get }
@@ -136,6 +140,8 @@ protocol ThemeProtocol {
 extension ThemeProtocol {
     // Provide defaults for new properties so existing themes don't break
     var glassEnabled: Bool { false }
+    var glassSidebarEnabled: Bool { false }
+    var glassInputEnabled: Bool { false }
     var glassMaterial: NSVisualEffectView.Material { .hudWindow }
     var glassTintColor: Color? { nil }
     var glassTintOpacity: Double { 0 }
@@ -167,6 +173,8 @@ extension ThemeProtocol {
     var showEdgeLight: Bool { true }
     var showInlineAvatar: Bool { true }
     var inlineAvatarSize: Double { 24 }
+    var showAgentName: Bool { true }
+    var agentNameSize: Double { 13 }
 
     // Border defaults
     var defaultBorderWidth: Double { 1.0 }
@@ -454,6 +462,8 @@ struct CustomizableTheme: ThemeProtocol {
     var glassBlurRadius: Double { config.glass.blurRadius }
     var glassEdgeLight: Color { Color(themeHex: config.glass.edgeLight) }
     var glassEnabled: Bool { config.glass.enabled }
+    var glassSidebarEnabled: Bool { config.glass.sidebarEnabled }
+    var glassInputEnabled: Bool { config.glass.inputEnabled }
     var glassMaterial: NSVisualEffectView.Material { config.glass.material.nsMaterial }
     var glassTintColor: Color? {
         guard let tint = config.glass.tintColor else { return nil }
@@ -520,6 +530,8 @@ struct CustomizableTheme: ThemeProtocol {
     var showEdgeLight: Bool { config.messages.showEdgeLight }
     var showInlineAvatar: Bool { config.messages.showInlineAvatar }
     var inlineAvatarSize: Double { config.messages.inlineAvatarSize }
+    var showAgentName: Bool { config.messages.showAgentName }
+    var agentNameSize: Double { config.messages.agentNameSize }
 
     // Border customization
     var defaultBorderWidth: Double { config.borders.defaultWidth }
@@ -715,9 +727,14 @@ public class ThemeManager: ObservableObject {
         ThemeConfigurationStore.saveTheme(theme)
         refreshInstalledThemes()
 
-        // If this is the active theme, update it
+        // If this is the active theme, re-apply it (which also posts the
+        // notification). Otherwise still post `.globalThemeChanged` so any
+        // open chat window using this theme via a per-agent `themeId` picks
+        // up the edit without us having to switch the user's active theme.
         if activeCustomTheme?.metadata.id == theme.metadata.id {
             applyCustomTheme(theme)
+        } else {
+            NotificationCenter.default.post(name: .globalThemeChanged, object: nil)
         }
     }
 

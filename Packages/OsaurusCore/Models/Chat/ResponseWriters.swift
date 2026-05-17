@@ -391,6 +391,44 @@ final class NDJSONResponseWriter: ResponseWriter {
         writeNDJSONMessage("", model: model, done: true, context: context)
     }
 
+    func writeToolCalls(
+        _ invocations: [ServiceToolInvocation],
+        model: String,
+        context: ChannelHandlerContext
+    ) {
+        guard !invocations.isEmpty else {
+            writeFinish(model, responseId: "", created: Int(Date().timeIntervalSince1970), context: context)
+            return
+        }
+
+        let toolCalls = invocations.map { inv in
+            [
+                "function": [
+                    "name": inv.toolName,
+                    "arguments": Self.ollamaArguments(from: inv.jsonArguments),
+                ]
+            ]
+        }
+        let response: [String: Any] = [
+            "model": model,
+            "created_at": Date().ISO8601Format(),
+            "message": [
+                "role": "assistant",
+                "content": "",
+                "tool_calls": toolCalls,
+            ],
+            "done": true,
+        ]
+        writeJSONObject(response, context: context)
+    }
+
+    private static func ollamaArguments(from json: String) -> Any {
+        guard let data = json.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data)
+        else { return json }
+        return object
+    }
+
     @inline(__always)
     private func writeNDJSONMessage(
         _ content: String,
@@ -407,6 +445,10 @@ final class NDJSONResponseWriter: ResponseWriter {
             ],
             "done": done,
         ]
+        writeJSONObject(response, context: context)
+    }
+
+    private func writeJSONObject(_ response: [String: Any], context: ChannelHandlerContext) {
         if let jsonData = try? JSONSerialization.data(withJSONObject: response) {
             var buffer = context.channel.allocator.buffer(capacity: 256)
             buffer.writeBytes(jsonData)
@@ -561,6 +603,10 @@ final class AnthropicSSEResponseWriter {
 
         let event = ContentBlockDeltaEvent(thinkingAt: currentBlockIndex, text: thinking)
         writeSSEEvent("content_block_delta", payload: event, context: context)
+    }
+
+    func setOutputTokens(_ tokenCount: Int) {
+        outputTokens = max(0, tokenCount)
     }
 
     /// Write tool_use block start
@@ -888,6 +934,10 @@ final class OpenResponsesSSEWriter {
             delta: text
         )
         writeSSEEvent("response.output_text.delta", payload: event, context: context)
+    }
+
+    func setOutputTokens(_ tokenCount: Int) {
+        outputTokens = max(0, tokenCount)
     }
 
     /// Write response.output_text.done event

@@ -187,7 +187,7 @@ public final class CompleteTool: OsaurusTool, @unchecked Sendable {
 /// drive the inline prompt UI: free-form questions render with an
 /// embedded text field; questions with `options` render as clickable
 /// chips so the user can answer with one tap.
-public struct ClarifyPayload: Sendable {
+public struct ClarifyPayload: Sendable, Equatable {
     public let question: String
     public let options: [String]
     public let allowMultiple: Bool
@@ -445,13 +445,16 @@ public final class SpeakTool: OsaurusTool, @unchecked Sendable {
         // still works, just without the bubble/row UI binding.
         let messageId = ChatExecutionContext.currentAssistantTurnId ?? UUID()
         let callId = ChatExecutionContext.currentToolCallId ?? UUID().uuidString
+        let agentId = ChatExecutionContext.currentAgentId
 
         do {
             try await MainActor.run {
+                let agentVoice = agentId.flatMap { AgentManager.shared.agent(for: $0)?.ttsVoice }
                 try TTSService.shared.startToolPlayback(
                     text: trimmed,
                     messageId: messageId,
-                    callId: callId
+                    callId: callId,
+                    voiceOverride: agentVoice
                 )
             }
         } catch TTSPlaybackError.modelNotReady {

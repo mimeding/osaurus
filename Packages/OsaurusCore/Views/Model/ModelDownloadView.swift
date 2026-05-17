@@ -576,7 +576,9 @@ struct ModelDownloadView: View {
                     metrics: modelManager.downloadMetrics[model.id],
                     totalMemoryGB: systemMonitor.totalMemoryGB,
                     onViewDetails: { modelToShowDetails = model },
-                    onCancel: { modelManager.cancelDownload(model.id) }
+                    onCancel: { modelManager.cancelDownload(model.id) },
+                    onPause: { modelManager.pauseDownload(model.id) },
+                    onResume: { modelManager.resumeDownload(model.id) }
                 )
                 .gridDiffCell()
             }
@@ -818,6 +820,10 @@ struct ModelDownloadView: View {
             case .downloading:
                 pillButton("Cancel", color: theme.secondaryText, bg: theme.tertiaryBackground) {
                     modelManager.cancelDownload(notice.newId)
+                }
+            case .paused:
+                pillButton("Resume", color: .white, bg: theme.accentColor) {
+                    modelManager.resumeDownload(notice.newId)
                 }
             case .failed:
                 pillButton("Retry", color: .white, bg: theme.accentColor) {
@@ -1071,8 +1077,10 @@ struct ModelDownloadView: View {
     private func computeDownloadedList(memory mem: Double) -> [MLXModel] {
         let all = modelManager.deduplicatedModels()
         let isActive: (MLXModel) -> Bool = { m in
-            if case .downloading = (modelManager.downloadStates[m.id] ?? .notStarted) { return true }
-            return false
+            switch modelManager.downloadStates[m.id] ?? .notStarted {
+            case .downloading, .paused: return true
+            default: return false
+            }
         }
         let active = all.filter(isActive)
         let completed = all.filter { $0.isDownloaded }
@@ -1560,6 +1568,16 @@ private struct HuggingFaceImportSheet: View {
             isResolving = false
             if resolved != nil {
                 onImported(repoId)
+            } else if repoId.lowercased().hasPrefix("osaurusai/") {
+                errorMessage = L(
+                    "That OsaurusAI model isn't in the registry. Pick one from the Recommended list."
+                )
+            } else if !repoId.lowercased().hasPrefix("mlx-community/")
+                && !ModelManager.nameLooksLikeMLX(repoId)
+            {
+                errorMessage = L(
+                    "Repos outside mlx-community must have “mlx” in the repo name (e.g. user/Model-mlx-4bit)."
+                )
             } else {
                 errorMessage = L(
                     "This repo doesn't appear to be MLX-compatible. Try a model from mlx-community or one with “-mlx” in its name."

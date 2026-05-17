@@ -57,9 +57,11 @@ final class NativeHeaderView: NSView {
     private var nameLeadingToAvatar: NSLayoutConstraint?
     private var nameLeadingToSelf: NSLayoutConstraint?
     /// Default avatar diameter when the theme doesn't provide one. Theme
-    /// override comes through `configure(...)` and is clamped to [16, 36]
+    /// override comes through `configure(...)` and is clamped to [16, 108]
     /// before being applied via `avatarSizeConstraints`.
     private static let defaultAvatarSize: CGFloat = 24
+    static let minAvatarSize: CGFloat = 16
+    static let maxAvatarSize: CGFloat = 108
     private var avatarWidthConstraint: NSLayoutConstraint?
     private var avatarHeightConstraint: NSLayoutConstraint?
     private var currentAvatarSize: CGFloat = NativeHeaderView.defaultAvatarSize
@@ -162,7 +164,9 @@ final class NativeHeaderView: NSView {
         // Resolve theme-driven sizing + visibility first so avatar generation
         // matches the actual rendered size. Clamped to a sensible UI range
         // even if a malformed theme JSON lands here.
-        let themeSize = CGFloat(max(16, min(36, theme.inlineAvatarSize)))
+        let themeSize = CGFloat(
+            max(Double(Self.minAvatarSize), min(Double(Self.maxAvatarSize), theme.inlineAvatarSize))
+        )
         if currentAvatarSize != themeSize {
             currentAvatarSize = themeSize
             avatarWidthConstraint?.constant = themeSize
@@ -203,8 +207,11 @@ final class NativeHeaderView: NSView {
         nameLeadingToSelf?.isActive = !showAvatar
         nameLeadingToAvatar?.isActive = showAvatar
 
-        nameLabel.stringValue = name
-        nameLabel.font = NSFont.systemFont(ofSize: CGFloat(theme.captionSize) + 1, weight: .semibold)
+        let nameVisible = role == .user || theme.showAgentName
+        nameLabel.isHidden = !nameVisible
+        nameLabel.stringValue = nameVisible ? name : ""
+        let nameSize = CGFloat(max(12.5, min(18, theme.agentNameSize)))
+        nameLabel.font = NSFont.systemFont(ofSize: nameSize, weight: .semibold)
         nameLabel.textColor = role == .user ? NSColor(theme.accentColor) : NSColor(theme.secondaryText)
 
         rebuildActionButtons(role: role, theme: theme, onCancelEdit: onCancelEdit)
@@ -1041,6 +1048,7 @@ final class NativeMessageCellView: NSTableCellView {
 
     private var spacerView: NSView?
     private var nativeHeaderView: NativeHeaderView?
+    private var nativeHeaderHeightConstraint: NSLayoutConstraint?
 
     // Native views (no NSHostingView)
     private var nativeMarkdownView: NativeMarkdownView?
@@ -1265,17 +1273,20 @@ final class NativeMessageCellView: NSTableCellView {
             addSubview(hv)
             let bottomGap = bottomAnchor.constraint(equalTo: hv.bottomAnchor, constant: 12)
             // below required so transient table sizing (e.g. NSView-Encapsulated-Layout-Height) can
-            // squeeze the cell without fighting 12 + 28 + 12; row height still comes from the delegate
+            // squeeze the cell without fighting our top+height+bottom; row height still comes from the delegate
             bottomGap.priority = .init(999)
+            let heightC = hv.heightAnchor.constraint(equalToConstant: 28)
             NSLayoutConstraint.activate([
                 hv.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
                 hv.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
                 hv.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-                hv.heightAnchor.constraint(equalToConstant: 28),
+                heightC,
                 bottomGap,
             ])
             nativeHeaderView = hv
+            nativeHeaderHeightConstraint = heightC
         }
+        nativeHeaderHeightConstraint?.constant = NativeCellHeightEstimator.headerInnerHeight(for: context.theme)
 
         let displayName = role == .user ? "You" : (name.isEmpty ? "Assistant" : name)
         nativeHeaderView?.configure(
@@ -2026,17 +2037,8 @@ private final class UserAttachmentThumbnailView: NSView {
 
     override var intrinsicContentSize: NSSize {
         guard let img = image else { return NSSize(width: 96, height: 96) }
-        let size = img.size
-        guard size.width > 0, size.height > 0 else { return NSSize(width: 96, height: 96) }
-
-        let aspectRatio = size.width / size.height
-        if aspectRatio > 1 {
-            // landscape: fixed width 96, height shrinks (to stay within 96x96 box)
-            return NSSize(width: 96, height: max(16, 96 / aspectRatio))
-        } else {
-            // portrait/square: fixed height 96, width shrinks
-            return NSSize(width: max(16, 96 * aspectRatio), height: 96)
-        }
+        // Shared rule with the composer chip — clamped aspect, no crop.
+        return AttachmentThumbnailLayout.size(for: img, longAxis: 96)
     }
 
     override init(frame frameRect: NSRect) {
@@ -2211,6 +2213,18 @@ extension ContentBlockKind {
 /// Used by the NSTableView height delegate as a fast path.
 enum NativeCellHeightEstimator {
 
+    /// Inner height of the assistant header row (avatar + name + actions),
+    /// without the 12pt top/bottom cell padding. Must match the constraints
+    /// installed by `configureAsHeader`.
+    @MainActor static func headerInnerHeight(for theme: any ThemeProtocol) -> CGFloat {
+        let clampedAvatar = max(
+            NativeHeaderView.minAvatarSize,
+            min(NativeHeaderView.maxAvatarSize, CGFloat(theme.inlineAvatarSize))
+        )
+        let avatarSpace = theme.showInlineAvatar ? clampedAvatar : 0
+        return max(28, avatarSpace)
+    }
+
     @MainActor static func estimatedHeight(
         for block: ContentBlock,
         width: CGFloat,
@@ -2222,8 +2236,8 @@ enum NativeCellHeightEstimator {
             return 16
 
         case .header:
-            // 12 top + 28 label + 12 bottom
-            return 52
+            // 12 top + header content + 12 bottom; content grows with avatar size
+            return 24 + headerInnerHeight(for: theme)
 
         case .generationStats:
             return 24

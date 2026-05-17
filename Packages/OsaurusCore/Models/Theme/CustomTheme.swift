@@ -307,8 +307,12 @@ public struct ThemeGlass: Codable, Equatable, Sendable {
         }
     }
 
-    /// Whether glass effect is enabled (false = solid background)
+    /// Whether glass effect is enabled for the chat area background.
     public var enabled: Bool
+    /// Whether glass effect is enabled for the chat session sidebar.
+    public var sidebarEnabled: Bool
+    /// Whether glass effect is enabled for the prompt/input card.
+    public var inputEnabled: Bool
     public var material: GlassMaterial
     public var blurRadius: Double
     public var opacityPrimary: Double
@@ -322,6 +326,8 @@ public struct ThemeGlass: Codable, Equatable, Sendable {
 
     public init(
         enabled: Bool = false,
+        sidebarEnabled: Bool = false,
+        inputEnabled: Bool = false,
         material: GlassMaterial = .hudWindow,
         blurRadius: Double = 30,
         opacityPrimary: Double = 0.10,
@@ -334,6 +340,8 @@ public struct ThemeGlass: Codable, Equatable, Sendable {
         windowBackingOpacity: Double = 0.55
     ) {
         self.enabled = enabled
+        self.sidebarEnabled = sidebarEnabled
+        self.inputEnabled = inputEnabled
         self.material = material
         self.blurRadius = blurRadius
         self.opacityPrimary = opacityPrimary
@@ -366,6 +374,8 @@ public struct ThemeGlass: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try container.decode(Bool.self, forKey: .enabled)
+        sidebarEnabled = try container.decodeIfPresent(Bool.self, forKey: .sidebarEnabled) ?? false
+        inputEnabled = try container.decodeIfPresent(Bool.self, forKey: .inputEnabled) ?? false
         material = try container.decode(GlassMaterial.self, forKey: .material)
         blurRadius = try container.decode(Double.self, forKey: .blurRadius)
         opacityPrimary = try container.decode(Double.self, forKey: .opacityPrimary)
@@ -508,6 +518,11 @@ public struct ThemeMessages: Codable, Equatable, Sendable {
     /// Diameter (in points) of the inline avatar shown beside assistant
     /// messages. Clamped at consumption time to a sensible range.
     public var inlineAvatarSize: Double
+    /// Whether the agent's display name is shown next to the avatar.
+    /// When false, only the avatar identifies the assistant in the header.
+    public var showAgentName: Bool
+    /// Font size (in points) of the agent's display name in the header.
+    public var agentNameSize: Double
 
     public init(
         bubbleCornerRadius: Double = 20,
@@ -518,7 +533,9 @@ public struct ThemeMessages: Codable, Equatable, Sendable {
         borderWidth: Double = 0.5,
         showEdgeLight: Bool = true,
         showInlineAvatar: Bool = true,
-        inlineAvatarSize: Double = 24
+        inlineAvatarSize: Double = 24,
+        showAgentName: Bool = true,
+        agentNameSize: Double = 13
     ) {
         self.bubbleCornerRadius = bubbleCornerRadius
         self.userBubbleOpacity = userBubbleOpacity
@@ -529,6 +546,8 @@ public struct ThemeMessages: Codable, Equatable, Sendable {
         self.showEdgeLight = showEdgeLight
         self.showInlineAvatar = showInlineAvatar
         self.inlineAvatarSize = inlineAvatarSize
+        self.showAgentName = showAgentName
+        self.agentNameSize = agentNameSize
     }
 
     public init(from decoder: Decoder) throws {
@@ -542,6 +561,8 @@ public struct ThemeMessages: Codable, Equatable, Sendable {
         showEdgeLight = try c.decodeIfPresent(Bool.self, forKey: .showEdgeLight) ?? true
         showInlineAvatar = try c.decodeIfPresent(Bool.self, forKey: .showInlineAvatar) ?? true
         inlineAvatarSize = try c.decodeIfPresent(Double.self, forKey: .inlineAvatarSize) ?? 24
+        showAgentName = try c.decodeIfPresent(Bool.self, forKey: .showAgentName) ?? true
+        agentNameSize = try c.decodeIfPresent(Double.self, forKey: .agentNameSize) ?? 13
     }
 
     public static var `default`: ThemeMessages { ThemeMessages() }
