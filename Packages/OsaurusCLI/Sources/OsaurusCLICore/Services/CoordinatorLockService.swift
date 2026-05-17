@@ -47,7 +47,12 @@ public struct CoordinatorLockService {
     public func acquire(resource: String, owner: String, ttl: TimeInterval? = nil, now: Date = Date()) throws
         -> CoordinatorLockAcquireResult
     {
-        try fileManager.createDirectory(at: paths.locksDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: paths.locksDirectory,
+            withIntermediateDirectories: true,
+            attributes: CoordinatorFilePermissions.directoryAttributes
+        )
+        try CoordinatorFilePermissions.applyDirectoryPermissions(to: paths.locksDirectory, fileManager: fileManager)
         let lock = CoordinatorLock(
             resource: resource,
             owner: owner,
@@ -61,7 +66,7 @@ public struct CoordinatorLockService {
         }
 
         let data = try encoded(lock)
-        let fd = open(lockURL.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
+        let fd = open(lockURL.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
         guard fd >= 0 else {
             if let current = try loadLock(at: lockURL) {
                 return .held(current)

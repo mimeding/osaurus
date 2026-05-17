@@ -20,6 +20,8 @@ final class CoordinatorLockServiceTests: XCTestCase {
                 )
             )
         )
+        XCTAssertEqual(try posixMode(service.paths.locksDirectory), 0o700)
+        XCTAssertEqual(try posixMode(service.paths.lockFile(for: "Packages/Foo.swift")), 0o600)
         if case .held(let lock) = second {
             XCTAssertEqual(lock.owner, "worker-a")
         } else {

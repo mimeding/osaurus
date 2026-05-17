@@ -39,9 +39,14 @@ public struct CoordinatorBootstrap {
             if fileManager.fileExists(atPath: directory.path) {
                 existingDirectories.append(directory.path)
             } else {
-                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+                try fileManager.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true,
+                    attributes: CoordinatorFilePermissions.directoryAttributes
+                )
                 createdDirectories.append(directory.path)
             }
+            try CoordinatorFilePermissions.applyDirectoryPermissions(to: directory, fileManager: fileManager)
         }
 
         var seededFiles: [String] = []
@@ -64,12 +69,16 @@ public struct CoordinatorBootstrap {
     }
 
     private func seedJSONIfMissing<T: Encodable>(_ value: T, at url: URL) throws -> Bool {
-        guard !fileManager.fileExists(atPath: url.path) else { return false }
+        guard !fileManager.fileExists(atPath: url.path) else {
+            try CoordinatorFilePermissions.applyFilePermissions(to: url, fileManager: fileManager)
+            return false
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(value)
         try data.write(to: url, options: .atomic)
+        try CoordinatorFilePermissions.applyFilePermissions(to: url, fileManager: fileManager)
         return true
     }
 }

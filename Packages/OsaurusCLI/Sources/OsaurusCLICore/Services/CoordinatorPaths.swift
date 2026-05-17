@@ -74,3 +74,20 @@ public struct CoordinatorPaths: Equatable, Sendable {
         return output.isEmpty ? "_" : output
     }
 }
+
+enum CoordinatorFilePermissions {
+    static let directoryMode = 0o700
+    static let fileMode = 0o600
+
+    static var directoryAttributes: [FileAttributeKey: Any] {
+        [.posixPermissions: NSNumber(value: directoryMode)]
+    }
+
+    static func applyDirectoryPermissions(to url: URL, fileManager: FileManager) throws {
+        try fileManager.setAttributes(directoryAttributes, ofItemAtPath: url.path)
+    }
+
+    static func applyFilePermissions(to url: URL, fileManager: FileManager) throws {
+        try fileManager.setAttributes([.posixPermissions: NSNumber(value: fileMode)], ofItemAtPath: url.path)
+    }
+}

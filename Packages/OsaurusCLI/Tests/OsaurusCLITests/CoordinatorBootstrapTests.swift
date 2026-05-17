@@ -17,6 +17,10 @@ final class CoordinatorBootstrapTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.featureFlagsFile.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.statusFile.path))
         XCTAssertEqual(result.seededFiles.count, 3)
+        XCTAssertEqual(try posixMode(paths.root), 0o700)
+        XCTAssertEqual(try posixMode(paths.stateDirectory), 0o700)
+        XCTAssertEqual(try posixMode(paths.featureFlagsFile), 0o600)
+        XCTAssertEqual(try posixMode(paths.statusFile), 0o600)
     }
 
     func testInitializeIsIdempotent() throws {

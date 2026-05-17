@@ -50,10 +50,16 @@ public struct CoordinatorFeatureFlagsStore {
     }
 
     public func save(_ flags: CoordinatorFeatureFlags) throws {
-        try fileManager.createDirectory(at: paths.stateDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: paths.stateDirectory,
+            withIntermediateDirectories: true,
+            attributes: CoordinatorFilePermissions.directoryAttributes
+        )
+        try CoordinatorFilePermissions.applyDirectoryPermissions(to: paths.stateDirectory, fileManager: fileManager)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(flags)
         try data.write(to: paths.featureFlagsFile, options: .atomic)
+        try CoordinatorFilePermissions.applyFilePermissions(to: paths.featureFlagsFile, fileManager: fileManager)
     }
 }
