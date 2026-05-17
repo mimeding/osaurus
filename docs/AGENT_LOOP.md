@@ -32,6 +32,8 @@ See [Tool Contract](TOOL_CONTRACT.md) for the canonical success/failure envelope
 
 These live in [`Tools/AgentLoopTools.swift`](../Packages/OsaurusCore/Tools/AgentLoopTools.swift). Each one has a single required field — the smallest schema we can give a small local model and still get the right behavior — but they're called identically by frontier models too. They're registered as global built-ins in [`ToolRegistry`](../Packages/OsaurusCore/Tools/ToolRegistry.swift) so the model sees them in every chat (folder, sandbox, plain Q&A) and the system prompt's "Agent Loop" guidance block reinforces when to call which.
 
+> **Agents get more.** DB-enabled agents also see the `db_*` persistence tools and the `schedule_next_run` / `cancel_next_run` self-scheduling slot — see [Agent DB & Self-Scheduling](AGENT_DB.md).
+
 ### `todo` — write or replace the task checklist
 
 The agent calls `todo` whenever it wants the user to see the plan. Each call **replaces the entire list** (no merging) so the agent can fix mistakes, reorder, or check items off by sending the full list with new boxes.
@@ -185,6 +187,8 @@ The chat-layer wrapper surfaces a differentiated error envelope per failure mode
 ## Headless / HTTP / Plugin Use
 
 Plugins and HTTP API callers reach the same loop through [`TaskDispatcher`](../Packages/OsaurusCore/Managers/TaskDispatcher.swift) and [`BackgroundTaskManager`](../Packages/OsaurusCore/Managers/BackgroundTaskManager.swift). Each dispatched task runs as a background chat session — same engine, same loop tools, same intercepts. See [`docs/plugins/HOST_API.md`](plugins/HOST_API.md#dispatch) for the dispatch JSON schema and event types.
+
+When a plugin-dispatched run pauses on `clarify`, the chat-layer intercept publishes the parsed payload onto the session and `BackgroundTaskManager` fires `OSR_TASK_EVENT_CLARIFICATION` (type 3) carrying `{question, allow_multiple, options?}`. The same observer **suppresses** the COMPLETED event that would otherwise fire when `isStreaming` flips false on the intercept — without that suppression the plugin would see a "completion" carrying the literal `clarify` tool envelope as `output`, with the actual question text trapped inside the JSON. The next event the plugin sees is either an ACTIVITY tick after the user answers (the loop resumed inside the same task) or a fresh terminal event after the resumed loop runs to completion. See [HOST_API.md — Task lifecycle events](plugins/HOST_API.md#task-lifecycle-events-on_task_event) for the full payload schema and the COMPLETED-suppression contract.
 
 ### Session Audit Dimension
 

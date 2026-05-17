@@ -13,13 +13,15 @@ Canonical reference for all Osaurus features, their status, and documentation.
 | Local LLM Server (MLX)           | Stable    | "Key Features"     | OpenAI_API_GUIDE.md           | Services/Inference/MLXService.swift, Services/ModelRuntime/                                     |
 | Remote Providers                 | Stable    | "Key Features"     | REMOTE_PROVIDERS.md           | Managers/RemoteProviderManager.swift, Services/Provider/RemoteProviderService.swift            |
 | Remote MCP Providers             | Stable    | "Key Features"     | REMOTE_MCP_PROVIDERS.md       | Managers/MCPProviderManager.swift, Tools/MCPProviderTool.swift                        |
-| MCP Server                       | Stable    | "MCP Server"       | (in README)                   | Networking/OsaurusServer.swift, Services/MCP/MCPServerManager.swift                       |
+| MCP Server                       | Stable    | "MCP Server"       | (in README)                   | Networking/OsaurusServer.swift, Services/MCP/MCPServerManager.swift, CLI MCPCommand.swift |
 | Tools & Plugins                  | Stable    | "Tools & Plugins"  | plugins/README.md             | Tools/, Managers/Plugin/PluginManager.swift, Services/Plugin/PluginHostAPI.swift, Storage/PluginDatabase.swift, Models/Plugin/PluginHTTP.swift, Views/Plugin/PluginConfigView.swift |
 | Skills                           | Stable    | "Skills"           | SKILLS.md                     | Managers/SkillManager.swift, Views/Skill/SkillsView.swift, Services/Skill/SkillSearchService.swift |
+| Claude Plugin Import             | Stable    | "Skills"           | CLAUDE_PLUGINS.md             | Services/GitHubSkillService.swift, Services/Skill/ClaudePluginInstaller.swift, Views/Skill/GitHubImportSheet.swift, Views/Skill/InstalledPluginsSection.swift |
 | Methods                          | Stable    | "Skills & Methods" | SKILLS.md                     | Models/Method/Method.swift, Services/Method/MethodService.swift, Services/Method/MethodSearchService.swift, Storage/MethodDatabase.swift |
 | Context Management               | Stable    | -                  | SKILLS.md                     | Services/Context/PreflightCapabilitySearch.swift, Tools/CapabilityTools.swift, Services/Tool/ToolSearchService.swift, Services/Tool/ToolIndexService.swift |
 | Memory                           | Stable    | "Key Features"     | MEMORY.md                     | Services/Memory/MemoryService.swift, Services/Memory/MemorySearchService.swift, Services/Memory/MemoryContextAssembler.swift |
 | Agents                         | Stable    | "Agents"         | (in README)                   | Managers/AgentManager.swift, Models/Agent/Agent.swift, Views/Agent/AgentsView.swift         |
+| Agent DB & Self-Scheduling       | Stable    | "Agents"           | AGENT_DB.md                   | Storage/AgentDatabase.swift, Storage/SchedulerDatabase.swift, Managers/NextRunScheduler.swift, Tools/Database/, Views/Agent/AgentDBTabViews.swift, Views/Agent/NextRunPanelView.swift |
 | Schedules                        | Stable    | "Schedules"        | (in README)                   | Managers/ScheduleManager.swift, Models/Schedule/Schedule.swift, Views/Schedule/SchedulesView.swift      |
 | Watchers                         | Stable    | "Watchers"         | WATCHERS.md                   | Managers/WatcherManager.swift, Models/Watcher/Watcher.swift, Views/Watcher/WatchersView.swift         |
 | Agent Loop & Folder Context      | Stable    | "Agent Loop"       | AGENT_LOOP.md                 | Folder/, Tools/AgentLoopTools.swift, Tools/FolderToolManager.swift, Models/Chat/AgentTodo.swift, Models/Chat/AgentTodoStore.swift, Models/Chat/SharedArtifact.swift |
@@ -78,7 +80,7 @@ Canonical reference for all Osaurus features, their status, and documentation.
 │  │   └── RemoteProviderService (Per-provider connection handling)        │
 │  ├── MCP                                                                 │
 │  │   ├── MCPServerManager (Osaurus as MCP server)                        │
-│  │   └── MCPProviderManager (Remote MCP client connections)              │
+│  │   └── MCPProviderManager (HTTP/SSE remote MCP client connections)     │
 │  ├── Tools                                                               │
 │  │   ├── ToolRegistry                                                    │
 │  │   ├── PluginManager                                                   │
@@ -90,7 +92,8 @@ Canonical reference for all Osaurus features, their status, and documentation.
 │  ├── Skills                                                              │
 │  │   ├── SkillManager (Skill CRUD and loading)                           │
 │  │   ├── SkillSearchService (RAG-based skill search)                     │
-│  │   └── GitHubSkillService (GitHub import)                              │
+│  │   ├── GitHubSkillService (Plugin discovery + marketplace parsing)     │
+│  │   └── ClaudePluginInstaller (Full Claude plugin install/uninstall)    │
 │  ├── Methods                                                             │
 │  │   ├── MethodService (Method CRUD and scoring)                         │
 │  │   └── MethodSearchService (RAG-based method search)                   │
@@ -162,17 +165,17 @@ Canonical reference for all Osaurus features, their status, and documentation.
 **Runtime behavior:**
 
 - **Window-scoped warm-up** — Models are loaded and prefix-cached when a chat window opens, not at app launch. Each window warms its own model independently, using the window's agent context (system prompt, memory, tools) for the prefix cache.
-- **Smart unloading** — When a user switches to a remote model or closes a window, a GC pass checks all open windows and unloads any local model no longer referenced. The warm-up indicator (yellow dot) signals when a model is loading.
+- **Smart unloading** — The "Keep model loaded after use" setting controls whether a local model unloads immediately after use, stays warm for 5/15/30/60 minutes, or stays resident until an explicit unload/cleanup. Strict single-model switches still unload the replaced model immediately, and idle unload never deletes downloaded models or disk KV cache entries. The warm-up indicator (yellow dot) signals when a model is loading.
 - **Continuous batching** — `BatchEngine` shares a single forward pass across overlapping requests for the same model. The default `mlxBatchEngineMaxBatchSize` is `1` so vmlx compiled decode stays eligible for single-user chat; tune with `defaults write ai.osaurus ai.osaurus.scheduler.mlxBatchEngineMaxBatchSize -int 8` for server-style concurrency. Takes effect on the next inference call — the registry hot-resizes the cached engine via vmlx's `BatchEngine.updateMaxBatchSize(_:)`.
 - **Library-managed KV cache** — vmlx-swift-lm's `CacheCoordinator` owns KV cache geometry (paged for global attention, rotating for sliding-window, SSM state for Mamba) sized per-model. Multi-turn KV reuse, mediaSalt for VLMs, and sliding-window correctness are all handled inside the engine — osaurus configures only `modelKey`, `diskCacheDir`, and a writability fallback.
-- **Model eviction policy** — Configurable in Settings > Local Inference > Model Management. "Strict (One Model)" keeps only one model loaded (default). "Flexible (Multi Model)" allows concurrent models for high-RAM systems.
+- **Model eviction policy** — Configurable in Settings > Local Inference > Model Management. "Strict (One Model)" keeps only one model loaded (default). "Flexible (Multi Model)" allows concurrent models for high-RAM systems. `/health` exposes additive `resident_models[]` diagnostics with in-flight counts and idle-unload timing for each loaded model.
 
 **Configuration:**
 
 - Model storage: `~/MLXModels` (override with `OSU_MODELS_DIR`)
 - Default port: `1337` (override with `OSU_PORT`)
 - KV cache disk storage: `~/.osaurus/cache/kv/`
-- Settings: Top P, eviction policy, allowed origins.
+- Settings: Top P, eviction policy, model idle residency, allowed origins.
 - One advanced tunable, exposed via `defaults` only: `ai.osaurus.scheduler.mlxBatchEngineMaxBatchSize` (default `1`, clamped to `[1, 32]`; hot-resized via `BatchEngine.updateMaxBatchSize(_:)` on the next inference call).
 
 See [INFERENCE_RUNTIME.md](./INFERENCE_RUNTIME.md) for the full runtime architecture.
@@ -205,33 +208,50 @@ See [INFERENCE_RUNTIME.md](./INFERENCE_RUNTIME.md) for the full runtime architec
 
 ### Remote MCP Providers
 
-**Purpose:** Connect to external MCP servers over HTTP/SSE and aggregate their tools.
+**Purpose:** Connect to URL-reachable external MCP servers and aggregate their tools, with one-tap setup for ~25 well-known vendors.
 
 **Components:**
 
-- `Models/Configuration/MCPProviderConfiguration.swift` — Provider config model
-- `Managers/MCPProviderManager.swift` — Connection and tool discovery
-- `Services/MCP/MCPProviderKeychain.swift` — Secure token storage
+- `Models/Configuration/MCPProviderConfiguration.swift` — Provider config model (URL, none / bearer / OAuth)
+- `Models/Configuration/MCPProviderTemplate.swift` — Hardcoded catalog of well-known providers
+- `Managers/MCPProviderManager.swift` — HTTP/SSE connection, tool discovery, OAuth refresh & 401 retry
+- `Services/MCP/MCPProviderKeychain.swift` — Secure token, refresh-token, and client-secret storage
+- `Services/MCP/OAuth/MCPOAuthService.swift` — End-to-end OAuth sign-in orchestration
+- `Services/MCP/OAuth/MCPOAuthDiscovery.swift` — RFC 9728 PRM + RFC 8414 ASM discovery (with OIDC fallback)
+- `Services/MCP/OAuth/MCPOAuthRegistration.swift` — RFC 7591 Dynamic Client Registration
+- `Services/MCP/OAuth/MCPWWWAuthenticate.swift` — `WWW-Authenticate: Bearer` challenge parser
+- `Services/MCP/OAuth/MCPOAuthCanonicalURL.swift` — RFC 8707 canonical resource URL normalization
+- `Services/Auth/OAuthLoopbackServer.swift` — Shared RFC 8252 loopback callback server (also used by Codex)
+- `Services/Auth/PKCE.swift` — PKCE S256 challenge/verifier generator
+- `Services/Auth/OAuthFormEncoding.swift` — `application/x-www-form-urlencoded` helper
 - `Tools/MCPProviderTool.swift` — Wrapper for remote MCP tools
+- `Views/Settings/ProvidersView.swift` — Two-step add flow: catalog grid + connect screen
 
 **Features:**
 
-- Automatic tool discovery on connect
+- Provider catalog with search/filter for quick discovery
+- One-tap OAuth 2.1 sign-in via PKCE + Dynamic Client Registration (no client ID/secret to configure)
+- API-key templates for vendors without DCR (GitHub, Atlassian, HubSpot, Zapier)
+- Self-hosting templates (Google Workspace) that deeplink to setup docs
+- Custom Server fallback for any URL not in the catalog
+- URL-based HTTP/SSE transport for remote providers; no third-party `command`/`args` stdio launching
+- Automatic tool discovery on connect, with namespaced tool names (`provider_toolname`)
+- Proactive OAuth token refresh + bounded 401-retry-with-refresh
 - Configurable discovery and execution timeouts
-- Tool namespacing (prefixed with provider name)
 - Streaming support (optional)
-- Command-based stdio providers are not supported by this remote-provider path yet
+- Backwards-compatible `mcp.json` migration (legacy records default to bearer-token)
 
 ---
 
 ### MCP Server
 
-**Purpose:** Expose Osaurus tools to AI agents via Model Context Protocol.
+**Purpose:** Expose Osaurus tools to AI agents via Model Context Protocol, either through local HTTP endpoints or through the `osaurus mcp` stdio command bridge.
 
 **Components:**
 
 - `Services/MCP/MCPServerManager.swift` — MCP server lifecycle
 - `Networking/OsaurusServer.swift` — HTTP MCP endpoints
+- `Packages/OsaurusCLI/Sources/OsaurusCLICore/Commands/MCPCommand.swift` — stdio MCP bridge for command-based clients
 - `Tools/ToolRegistry.swift` — Tool registration and lookup
 - `Tools/ToolEnvelope.swift` — Canonical success/failure envelope every tool returns (see [Tool Contract](TOOL_CONTRACT.md))
 - `Tools/SchemaValidator.swift` — Argument validator with `additionalProperties` enforcement
@@ -242,6 +262,14 @@ See [INFERENCE_RUNTIME.md](./INFERENCE_RUNTIME.md) for the full runtime architec
 | `/mcp/health` | GET | Health check |
 | `/mcp/tools` | GET | List available tools |
 | `/mcp/call` | POST | Execute a tool |
+
+**Command bridge:**
+
+```json
+{"command": "osaurus", "args": ["mcp"]}
+```
+
+This is the supported command-based stdio bridge for external clients connecting to Osaurus. It is separate from Remote MCP Providers, which only connect from Osaurus to URL-based HTTP/SSE MCP servers.
 
 ---
 
@@ -731,7 +759,7 @@ Read-only tools are always available. Write/exec/package/secret tools require `a
 - **v1 plugins** — Tools only, via `osaurus_plugin_entry`
 - **v2 plugins** — Tools + routes + storage + config, via `osaurus_plugin_entry_v2`
 - **System plugins** — Built-in tools (filesystem, browser, git, etc.)
-- **MCP provider tools** — Tools from remote MCP servers
+- **MCP provider tools** — Tools from URL-based remote MCP servers
 
 **Plugin Capabilities (v2):**
 
@@ -784,6 +812,41 @@ See [docs/plugins/README.md](plugins/README.md) for the full reference.
 | `assets/`      | Supporting files                   |
 
 **Storage:** `~/.osaurus/skills/{skill-name}/SKILL.md`
+
+---
+
+### Claude Plugin Import
+
+**Purpose:** Import full Claude plugins from GitHub — skills, scheduled agents, slash commands, MCP providers, and shared `CLAUDE.md` context — as a single managed bundle.
+
+**Components:**
+
+- `Services/GitHubSkillService.swift` — Repository discovery, `marketplace.json` parsing, directory-based artifact probing, GitHub rate-limit detection
+- `Services/Skill/ClaudePluginInstaller.swift` — Per-plugin install/uninstall orchestrator, idempotent re-install, MCP placeholder-token detection, cron inference
+- `Views/Skill/GitHubImportSheet.swift` — Import UI with concurrent fetch progress and deep-linkable install summary
+- `Views/Skill/InstalledPluginsSection.swift` — Aggregator + management surface for installed plugin bundles
+- `Managers/ManagementStateManager.swift` — Deep-link state for opening a schedule editor from the install summary
+
+**Features:**
+
+- **Two marketplace shapes** — Directory-based Claude plugin layout *and* legacy flat `skills: [String]` arrays
+- **Five artifact families** — `SKILL.md`, `agents/*.md`, `commands/*.md`, `CLAUDE.md`, `.mcp.json` (HTTP/SSE)
+- **Plugin id grouping** — Every artifact is tagged `github:<owner>/<repo>/<plugin>` so the bundle can be reinstalled or uninstalled atomically
+- **Idempotent re-install** — Non-skill artifacts are replaced on re-import; skills dedupe by `(pluginId, name)`
+- **Parallel discovery & fetch** — `withThrowingTaskGroup` + `async let` across plugins and artifact probes
+- **Cron inference** — Natural-language frequency text in agent frontmatter is mapped to cron; unmatched schedules land disabled with a deep-link to the editor
+- **Placeholder token handling** — MCP env references like `${VAR}`, `$VAR`, `<token>` are detected and the provider is created without a token (surfaced in the install summary)
+- **Rate-limit aware** — `403` + `X-RateLimit-Remaining: 0` is mapped to `GitHubSkillError.rateLimited(resetAt:)` and a user-facing relative-time message
+
+**Plugin ID format:**
+
+```
+github:<owner>/<repo>/<plugin-name>
+```
+
+Stored on each artifact as `Skill.pluginId`, `Schedule.parameters["pluginId"]`, `SlashCommand.pluginId`, and `MCPProvider.pluginId`.
+
+**Reference repository:** [`anthropics/claude-for-legal`](https://github.com/anthropics/claude-for-legal)
 
 ---
 
@@ -1125,6 +1188,7 @@ Eight settings total, down from v1's 18. The per-section budget knobs, MMR tunin
 | [DEVELOPER_TOOLS.md](DEVELOPER_TOOLS.md)                       | Insights and Server Explorer guide                |
 | [VOICE_INPUT.md](VOICE_INPUT.md)                               | Voice input, FluidAudio, and VAD mode guide       |
 | [SKILLS.md](SKILLS.md)                                         | Skills, methods, and context management guide    |
+| [CLAUDE_PLUGINS.md](CLAUDE_PLUGINS.md)                         | Importing Claude plugins from GitHub             |
 | [MEMORY.md](MEMORY.md)                                         | Memory system and configuration guide            |
 | [SANDBOX.md](SANDBOX.md)                                       | Sandbox VM and plugin guide                       |
 | [plugins/README.md](plugins/README.md)                         | Creating custom plugins                           |

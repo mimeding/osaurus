@@ -1,5 +1,5 @@
 <p align="center">
-<img width="865" height="677" alt="Screenshot 2026-03-19 at 3 42 04 PM" src="https://github.com/user-attachments/assets/c16ee8bb-7f31-4659-9c2c-6eaaf8441c26" />
+<img width="1920" height="1080" alt="osaurus-techcrunch-1" src="https://github.com/user-attachments/assets/8614b2a6-8b12-487f-983d-5f51aa6e1825" />
 </p>
 
 <h1 align="center">Osaurus</h1>
@@ -68,6 +68,8 @@ osaurus status   # Check status
 
 Agents are the core of Osaurus. Each one gets its own prompts, memory, and visual theme -- a research assistant, a coding partner, a file organizer, whatever you need. Tools and skills are automatically selected via RAG search based on the task at hand -- no manual configuration needed. Everything else in the harness exists to make agents smarter, faster, and more capable over time.
 
+Agents can also opt into a private encrypted database and a single self-scheduled next run -- see [Agent DB & Self-Scheduling](docs/AGENT_DB.md).
+
 ### Agent Loop
 
 Every chat is an agent loop. Pick a working folder and the agent gets file, search, and git tools. Toggle the sandbox and it gets shell access in an isolated Linux VM. The model writes a markdown todo list, executes against it, and closes out with a verified summary -- all in the same chat window. See the [Agent Loop Guide](docs/AGENT_LOOP.md).
@@ -126,7 +128,7 @@ Connect to OpenAI, Anthropic, Gemini, xAI/Grok, [Venice AI](https://venice.ai), 
 
 ## MCP
 
-Osaurus is a full MCP (Model Context Protocol) server. Give any MCP-compatible client access to your tools:
+Osaurus is a full MCP (Model Context Protocol) server. Give any MCP-compatible client access to your tools with the command-based stdio bridge:
 
 ```json
 {
@@ -139,7 +141,7 @@ Osaurus is a full MCP (Model Context Protocol) server. Give any MCP-compatible c
 }
 ```
 
-Also an HTTP/SSE MCP client -- aggregate tools from remote MCP servers into Osaurus. Command-based stdio providers are not supported by that remote-provider path yet. See the [Remote MCP Providers Guide](docs/REMOTE_MCP_PROVIDERS.md) for details.
+`osaurus mcp` starts a stdio MCP server for the client and proxies tool discovery/calls to your local Osaurus HTTP server. In the other direction, Osaurus can also act as an MCP client and aggregate tools from URL-based remote MCP providers. One-tap connect to ~25 well-known providers (Linear, Notion, GitHub, Vercel, Supabase, Sentry, Stripe, Cloudflare, ...) with auto OAuth 2.1 + Dynamic Client Registration, or paste an API key. The Remote MCP Providers UI is for HTTP/SSE MCP endpoints; it does not launch third-party `command`/`args` stdio providers. See the [Remote MCP Providers Guide](docs/REMOTE_MCP_PROVIDERS.md) for details.
 
 ## Tools & Plugins
 
@@ -154,7 +156,7 @@ osaurus tools dev com.acme.my-plugin     # Dev with hot reload
 
 ## More
 
-**Skills & Methods** -- Skills import reusable AI capabilities from GitHub repos or files, compatible with [Agent Skills](https://agentskills.io/). Methods are learned workflows that agents save and reuse over time. Both are automatically selected via RAG search -- no manual configuration needed. See [Skills Guide](docs/SKILLS.md).
+**Skills & Methods** -- Skills import reusable AI capabilities from GitHub repos or files, compatible with [Agent Skills](https://agentskills.io/). Full Claude plugins (skills, scheduled agents, slash commands, MCP providers, and `CLAUDE.md` context) can be imported from any GitHub repo and managed as a single bundle. Methods are learned workflows that agents save and reuse over time. All are automatically selected via RAG search -- no manual configuration needed. See [Skills Guide](docs/SKILLS.md) and [Claude Plugins](docs/CLAUDE_PLUGINS.md).
 
 **Automation** -- Schedules run recurring tasks in the background. Watchers monitor folders and trigger agents on file changes.
 

@@ -3,6 +3,234 @@
   <channel>
     <title>Osaurus</title>
         <item>
+            <title>0.18.22</title>
+            <pubDate>Sat, 16 May 2026 19:51:36 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.22</sparkle:version>
+            <sparkle:shortVersionString>0.18.22</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.22/Osaurus-0.18.22.dmg" length="41911427" type="application/octet-stream" sparkle:edSignature="xIOQ/kdx4AJFLCHVGqQtmSQXVqaZaLKbBygvB7IsIN07vtFlJiLqhaCoyq2pijujZJOHooSB0tUhplExVSe1CQ=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+## 🚀 Features
+
+- added generative greetings (#1115) by @tpae
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.21...0.18.22
+]]></description>
+        </item>
+        <item>
+            <title>0.18.21</title>
+            <pubDate>Sat, 16 May 2026 14:51:29 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.21</sparkle:version>
+            <sparkle:shortVersionString>0.18.21</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.21/Osaurus-0.18.21.dmg" length="41843643" type="application/octet-stream" sparkle:edSignature="Jv4iVz1ST3BeoXSoK4/Na3CRhkpeoEdHz7qZopYNiL6t2Q+K/W6p5EJy4D0XYq1Rza/sS9mbJCfiM4X0cA6iDQ=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- [codex] Stabilize bug lanes and update development plan (#1112) by @mimeding
+- edit pasted content (#1111) by @RaajeevChandran
+- Improved DX: Support installing development plugins to release Osaurus (#1109) by @petri
+
+## 🐛 Bug Fixes
+
+- resolve plugin registry 404 on fresh installs by trying master branch (#1114) by @RaajeevChandran
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.20...0.18.21
+]]></description>
+        </item>
+        <item>
+            <title>0.18.20</title>
+            <pubDate>Fri, 15 May 2026 17:46:08 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.20</sparkle:version>
+            <sparkle:shortVersionString>0.18.20</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.20/Osaurus-0.18.20.dmg" length="41837161" type="application/octet-stream" sparkle:edSignature="aUdcyILeRPSgr1jhfudk7KKIV8KWwv+Zz5Sgmy14SWPc75FVLWKIqhRQ7opqs0LidjPvp3fGm5baY6trTeXSAQ=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- Replace old screenshot with new image (#1108) by @tpae
+- added independent glass toggles for sidebar \& chat input in theme editor (#1101) by @RaajeevChandran
+- pasted content chip \& preview (#1103) by @RaajeevChandran
+- [codex] Move theme image picker into Appearance (#1099) by @mimeding
+- reorder agents (#1102) by @RaajeevChandran
+
+## 🚀 Features
+
+- added support for importing claude plugins (#1106) by @tpae
+
+## 🐛 Bug Fixes
+
+- fix freeze when opening import skills dialog (#1107) by @tpae
+- fixed unresponsive Update Available button (#1105) by @RaajeevChandran
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.19...0.18.20
+]]></description>
+        </item>
+        <item>
+            <title>0.18.19</title>
+            <pubDate>Fri, 15 May 2026 05:18:49 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.19</sparkle:version>
+            <sparkle:shortVersionString>0.18.19</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.19/Osaurus-0.18.19.dmg" length="41642601" type="application/octet-stream" sparkle:edSignature="EIYgWy8OGvjH++zhwbqRypiTYWGkFJLy2X1zsa3kkEKJYO6170UQBZddjQkDCtXUvhoF7GU3n36x3lW8Vmb6CA=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- Fix Gemini tool schema parameters (#1088) by @mimeding
+
+## 🐛 Bug Fixes
+
+- fixed issue with reverting changes in capabilities manager (#1100) by @tpae
+- prevent switching active theme when saving a theme edit (#1096) by @RaajeevChandran
+- improved theme edit sync in chat (#1095) by @RaajeevChandran
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.18...0.18.19
+]]></description>
+        </item>
+        <item>
+            <title>0.18.18</title>
+            <pubDate>Thu, 14 May 2026 20:12:35 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.18</sparkle:version>
+            <sparkle:shortVersionString>0.18.18</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.18/Osaurus-0.18.18.dmg" length="41642853" type="application/octet-stream" sparkle:edSignature="loUNbNiO3zNl5vgW+YbuTdJMGEmIFa/NLV0Sxi8jf0YCuj8OL3Za1ml+pJDT/64BfzP3qprg7RRqhxSbANnHCg=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- Fix /api/chat tool call NDJSON (#1086) by @mimeding
+- Fix local release Containerization pin (#1082) by @mimeding
+
+## 🚀 Features
+
+- added agent database feature (#1087) by @tpae
+
+## 🐛 Bug Fixes
+
+- replaced stale SDK allowlist with org aware MLX gate (#1083) by @RaajeevChandran
+
+## 🧰 Maintenance
+
+- agent avatar customization in theme editor (#1084) by @RaajeevChandran
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.17...0.18.18
+]]></description>
+        </item>
+        <item>
+            <title>0.18.17</title>
+            <pubDate>Thu, 14 May 2026 03:15:01 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.17</sparkle:version>
+            <sparkle:shortVersionString>0.18.17</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.17/Osaurus-0.18.17.dmg" length="41037277" type="application/octet-stream" sparkle:edSignature="u2S8X5Vr0SQTjRObXcjDZ8PTxcwQgS2FKZJWPvsJXhGb5RXwFzLrGhYQCtG3VRHDJt8NUa6wz1zhb1t0gr6ABA=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- Fix stale DerivedData cache restore on main CI (#1081) by @mimeding
+- Nemotron Omni live voice input path (#1073) by @jjang-ai
+
+## 🧰 Maintenance
+
+- various cosmetic changes (#1079) by @tpae
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.16...0.18.17
+]]></description>
+        </item>
+        <item>
+            <title>0.18.16</title>
+            <pubDate>Wed, 13 May 2026 21:53:51 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.16</sparkle:version>
+            <sparkle:shortVersionString>0.18.16</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.16/Osaurus-0.18.16.dmg" length="40977285" type="application/octet-stream" sparkle:edSignature="Y4wjNdggmTyDWsrYPQARhDOs/sovj7d5HavV5JucKafvEz8qIgzAXjF065TI63u2X2uMq727Y4DT3qV/yW55Bg=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- fix(sandbox): adapt ProcessHandle kill closure to Containerization Signal API (#1064) by @yohann-bearzi
+
+## 🧰 Maintenance
+
+- updated visual design for done and to do (#1078) by @tpae
+- added background task hook (#1077) by @tpae
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.15...0.18.16
+]]></description>
+        </item>
+        <item>
+            <title>0.18.15</title>
+            <pubDate>Wed, 13 May 2026 08:33:02 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.15</sparkle:version>
+            <sparkle:shortVersionString>0.18.15</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.15/Osaurus-0.18.15.dmg" length="40954932" type="application/octet-stream" sparkle:edSignature="k4K7srOaOC7zt/v5ZdAJhCQFdQ/n0LWYyVsbltLyC/dBiL0h5VjpJFmr6uhtql/z7AvEiG6gslxSAchaJmWPCA=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- auto speak in agent level (#1075) by @RaajeevChandran
+
+## 🚀 Features
+
+- added mcp oauth support try (Tools > Remote > Add) (#1076) by @tpae
+
+## 🐛 Bug Fixes
+
+- fixed deepseek api requests (#1074) by @tpae
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.14...0.18.15
+]]></description>
+        </item>
+        <item>
+            <title>0.18.14</title>
+            <pubDate>Tue, 12 May 2026 23:31:59 +0000</pubDate>
+            <sparkle:channel>release</sparkle:channel>
+            <sparkle:version>0.18.14</sparkle:version>
+            <sparkle:shortVersionString>0.18.14</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/osaurus-ai/osaurus/releases/download/0.18.14/Osaurus-0.18.14.dmg" length="40777273" type="application/octet-stream" sparkle:edSignature="L1CduDwbh7EXKL5iaDMf2vsuoTQMxRy2xPtEyiXV4TyUVp/0yOuMunuSqFtztHWXziIrPtk9qWzCouu8gKk4Bg=="/>
+            <description sparkle:format="markdown"><![CDATA[
+## What's Changed
+
+- chore(runtime): pin DSV4 vmlx update (#1066) by @jjang-ai
+- feat(runtime): bump vmlx-swift-lm to cb8b3df + MiniMax speed fix (#1057) by @jjang-ai
+- fix: the openai\_compat\_report in openai\_compat\_report.sh (#1055) by @orbisai0security
+
+## 🐛 Bug Fixes
+
+- fix onboarding downloads (#1072) by @tpae
+- fix failing tests (#1070) by @tpae
+- align tools tab badge with rendered rows (#1062) by @RaajeevChandran
+- fixed bugs with plugin lifecycle and tightened security loop (#1060) by @tpae
+
+## 🧰 Maintenance
+
+- agent avatar in chat (#1068) by @RaajeevChandran
+- improve plugin configuration loading and added clarification steps (#1067) by @tpae
+- improve plugin security (#1061) by @tpae
+- added memory diagnostics and hardened pipeline (#1056) by @tpae
+- updated plugins architecture (#1054) by @tpae
+
+**Full Changelog**: https://github.com/osaurus-ai/osaurus/compare/0.18.13...0.18.14
+]]></description>
+        </item>
+        <item>
             <title>0.18.13</title>
             <pubDate>Fri, 08 May 2026 16:11:49 +0000</pubDate>
             <sparkle:channel>release</sparkle:channel>
