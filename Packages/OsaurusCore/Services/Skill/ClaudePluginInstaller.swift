@@ -831,7 +831,7 @@ public final class ClaudePluginInstaller {
         // inside a much later code block.
         var description = ""
         let scanEnd = min(firstContentLineIndex + 10, lines.count)
-        for idx in firstContentLineIndex..<scanEnd {
+        for idx in firstContentLineIndex ..< scanEnd {
             let stripped = lines[idx].trimmingCharacters(in: .whitespaces)
             if stripped.isEmpty { continue }
             if stripped.lowercased().hasPrefix("description:") {
@@ -895,7 +895,7 @@ public final class ClaudePluginInstaller {
     ) -> (rewritten: String, additionalReferences: [(name: String, data: Data)]) {
         // Build a lookup of fetched assets by basename so a rewrite can
         // map "scripts/recalc.py" → "references/recalc.py".
-        var assetByBasename: [String: String] = [:]   // basename → "references|assets/<name>"
+        var assetByBasename: [String: String] = [:]  // basename → "references|assets/<name>"
         for asset in fetchedAssets {
             let basename = (asset.relativePath as NSString).lastPathComponent
             let bucket = shouldStoreAsReference(basename) ? "references" : "assets"
