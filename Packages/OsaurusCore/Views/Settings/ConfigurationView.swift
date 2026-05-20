@@ -2123,6 +2123,7 @@ private struct AgentSettingsSection: View {
         [(name: String, display: String, desc: String, destructive: Bool, defaultPolicy: ToolPermissionPolicy)] = [
             ("file_write", "Write Files", "Create and modify files", false, .auto),
             ("file_edit", "Edit Files", "Edit file content with search/replace", false, .auto),
+            ("write_workbook", "Write Workbooks", "Create workbook files", false, .ask),
             ("shell_run", "Run Shell Commands", "Execute shell commands in the folder", true, .ask),
             ("git_commit", "Git Commit", "Commit changes to git repository", true, .ask),
         ]
