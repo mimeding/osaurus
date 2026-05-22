@@ -253,6 +253,31 @@ struct ContextBudgetPreviewTests {
         }
     }
 
+    /// "ok" is only harmless on a clean first turn. Once the session has
+    /// cached tool state or prior task history, an acknowledgement can be the
+    /// user's confirmation for a `clarify`/loop step and must keep schemas.
+    @Test("compose: trivial continuation with cached state keeps bootstrap tools")
+    func trivialContinuationWithCachedState_keepsBootstrapTools() async {
+        await withAgent(toolSelectionMode: .auto) { agentId in
+            let frozen = LoadedTools(
+                ToolRegistry.shared.alwaysLoadedSpecs(mode: .none).map(\.function.name)
+            )
+            let context = await SystemPromptComposer.composeChatContext(
+                agentId: agentId,
+                executionMode: .none,
+                query: "ok",
+                messages: [ChatMessage(role: "user", content: "summarize this project")],
+                cachedPreflight: .empty,
+                frozenAlwaysLoadedNames: frozen
+            )
+
+            #expect(SystemPromptComposer.isTrivialPreflightQuery("ok"))
+            #expect(context.tools.contains { $0.function.name == "capabilities_load" })
+            #expect(context.tools.contains { $0.function.name == "capabilities_search" })
+            #expect(context.toolTokens > 0)
+        }
+    }
+
     /// Once history contains an agent-loop call, the continuation guide is
     /// worth the prompt cost. This keeps multi-step sessions stable without
     /// charging the first "hello" or "can you..." turn.
