@@ -99,7 +99,9 @@ struct ChatSessionSidebar: View {
             if SearchService.matches(query: searchQuery, in: session.title) { return true }
             if let key = session.externalSessionKey,
                 SearchService.matches(query: searchQuery, in: key)
-            { return true }
+            {
+                return true
+            }
             // Match capability labels so "vision" / "code" finds tagged chats.
             return session.capabilities.contains { cap in
                 SearchService.matches(query: searchQuery, in: cap.label)
@@ -474,9 +476,21 @@ private struct SessionRow: View {
                 }
                 Button(action: onStartRename) { Text("Rename", bundle: .module) }
                 Divider()
-                Button { onExport(.markdown) } label: { Text("Export Markdown", bundle: .module) }
-                Button { onExport(.pdf) } label: { Text("Export PDF", bundle: .module) }
-                Button { onExport(.zip) } label: { Text("Export Zip", bundle: .module) }
+                Button {
+                    onExport(.markdown)
+                } label: {
+                    Text("Export Markdown", bundle: .module)
+                }
+                Button {
+                    onExport(.pdf)
+                } label: {
+                    Text("Export PDF", bundle: .module)
+                }
+                Button {
+                    onExport(.zip)
+                } label: {
+                    Text("Export Zip", bundle: .module)
+                }
                 Divider()
                 Button(action: onToggleArchive) {
                     Text(session.archived ? "Unarchive" : "Archive", bundle: .module)
