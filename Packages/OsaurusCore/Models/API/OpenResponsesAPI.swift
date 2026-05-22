@@ -91,7 +91,12 @@ public enum OpenResponsesInputItem: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let type = try container.decodeIfPresent(String.self, forKey: .type)
+        let type: String?
+        if container.contains(.type) {
+            type = try container.decode(String.self, forKey: .type)
+        } else {
+            type = nil
+        }
 
         switch type {
         case "message":
@@ -144,7 +149,12 @@ public struct OpenResponsesMessageItem: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let decodedType = try container.decodeIfPresent(String.self, forKey: .type) ?? "message"
+        let decodedType: String
+        if container.contains(.type) {
+            decodedType = try container.decode(String.self, forKey: .type)
+        } else {
+            decodedType = "message"
+        }
         guard decodedType == "message" else {
             throw DecodingError.dataCorruptedError(
                 forKey: .type,

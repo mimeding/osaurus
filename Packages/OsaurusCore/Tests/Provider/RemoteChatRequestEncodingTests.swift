@@ -103,6 +103,50 @@ struct RemoteChatRequestEncodingTests {
         #expect(item["type"] as? String == "message")
     }
 
+    @Test func openResponsesRequest_rejectsExplicitNullMessageType() throws {
+        let data = Data(
+            #"""
+            {
+              "model": "foundation",
+              "input": [
+                {
+                  "type": null,
+                  "role": "user",
+                  "content": "Hello!"
+                }
+              ],
+              "stream": false
+            }
+            """#.utf8
+        )
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(OpenResponsesRequest.self, from: data)
+        }
+    }
+
+    @Test func openResponsesRequest_rejectsInvalidExplicitMessageType() throws {
+        let data = Data(
+            #"""
+            {
+              "model": "foundation",
+              "input": [
+                {
+                  "type": "not_message",
+                  "role": "user",
+                  "content": "Hello!"
+                }
+              ],
+              "stream": false
+            }
+            """#.utf8
+        )
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(OpenResponsesRequest.self, from: data)
+        }
+    }
+
     @Test func codexRequest_removesMaxOutputTokens() throws {
         let request = Self.makeRequest(model: "gpt-5.2", maxTokens: 1024)
         let payload = try Self.decodeAsDictionary(request.toCodexOpenResponsesRequest().toCodexOAuthPayloadData())
