@@ -12,6 +12,23 @@ import Testing
 
 @Suite("MCP OAuth dynamic client registration")
 struct MCPOAuthRegistrationTests {
+    @Test func oauthTransportDoesNotFollowRedirects() {
+        let response = HTTPURLResponse(
+            url: URL(string: "https://auth.example.com/register")!,
+            statusCode: 302,
+            httpVersion: nil,
+            headerFields: ["Location": "https://other.example.com/register"]
+        )!
+        let redirected = URLRequest(url: URL(string: "https://other.example.com/register")!)
+
+        let request = MCPOAuthHTTPTransport.redirectionRequest(
+            response: response,
+            proposedRequest: redirected
+        )
+
+        #expect(request == nil)
+    }
+
     @Test func registrationRequestHasNativePublicClientShape() async throws {
         var capturedURL: URL?
         var capturedBody: [String: Any]?
