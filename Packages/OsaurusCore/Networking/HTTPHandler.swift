@@ -1335,18 +1335,28 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
     // MARK: - Memory Ingestion
 
     /// Request body for the `/memory/ingest` endpoint.
+    ///
+    /// `source_mode` (request-level default) and `MemoryIngestTurn.source_mode`
+    /// (per-turn override) let callers tag ingested turns with the execution
+    /// context they originated in (`chat`, `chat_sandbox`, `work_host`,
+    /// `work_sandbox`). The memory partition machinery added in PR #877 uses
+    /// this to keep tool-using turns out of pure-chat recall. Both fields are
+    /// optional and default to `.chat` to preserve the previous behaviour for
+    /// existing API clients.
     private struct MemoryIngestRequest: Codable {
         let agent_id: String
         let conversation_id: String
         let turns: [MemoryIngestTurn]
         let session_date: String?
         let skip_extraction: Bool?
+        let source_mode: MemorySourceMode?
     }
 
     private struct MemoryIngestTurn: Codable {
         let user: String
         let assistant: String
         let date: String?
+        let source_mode: MemorySourceMode?
     }
 
     /// Bulk-ingest conversation turns into the memory system.
@@ -1374,7 +1384,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 version: head.version,
                 status: .badRequest,
                 headers: [("Content-Type", "text/plain; charset=utf-8")],
-                body: "Invalid request format. Expected {agent_id, conversation_id, turns: [{user, assistant}]}"
+                body: "Invalid request format. Expected {agent_id, conversation_id, turns: [{user, assistant, date?, source_mode?}], session_date?, skip_extraction?, source_mode?}"
             )
             logRequest(
                 method: "POST",
@@ -1406,11 +1416,13 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             )
 
             let skipExtraction = req.skip_extraction ?? false
+            let defaultSourceMode = req.source_mode ?? .chat
 
             try? db.deleteChunksForConversation(req.conversation_id)
 
             for (i, turn) in req.turns.enumerated() {
                 let turnDate = turn.date ?? req.session_date
+                let turnSourceMode = turn.source_mode ?? defaultSourceMode
 
                 let pairs: [(role: String, content: String, index: Int)] = [
                     ("user", turn.user, i * 2),
@@ -1433,7 +1445,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         content: content,
                         tokenCount: tokens,
                         createdAt: turnDate,
-                        sourceMode: .chat
+                        sourceMode: turnSourceMode
                     )
                     await MemorySearchService.shared.indexConversationChunk(chunk)
                 }
@@ -1444,7 +1456,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         assistantMessage: turn.assistant,
                         agentId: req.agent_id,
                         conversationId: req.conversation_id,
-                        sourceMode: .chat,
+                        sourceMode: turnSourceMode,
                         sessionDate: turnDate
                     )
                 }
