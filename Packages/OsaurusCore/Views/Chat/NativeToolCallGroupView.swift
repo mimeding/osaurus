@@ -313,7 +313,10 @@ final class NativeToolCallGroupView: NSView {
 
     // MARK: State
 
-    private var lastCallCount = 0
+    /// Call ids from the previous configure, used to detect a genuine streaming
+    /// append (the same sequence grew by one or more) vs. an unrelated group
+    /// (cell reuse / load), so the rail-draw animation only plays on append.
+    private var lastCallIds: [String] = []
 
     // MARK: Callbacks
 
@@ -358,6 +361,15 @@ final class NativeToolCallGroupView: NSView {
             removed.removeFromSuperview()
         }
 
+        // A genuine streaming append: the new calls extend the previous sequence
+        // (same prefix ids, grew by ≥1). Only then do newly-connected rail
+        // segments animate in — loads and cell reuse populate without animating.
+        let newIds = calls.map { $0.call.id }
+        let appended =
+            !lastCallIds.isEmpty
+            && newIds.count > lastCallIds.count
+            && Array(newIds.prefix(lastCallIds.count)) == lastCallIds
+
         let innerWidth = max(0, width)
         for (index, item) in calls.enumerated() {
             let row = rowViews[index]
@@ -368,13 +380,15 @@ final class NativeToolCallGroupView: NSView {
                 totalCount: calls.count,
                 isExpanded: isExpanded,
                 width: innerWidth,
-                theme: theme
+                theme: theme,
+                allowRailDraw: appended
             ) { [weak self] in
                 self?.onToggle?(item.call.id)
             } onHeightChanged: { [weak self] in
                 self?.onHeightChanged?()
             }
         }
+        lastCallIds = newIds
 
         let totalH = measuredHeight()
         if let c = groupHeightConstraint {
@@ -490,6 +504,10 @@ final class NativeToolCallRowView: NSView {
     // MARK: State
 
     private var isExpanded = false
+    /// Previous rail-segment visibility, so a segment that newly connects on a
+    /// streaming append can animate its draw exactly once.
+    private var railAboveWasVisible = false
+    private var railBelowWasVisible = false
     private var cachedArgs: String?
     private var currentItemId: String = ""
     private var currentItem: ToolCallItem?
@@ -557,6 +575,7 @@ final class NativeToolCallRowView: NSView {
         isExpanded: Bool,
         width: CGFloat,
         theme: any ThemeProtocol,
+        allowRailDraw: Bool = false,
         onToggle: @escaping () -> Void,
         onHeightChanged: @escaping () -> Void
     ) {
@@ -580,8 +599,18 @@ final class NativeToolCallRowView: NSView {
         let railColor = NSColor(theme.tertiaryText).withAlphaComponent(0.28).cgColor
         railAbove.layer?.backgroundColor = railColor
         railBelow.layer?.backgroundColor = railColor
-        railAbove.isHidden = index == 0
-        railBelow.isHidden = index >= totalCount - 1
+        let aboveVisible = index != 0
+        let belowVisible = index < totalCount - 1
+        railAbove.isHidden = !aboveVisible
+        railBelow.isHidden = !belowVisible
+        // On a streaming append, the newly-connected segments "draw" toward the
+        // new node (the rail filling in from one tool call to the next).
+        if allowRailDraw {
+            if aboveVisible && !railAboveWasVisible { scheduleRailDraw(railAbove) }
+            if belowVisible && !railBelowWasVisible { scheduleRailDraw(railBelow) }
+        }
+        railAboveWasVisible = aboveVisible
+        railBelowWasVisible = belowVisible
 
         // Collapsed: friendly, present-tense label so non-technical users read
         // "Inserting into the database" rather than `db_insert`. Expanded: the
@@ -1212,6 +1241,36 @@ final class NativeToolCallRowView: NSView {
             shimmerLabel.stop()
             shimmerLabel.isHidden = true
             nameLabel.isHidden = false
+        }
+    }
+
+    /// Animate a rail segment "drawing" downward (a short grow-from-top + fade)
+    /// the next runloop, once Auto Layout has given it a real height. The model
+    /// transform stays identity, so this is purely a transient presentation.
+    private func scheduleRailDraw(_ railView: NSView) {
+        DispatchQueue.main.async { [weak railView] in
+            guard let railView, !railView.isHidden, let layer = railView.layer else { return }
+            let h = railView.bounds.height
+            guard h > 1 else { return }
+
+            // Collapse to a zero-height line pinned at the top edge, then grow to
+            // full height. (Layers here are non-flipped: +y is up, toward the top.)
+            var collapsed = CATransform3DIdentity
+            collapsed = CATransform3DTranslate(collapsed, 0, h / 2, 0)
+            collapsed = CATransform3DScale(collapsed, 1, 0.01, 1)
+
+            let scale = CABasicAnimation(keyPath: "transform")
+            scale.fromValue = NSValue(caTransform3D: collapsed)
+            scale.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0.0
+            fade.toValue = 1.0
+
+            let group = CAAnimationGroup()
+            group.animations = [scale, fade]
+            group.duration = 0.3
+            group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            layer.add(group, forKey: "railDraw")
         }
     }
 
