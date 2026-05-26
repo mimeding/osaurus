@@ -597,8 +597,16 @@ final class NativeToolCallRowView: NSView {
         categoryIcon.contentTintColor = tintColor
         categoryBg.layer?.backgroundColor = tintColor.withAlphaComponent(0.15).cgColor
 
-        nameLabel.stringValue = item.call.function.name
-        nameLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+        // Collapsed: friendly, present-tense label so non-technical users read
+        // "Inserting into the database" rather than `db_insert`. Expanded: the
+        // raw technical name (monospaced), since that's the detail view.
+        if isExpanded {
+            nameLabel.stringValue = item.call.function.name
+            nameLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+        } else {
+            nameLabel.stringValue = ToolDisplayName.friendly(for: item.call.function.name)
+            nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        }
         nameLabel.textColor = NSColor(theme.primaryText)
 
         if let preview = PreviewGenerator.jsonPreview(item.call.function.arguments, maxLength: 80) {

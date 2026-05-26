@@ -358,8 +358,10 @@ final class NativePendingToolCallView: NSView {
         categoryIcon.image = NSImage(systemSymbolName: category.icon, accessibilityDescription: nil)
         categoryIcon.contentTintColor = NSColor(theme.secondaryText)
 
-        nameLabel.stringValue = toolName
-        nameLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+        // Pending rows are always collapsed, so show the friendly label
+        // (the raw name surfaces once the completed row is expanded).
+        nameLabel.stringValue = ToolDisplayName.friendly(for: toolName)
+        nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         nameLabel.textColor = NSColor(theme.primaryText)
 
         if argSize > 0 {
