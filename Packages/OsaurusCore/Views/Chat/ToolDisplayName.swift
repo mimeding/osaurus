@@ -20,6 +20,11 @@ enum ToolDisplayName {
     /// known tools, otherwise a humanized form of `rawName`.
     static func friendly(for rawName: String) -> String {
         if let mapped = curated[rawName] { return mapped }
+        // Uncurated sandbox tools (e.g. dynamically registered plugins) still
+        // get the "in sandbox" suffix for context.
+        if rawName.hasPrefix("sandbox_") {
+            return humanize(String(rawName.dropFirst("sandbox_".count))) + L(" in sandbox")
+        }
         return humanize(rawName)
     }
 
@@ -57,20 +62,20 @@ enum ToolDisplayName {
         "db_list_views": L("Listing database views"),
         "db_run_view": L("Running a database view"),
 
-        // Sandbox
-        "sandbox_exec": L("Running a command"),
-        "sandbox_execute_code": L("Running code"),
-        "sandbox_read_file": L("Reading a file"),
-        "sandbox_write_file": L("Writing a file"),
-        "sandbox_edit_file": L("Editing a file"),
-        "sandbox_search_files": L("Searching files"),
-        "sandbox_install": L("Installing software"),
-        "sandbox_npm_install": L("Installing npm packages"),
-        "sandbox_pip_install": L("Installing Python packages"),
-        "sandbox_process": L("Managing a process"),
-        "sandbox_plugin_register": L("Registering a plugin"),
-        "sandbox_secret_check": L("Checking a secret"),
-        "sandbox_secret_set": L("Saving a secret"),
+        // Sandbox — "in sandbox" suffix makes the execution context explicit.
+        "sandbox_exec": L("Running a command in sandbox"),
+        "sandbox_execute_code": L("Running code in sandbox"),
+        "sandbox_read_file": L("Reading a file in sandbox"),
+        "sandbox_write_file": L("Writing a file in sandbox"),
+        "sandbox_edit_file": L("Editing a file in sandbox"),
+        "sandbox_search_files": L("Searching files in sandbox"),
+        "sandbox_install": L("Installing dependencies in sandbox"),
+        "sandbox_npm_install": L("Installing npm packages in sandbox"),
+        "sandbox_pip_install": L("Installing Python packages in sandbox"),
+        "sandbox_process": L("Managing a process in sandbox"),
+        "sandbox_plugin_register": L("Registering a plugin in sandbox"),
+        "sandbox_secret_check": L("Checking a secret in sandbox"),
+        "sandbox_secret_set": L("Saving a secret in sandbox"),
 
         // Folder / file
         "file_read": L("Reading a file"),
