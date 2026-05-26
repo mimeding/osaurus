@@ -530,7 +530,34 @@ extension ContentBlock {
             previousTurnId = turn.id
         }
 
-        return blocks
+        return coalesceToolGroups(blocks)
+    }
+
+    /// Merge directly-adjacent `.toolCallGroup` blocks into one. The agent loop
+    /// emits one tool call per assistant turn, so a run of tool calls becomes a
+    /// run of single-call group blocks; coalescing them lets the UI render the
+    /// whole run as a single connected timeline (rail + nodes) instead of N
+    /// disconnected lone nodes. Anything else between two groups (thinking, a
+    /// chart/artifact, the final answer) breaks the run, as intended. The merged
+    /// block keeps the first group's id/turnId so diffing stays stable.
+    private static func coalesceToolGroups(_ blocks: [ContentBlock]) -> [ContentBlock] {
+        var result: [ContentBlock] = []
+        result.reserveCapacity(blocks.count)
+        for block in blocks {
+            if case let .toolCallGroup(calls) = block.kind,
+                let prev = result.last,
+                case let .toolCallGroup(prevCalls) = prev.kind
+            {
+                result[result.count - 1] = .toolCallGroup(
+                    turnId: prev.turnId,
+                    calls: prevCalls + calls,
+                    position: prev.position
+                )
+            } else {
+                result.append(block)
+            }
+        }
+        return result
     }
 
     /// Reconstructs a SharedArtifact from an enriched share_artifact tool result.

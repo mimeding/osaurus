@@ -20,6 +20,9 @@ final class NativeThinkingView: NSView {
     // MARK: Subviews
 
     private let headerButton = NSButton()
+    /// Circular tinted node holding the thinking glyph, matching the tool
+    /// timeline nodes (this block is a separate borderless unit — no rail).
+    private let iconNode = NSView()
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: L("Thinking"))
     private let streamingSpinner = NSProgressIndicator()
@@ -46,9 +49,6 @@ final class NativeThinkingView: NSView {
     // MARK: Colors
 
     private let thinkingTint = NSColor(red: 0.55, green: 0.45, blue: 0.85, alpha: 1)
-    private let cornerRadius: CGFloat = 10
-    /// reliable stroke in table cells — CALayer `borderWidth` is often invisible when layer-backed
-    private var borderStrokeLayer: CAShapeLayer?
 
     // MARK: Init
 
@@ -61,14 +61,6 @@ final class NativeThinkingView: NSView {
 
     override func layout() {
         super.layout()
-        updateBorderStrokePath()
-        // unshaped shadows force an offscreen rasterization every time the layer
-        // contents change — during streaming that's every token. supply a cheap
-        // rounded-rect path so CoreAnimation composites the shadow directly
-        if let layer {
-            let path = NSBezierPath(roundedRect: bounds, xRadius: cornerRadius, yRadius: cornerRadius).cgPath
-            layer.shadowPath = path
-        }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -84,28 +76,6 @@ final class NativeThinkingView: NSView {
         guard isExpanded, let mdv = markdownView else { return nil }
         let p = convert(point, to: mdv)
         return mdv.hitTest(p)
-    }
-
-    private func updateBorderStrokePath() {
-        let b = bounds
-        guard b.width > 2, b.height > 2 else { return }
-        if borderStrokeLayer == nil {
-            let stroke = CAShapeLayer()
-            stroke.fillColor = nil
-            stroke.lineWidth = 0.5
-            stroke.lineJoin = .round
-            layer?.addSublayer(stroke)
-            borderStrokeLayer = stroke
-        }
-        guard let stroke = borderStrokeLayer else { return }
-        let lw = stroke.lineWidth
-        let inset = lw / 2
-        // path is in stroke layer local coordinates (origin top-left for layer matching view bounds)
-        stroke.frame = b
-        let rect = CGRect(origin: .zero, size: b.size).insetBy(dx: inset, dy: inset)
-        let r = max(cornerRadius - inset, 0)
-        stroke.path = NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).cgPath
-        stroke.strokeColor = thinkingTint.withAlphaComponent(0.22).cgColor
     }
 
     // MARK: Configure
@@ -141,8 +111,8 @@ final class NativeThinkingView: NSView {
         updateChevron(expanded: isExpanded, animated: isExpanded != self.isExpanded)
         self.isExpanded = isExpanded
 
-        // layer chrome (fill + shadow) is set once in buildViews(). mutating CGColor
-        // per configure() would churn the layer on every streaming token
+        // Borderless: node/glyph chrome is static (set once in buildViews()),
+        // so configure() does not touch layer colors per streaming token.
 
         contentContainer.isHidden = !isExpanded
         separatorView.isHidden = !isExpanded
@@ -185,17 +155,10 @@ final class NativeThinkingView: NSView {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
 
-        // fill + shadow never change once the view exists, so bake them in here instead of
-        // reapplying inside configure() (which runs per streaming token)
-        layer?.cornerRadius = cornerRadius
+        // Borderless: no card fill, border, or shadow — the block reads as a
+        // standalone unit distinguished only by its glyph + title.
         layer?.masksToBounds = false
-        layer?.backgroundColor = thinkingTint.withAlphaComponent(0.05).cgColor
-        layer?.borderWidth = 0
-        layer?.borderColor = nil
-        layer?.shadowColor = thinkingTint.withAlphaComponent(0.04).cgColor
-        layer?.shadowOffset = CGSize(width: 0, height: 1)
-        layer?.shadowRadius = 2
-        layer?.shadowOpacity = 1
+        layer?.backgroundColor = NSColor.clear.cgColor
 
         // header button in back - transparent overlay covering the header row for click handling
         headerButton.translatesAutoresizingMaskIntoConstraints = false
@@ -203,12 +166,21 @@ final class NativeThinkingView: NSView {
         headerButton.target = self; headerButton.action = #selector(headerTapped)
         addSubview(headerButton)
 
-        // icons/labels
+        // Circular node (tinted fill + ring), matching the tool timeline nodes.
+        iconNode.translatesAutoresizingMaskIntoConstraints = false
+        iconNode.wantsLayer = true
+        iconNode.layer?.cornerRadius = 14
+        iconNode.layer?.borderWidth = 1.5
+        iconNode.layer?.backgroundColor = thinkingTint.withAlphaComponent(0.15).cgColor
+        iconNode.layer?.borderColor = thinkingTint.withAlphaComponent(0.55).cgColor
+        addSubview(iconNode)
+
+        // glyph in the node foreground
         iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.image = NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: nil)
+        iconView.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
         iconView.contentTintColor = thinkingTint
         iconView.imageScaling = .scaleProportionallyUpOrDown
-        addSubview(iconView)
+        iconNode.addSubview(iconView)
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.isEditable = false; titleLabel.isBordered = false; titleLabel.drawsBackground = false
@@ -254,13 +226,18 @@ final class NativeThinkingView: NSView {
             headerButton.topAnchor.constraint(equalTo: topAnchor),
             headerButton.heightAnchor.constraint(equalToConstant: headerH),
 
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            iconView.centerYAnchor.constraint(equalTo: topAnchor, constant: headerH / 2),
-            iconView.widthAnchor.constraint(equalToConstant: 18),
-            iconView.heightAnchor.constraint(equalToConstant: 18),
+            iconNode.leadingAnchor.constraint(equalTo: leadingAnchor),
+            iconNode.centerYAnchor.constraint(equalTo: topAnchor, constant: headerH / 2),
+            iconNode.widthAnchor.constraint(equalToConstant: 28),
+            iconNode.heightAnchor.constraint(equalToConstant: 28),
 
-            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
-            titleLabel.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
+            iconView.centerXAnchor.constraint(equalTo: iconNode.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: iconNode.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 14),
+            iconView.heightAnchor.constraint(equalToConstant: 14),
+
+            titleLabel.leadingAnchor.constraint(equalTo: iconNode.trailingAnchor, constant: 10),
+            titleLabel.centerYAnchor.constraint(equalTo: iconNode.centerYAnchor),
 
             streamingSpinner.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
             streamingSpinner.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),

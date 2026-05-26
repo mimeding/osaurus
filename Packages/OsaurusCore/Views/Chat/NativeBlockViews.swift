@@ -308,18 +308,15 @@ final class NativePendingToolCallView: NSView {
 
     // MARK: Subviews
 
-    private let pulseLayer = CALayer()
-    private let pulseHost = NSView()
-    private let categoryIcon = NSImageView()
+    /// Circular running node, matching the completed timeline node
+    /// (category-tinted fill + accent ring) with a spinner in the foreground.
+    private let node = NSView()
+    private let spinner = NSProgressIndicator()
     private let nameLabel = NSTextField(labelWithString: "")
-    private let sizeLabel = NSTextField(labelWithString: "")
     private let argsContainer = NSView()
     private let argsLabel = NSTextField(labelWithString: "")
 
-    // MARK: State
-
-    nonisolated(unsafe) private var pulseTimer: Timer?
-    private var isPulseUp = false
+    private static let nodeSize: CGFloat = 28
 
     // MARK: Init
 
@@ -330,19 +327,14 @@ final class NativePendingToolCallView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    deinit {
-        pulseTimer?.invalidate()
-    }
-
-    /// Stop the pulse when the cell leaves the window so recycled/offscreen
-    /// instances don't keep driving CATransaction ticks.
+    /// Stop the spinner when the cell leaves the window so recycled/offscreen
+    /// instances don't keep animating.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil {
-            startPulse()
+            spinner.startAnimation(nil)
         } else {
-            pulseTimer?.invalidate()
-            pulseTimer = nil
+            spinner.stopAnimation(nil)
         }
     }
 
@@ -354,27 +346,18 @@ final class NativePendingToolCallView: NSView {
         argSize: Int,
         theme: any ThemeProtocol
     ) {
+        // Running node: category color as a subtle fill, accent ring.
         let category = ToolCategory.from(toolName: toolName)
-        categoryIcon.image = NSImage(systemSymbolName: category.icon, accessibilityDescription: nil)
-        categoryIcon.contentTintColor = NSColor(theme.secondaryText)
+        node.layer?.backgroundColor = category.primaryNSColor.withAlphaComponent(0.15).cgColor
+        node.layer?.borderColor = NSColor(theme.accentColor).withAlphaComponent(0.55).cgColor
 
-        // Pending rows are always collapsed, so show the friendly label
-        // (the raw name surfaces once the completed row is expanded).
+        // Always collapsed: show the friendly label (raw name appears once the
+        // completed row is expanded).
         nameLabel.stringValue = ToolDisplayName.friendly(for: toolName)
         nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         nameLabel.textColor = NSColor(theme.primaryText)
 
-        if argSize > 0 {
-            let kb = Double(argSize) / 1024.0
-            sizeLabel.stringValue = argSize < 1024 ? "\(argSize) B" : String(format: "%.1f KB", kb)
-            sizeLabel.isHidden = false
-        } else {
-            sizeLabel.isHidden = true
-        }
-        sizeLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        sizeLabel.textColor = NSColor(theme.tertiaryText)
-
-        pulseLayer.backgroundColor = NSColor(theme.accentColor).cgColor
+        spinner.startAnimation(nil)
 
         if let preview = argPreview, !preview.isEmpty {
             argsLabel.stringValue = Self.normalizedArgPreviewForDisplay(preview)
@@ -385,8 +368,6 @@ final class NativePendingToolCallView: NSView {
         } else {
             argsContainer.isHidden = true
         }
-
-        startPulse()
     }
 
     /// streamed JSON often contains literal `\n` / `\t` pairs; show them as real newlines for the preview
@@ -412,18 +393,20 @@ final class NativePendingToolCallView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
 
-        // Pulse dot host
-        pulseHost.translatesAutoresizingMaskIntoConstraints = false
-        pulseHost.wantsLayer = true
-        pulseLayer.cornerRadius = 4
-        pulseLayer.frame = CGRect(x: 0, y: 0, width: 8, height: 8)
-        pulseHost.layer?.addSublayer(pulseLayer)
-        addSubview(pulseHost)
+        // Circular running node
+        node.translatesAutoresizingMaskIntoConstraints = false
+        node.wantsLayer = true
+        node.layer?.cornerRadius = Self.nodeSize / 2
+        node.layer?.borderWidth = 1.5
+        addSubview(node)
 
-        // Category icon
-        categoryIcon.translatesAutoresizingMaskIntoConstraints = false
-        categoryIcon.imageScaling = .scaleProportionallyUpOrDown
-        addSubview(categoryIcon)
+        // Spinner in the node foreground
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        spinner.isDisplayedWhenStopped = false
+        node.addSubview(spinner)
 
         // Name label
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -432,14 +415,6 @@ final class NativePendingToolCallView: NSView {
         nameLabel.drawsBackground = false
         nameLabel.maximumNumberOfLines = 1
         addSubview(nameLabel)
-
-        // Size label
-        sizeLabel.translatesAutoresizingMaskIntoConstraints = false
-        sizeLabel.isEditable = false
-        sizeLabel.isBordered = false
-        sizeLabel.drawsBackground = false
-        sizeLabel.isHidden = true
-        addSubview(sizeLabel)
 
         // Args container
         argsContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -463,21 +438,17 @@ final class NativePendingToolCallView: NSView {
 
         let rowH: CGFloat = 32
         NSLayoutConstraint.activate([
-            pulseHost.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            pulseHost.centerYAnchor.constraint(equalTo: topAnchor, constant: rowH / 2),
-            pulseHost.widthAnchor.constraint(equalToConstant: 8),
-            pulseHost.heightAnchor.constraint(equalToConstant: 8),
+            node.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            node.centerYAnchor.constraint(equalTo: topAnchor, constant: rowH / 2),
+            node.widthAnchor.constraint(equalToConstant: Self.nodeSize),
+            node.heightAnchor.constraint(equalToConstant: Self.nodeSize),
 
-            categoryIcon.leadingAnchor.constraint(equalTo: pulseHost.trailingAnchor, constant: 8),
-            categoryIcon.centerYAnchor.constraint(equalTo: pulseHost.centerYAnchor),
-            categoryIcon.widthAnchor.constraint(equalToConstant: 12),
-            categoryIcon.heightAnchor.constraint(equalToConstant: 12),
+            spinner.centerXAnchor.constraint(equalTo: node.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: node.centerYAnchor),
 
-            nameLabel.leadingAnchor.constraint(equalTo: categoryIcon.trailingAnchor, constant: 8),
-            nameLabel.centerYAnchor.constraint(equalTo: pulseHost.centerYAnchor),
-
-            sizeLabel.leadingAnchor.constraint(equalTo: nameLabel.trailingAnchor, constant: 6),
-            sizeLabel.centerYAnchor.constraint(equalTo: nameLabel.centerYAnchor),
+            nameLabel.leadingAnchor.constraint(equalTo: node.trailingAnchor, constant: 10),
+            nameLabel.centerYAnchor.constraint(equalTo: node.centerYAnchor),
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
 
             argsContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             argsContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
@@ -491,23 +462,6 @@ final class NativePendingToolCallView: NSView {
             argsLabel.topAnchor.constraint(equalTo: argsContainer.topAnchor, constant: 4),
             argsLabel.bottomAnchor.constraint(lessThanOrEqualTo: argsContainer.bottomAnchor, constant: -4),
         ])
-    }
-
-    private func startPulse() {
-        pulseTimer?.invalidate()
-        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.applyPulseTick()
-            }
-        }
-    }
-
-    private func applyPulseTick() {
-        isPulseUp.toggle()
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0.4)
-        pulseLayer.opacity = isPulseUp ? 1.0 : 0.3
-        CATransaction.commit()
     }
 }
 

@@ -305,7 +305,6 @@ final class NativeToolCallGroupView: NSView {
 
     // MARK: Subviews
 
-    private let accentStrip = NSView()
     private let rowStack = NSStackView()
     private var rowViews: [NativeToolCallRowView] = []
 
@@ -343,13 +342,8 @@ final class NativeToolCallGroupView: NSView {
         self.onToggle = onToggle
         self.onHeightChanged = onHeightChanged
 
-        let statusColor = statusNSColor(calls: calls, theme: theme)
-        accentStrip.layer?.backgroundColor = statusColor.withAlphaComponent(0.7).cgColor
-
-        layer?.backgroundColor = NSColor(theme.secondaryBackground).withAlphaComponent(0.5).cgColor
-        layer?.cornerRadius = 10
-        layer?.borderWidth = 1
-        layer?.borderColor = statusColor.withAlphaComponent(0.25).cgColor
+        // Borderless timeline: no card background/border. A single call renders
+        // as a lone node; 2+ consecutive calls connect via the per-row rail.
 
         while rowViews.count < calls.count {
             let row = NativeToolCallRowView()
@@ -364,7 +358,7 @@ final class NativeToolCallGroupView: NSView {
             removed.removeFromSuperview()
         }
 
-        let innerWidth = max(0, width - 8 - 6)  // subtract accent strip + padding
+        let innerWidth = max(0, width)
         for (index, item) in calls.enumerated() {
             let row = rowViews[index]
             let isExpanded = expandedIds.contains(item.call.id)
@@ -412,11 +406,6 @@ final class NativeToolCallGroupView: NSView {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
 
-        accentStrip.translatesAutoresizingMaskIntoConstraints = false
-        accentStrip.wantsLayer = true
-        accentStrip.layer?.cornerRadius = 2
-        addSubview(accentStrip)
-
         rowStack.orientation = .vertical
         rowStack.spacing = 0
         rowStack.distribution = .fill
@@ -426,27 +415,11 @@ final class NativeToolCallGroupView: NSView {
         addSubview(rowStack)
 
         NSLayoutConstraint.activate([
-            // accentStrip tracks rowStack height (not the group view's total height)
-            accentStrip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 0),
-            accentStrip.topAnchor.constraint(equalTo: topAnchor),
-            accentStrip.bottomAnchor.constraint(equalTo: rowStack.bottomAnchor),
-            accentStrip.widthAnchor.constraint(equalToConstant: 3),
-
-            rowStack.leadingAnchor.constraint(equalTo: accentStrip.trailingAnchor, constant: 5),
+            rowStack.leadingAnchor.constraint(equalTo: leadingAnchor),
             rowStack.trailingAnchor.constraint(equalTo: trailingAnchor),
             rowStack.topAnchor.constraint(equalTo: topAnchor),
             rowStack.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-    }
-
-    private func statusNSColor(calls: [ToolCallItem], theme: any ThemeProtocol) -> NSColor {
-        if calls.contains(where: { $0.result == nil }) {
-            return NSColor(theme.accentColor)
-        } else if calls.contains(where: { ($0.result.map(ToolEnvelope.isError) ?? false) }) {
-            return NSColor(theme.errorColor)
-        } else {
-            return NSColor(theme.successColor)
-        }
     }
 }
 
@@ -457,12 +430,21 @@ final class NativeToolCallRowView: NSView {
     // MARK: Subviews
 
     private let headerButton = NSButton()
-    private let statusIcon = NSImageView()
-    /// Replaces `statusIcon` while this row's `speak` call is still
-    /// playing audio (matched via `TTSService.activeSpeakCallId`).
-    private let statusSpinner = NSProgressIndicator()
+    /// Category glyph in the node foreground (db cylinder, terminal, file, …).
+    /// The node's ring color carries the status; this carries the tool identity.
     private let categoryIcon = NSImageView()
+    /// Replaces `categoryIcon` while this row's call is still running
+    /// (no result yet) or while a `speak` call is still playing audio
+    /// (matched via `TTSService.activeSpeakCallId`).
+    private let statusSpinner = NSProgressIndicator()
+    /// Circular timeline node — category-tinted fill, status-colored ring,
+    /// holds the category glyph (`categoryIcon`/`statusSpinner`) in the foreground.
     private let categoryBg = NSView()
+    /// Vertical rail segments connecting consecutive nodes. `railAbove` runs
+    /// from the row top to the node center, `railBelow` from the node center to
+    /// the row bottom (so it spans expanded content). Both hidden for a lone call.
+    private let railAbove = NSView()
+    private let railBelow = NSView()
     private let nameLabel = NSTextField(labelWithString: "")
     private let argPreviewLabel = NSTextField(labelWithString: "")
     private let chevron = NSImageView()
@@ -591,11 +573,24 @@ final class NativeToolCallRowView: NSView {
 
         refreshStatusIndicator()
 
+        // Node: category icon shape in the foreground; both the glyph and the
+        // circle (fill + ring) are colored by run status — accent while running,
+        // green on success, red on error.
         let category = ToolCategory.from(toolName: item.call.function.name)
-        categoryIcon.image = NSImage(systemSymbolName: category.icon, accessibilityDescription: nil)
-        let tintColor = category.primaryNSColor
-        categoryIcon.contentTintColor = tintColor
-        categoryBg.layer?.backgroundColor = tintColor.withAlphaComponent(0.15).cgColor
+        let statusColor = statusColor(item: item, theme: theme)
+        let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        categoryIcon.image = NSImage(systemSymbolName: category.icon, accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
+        categoryIcon.contentTintColor = statusColor
+        categoryBg.layer?.backgroundColor = statusColor.withAlphaComponent(0.14).cgColor
+        categoryBg.layer?.borderColor = statusColor.withAlphaComponent(0.55).cgColor
+
+        // Rail connects consecutive calls; a lone call (only row) shows none.
+        let railColor = NSColor(theme.tertiaryText).withAlphaComponent(0.28).cgColor
+        railAbove.layer?.backgroundColor = railColor
+        railBelow.layer?.backgroundColor = railColor
+        railAbove.isHidden = index == 0
+        railBelow.isHidden = index >= totalCount - 1
 
         // Collapsed: friendly, present-tense label so non-technical users read
         // "Inserting into the database" rather than `db_insert`. Expanded: the
@@ -662,18 +657,13 @@ final class NativeToolCallRowView: NSView {
         }
 
         applyHeight()
-
-        // row separator (hidden for last row)
-        if let sep = subviews.last, sep.identifier?.rawValue == "rowSep" {
-            sep.isHidden = index >= totalCount - 1
-        }
     }
 
     // MARK: Measured height
 
     func measuredHeight() -> CGFloat {
-        let rowH: CGFloat = 40
-        guard isExpanded else { return rowH + 1 }  // 40pt header + 1pt separator line at bottom
+        let rowH = Self.rowHeaderHeight
+        guard isExpanded else { return rowH + 1 }  // header + 1pt reserved gap
         // matches InlineToolCallView ToolDetailSection header row (~9pt bold + padding)
         let sectionTitleH: CGFloat = 22
         let textW = max(0, currentWidth - Self.sectionMarkdownWidthDeduction)
@@ -896,30 +886,41 @@ final class NativeToolCallRowView: NSView {
         onHeightChanged?()
     }
 
+    /// Diameter of the circular timeline node.
+    private static let nodeSize: CGFloat = 28
+    /// Header row height (node + breathing room above/below).
+    static let rowHeaderHeight: CGFloat = 48
+
     private func buildViews() {
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
 
-        // content views first (behind button)
-        statusIcon.translatesAutoresizingMaskIntoConstraints = false
-        statusIcon.imageScaling = .scaleProportionallyUpOrDown
-        addSubview(statusIcon)
+        // Rail segments sit behind everything else.
+        for rail in [railAbove, railBelow] {
+            rail.translatesAutoresizingMaskIntoConstraints = false
+            rail.wantsLayer = true
+            rail.isHidden = true
+            addSubview(rail)
+        }
+
+        // Circular node (category-tinted fill + status-colored ring).
+        categoryBg.translatesAutoresizingMaskIntoConstraints = false
+        categoryBg.wantsLayer = true
+        categoryBg.layer?.cornerRadius = Self.nodeSize / 2
+        categoryBg.layer?.borderWidth = 1.5
+        addSubview(categoryBg)
+
+        // Category glyph lives inside the node, foreground.
+        categoryIcon.translatesAutoresizingMaskIntoConstraints = false
+        categoryIcon.imageScaling = .scaleProportionallyUpOrDown
+        categoryBg.addSubview(categoryIcon)
 
         statusSpinner.translatesAutoresizingMaskIntoConstraints = false
         statusSpinner.style = .spinning
         statusSpinner.controlSize = .small
         statusSpinner.isIndeterminate = true
         statusSpinner.isDisplayedWhenStopped = false
-        addSubview(statusSpinner)
-
-        categoryBg.translatesAutoresizingMaskIntoConstraints = false
-        categoryBg.wantsLayer = true
-        categoryBg.layer?.cornerRadius = 6
-        addSubview(categoryBg)
-
-        categoryIcon.translatesAutoresizingMaskIntoConstraints = false
-        categoryIcon.imageScaling = .scaleProportionallyUpOrDown
-        categoryBg.addSubview(categoryIcon)
+        categoryBg.addSubview(statusSpinner)
 
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
         nameLabel.isEditable = false; nameLabel.isBordered = false; nameLabel.drawsBackground = false
@@ -983,7 +984,7 @@ final class NativeToolCallRowView: NSView {
         headerButton.target = self; headerButton.action = #selector(tapped)
         addSubview(headerButton)  // added last → front of Z-order
 
-        let rowH: CGFloat = 40
+        let rowH = Self.rowHeaderHeight
 
         // self-sizing height constraint
         let h = heightAnchor.constraint(equalToConstant: rowH + 1)
@@ -997,25 +998,34 @@ final class NativeToolCallRowView: NSView {
             headerButton.topAnchor.constraint(equalTo: topAnchor),
             headerButton.heightAnchor.constraint(equalToConstant: rowH),
 
-            statusIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            statusIcon.centerYAnchor.constraint(equalTo: topAnchor, constant: rowH / 2),
-            statusIcon.widthAnchor.constraint(equalToConstant: 14),
-            statusIcon.heightAnchor.constraint(equalToConstant: 14),
-
-            statusSpinner.centerXAnchor.constraint(equalTo: statusIcon.centerXAnchor),
-            statusSpinner.centerYAnchor.constraint(equalTo: statusIcon.centerYAnchor),
-
-            categoryBg.leadingAnchor.constraint(equalTo: statusIcon.trailingAnchor, constant: 8),
-            categoryBg.centerYAnchor.constraint(equalTo: statusIcon.centerYAnchor),
-            categoryBg.widthAnchor.constraint(equalToConstant: 24),
-            categoryBg.heightAnchor.constraint(equalToConstant: 24),
+            // Circular node, leading-aligned with the message text and centered
+            // in the header.
+            categoryBg.leadingAnchor.constraint(equalTo: leadingAnchor),
+            categoryBg.centerYAnchor.constraint(equalTo: topAnchor, constant: rowH / 2),
+            categoryBg.widthAnchor.constraint(equalToConstant: Self.nodeSize),
+            categoryBg.heightAnchor.constraint(equalToConstant: Self.nodeSize),
 
             categoryIcon.centerXAnchor.constraint(equalTo: categoryBg.centerXAnchor),
             categoryIcon.centerYAnchor.constraint(equalTo: categoryBg.centerYAnchor),
             categoryIcon.widthAnchor.constraint(equalToConstant: 14),
             categoryIcon.heightAnchor.constraint(equalToConstant: 14),
 
-            nameLabel.leadingAnchor.constraint(equalTo: categoryBg.trailingAnchor, constant: 8),
+            statusSpinner.centerXAnchor.constraint(equalTo: categoryBg.centerXAnchor),
+            statusSpinner.centerYAnchor.constraint(equalTo: categoryBg.centerYAnchor),
+
+            // Rail: a 2pt vertical line centered on the node. It connects the
+            // node *edges* (not the center) so it never crosses through a circle.
+            railAbove.centerXAnchor.constraint(equalTo: categoryBg.centerXAnchor),
+            railAbove.widthAnchor.constraint(equalToConstant: 2),
+            railAbove.topAnchor.constraint(equalTo: topAnchor),
+            railAbove.bottomAnchor.constraint(equalTo: categoryBg.topAnchor),
+
+            railBelow.centerXAnchor.constraint(equalTo: categoryBg.centerXAnchor),
+            railBelow.widthAnchor.constraint(equalToConstant: 2),
+            railBelow.topAnchor.constraint(equalTo: categoryBg.bottomAnchor),
+            railBelow.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            nameLabel.leadingAnchor.constraint(equalTo: categoryBg.trailingAnchor, constant: 10),
             nameLabel.centerYAnchor.constraint(equalTo: categoryBg.centerYAnchor),
 
             argPreviewLabel.leadingAnchor.constraint(equalTo: nameLabel.trailingAnchor, constant: 6),
@@ -1027,28 +1037,20 @@ final class NativeToolCallRowView: NSView {
             chevron.widthAnchor.constraint(equalToConstant: 10),
             chevron.heightAnchor.constraint(equalToConstant: 10),
 
-            separatorView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            // Expanded divider aligns with the ARGUMENTS text (right of the rail).
+            separatorView.leadingAnchor.constraint(
+                equalTo: leadingAnchor,
+                constant: 12 + Self.sectionContentInset
+            ),
             separatorView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             separatorView.topAnchor.constraint(equalTo: topAnchor, constant: rowH),
             separatorView.heightAnchor.constraint(equalToConstant: 1),
 
+            // Keep leading at 12 so the markdown width deduction stays valid;
+            // sectionContentInset (12) puts the body text flush right of the rail.
             contentContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             contentContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             contentContainer.topAnchor.constraint(equalTo: separatorView.bottomAnchor, constant: 8),
-        ])
-
-        // row separator line at bottom
-        let rowSep = NSView()
-        rowSep.identifier = NSUserInterfaceItemIdentifier("rowSep")
-        rowSep.translatesAutoresizingMaskIntoConstraints = false
-        rowSep.wantsLayer = true
-        rowSep.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.15).cgColor
-        addSubview(rowSep)
-        NSLayoutConstraint.activate([
-            rowSep.leadingAnchor.constraint(equalTo: leadingAnchor),
-            rowSep.trailingAnchor.constraint(equalTo: trailingAnchor),
-            rowSep.bottomAnchor.constraint(equalTo: bottomAnchor),
-            rowSep.heightAnchor.constraint(equalToConstant: 1),
         ])
     }
 
@@ -1173,34 +1175,34 @@ final class NativeToolCallRowView: NSView {
         contentBottomToArgs?.isActive = true
     }
 
-    private func statusInfo(item: ToolCallItem, theme: any ThemeProtocol) -> (String, NSColor) {
-        if item.result == nil { return ("circle.dotted", NSColor(theme.accentColor)) }
+    /// Color of the node circle (fill tint + ring), driven by run status:
+    /// running = accent, error = red, success = green.
+    private func statusColor(item: ToolCallItem, theme: any ThemeProtocol) -> NSColor {
+        if item.result == nil { return NSColor(theme.accentColor) }
         if let r = item.result, ToolEnvelope.isError(r) {
-            return ("xmark.circle.fill", NSColor(theme.errorColor))
+            return NSColor(theme.errorColor)
         }
-        return ("checkmark.circle.fill", NSColor(theme.successColor))
+        return NSColor(theme.successColor)
     }
 
-    /// Spinner if this is a `speak` call still playing; otherwise the
-    /// static dotted/check/xmark icon.
+    /// Spinner while the call is still running (no result yet) or while a
+    /// `speak` call is still playing; otherwise the static category glyph.
     private func refreshStatusIndicator() {
-        guard let item = currentItem, let theme = lastConfiguredTheme else {
+        guard let item = currentItem else {
             statusSpinner.stopAnimation(nil)
-            statusIcon.isHidden = false
+            categoryIcon.isHidden = false
             return
         }
+        let isRunning = item.result == nil
         let isSpeakInFlight =
             item.call.function.name == "speak"
             && TTSService.shared.activeSpeakCallId == item.call.id
-        if isSpeakInFlight {
-            statusIcon.isHidden = true
+        if isRunning || isSpeakInFlight {
+            categoryIcon.isHidden = true
             statusSpinner.startAnimation(nil)
         } else {
             statusSpinner.stopAnimation(nil)
-            statusIcon.isHidden = false
-            let (statusImg, statusColor) = statusInfo(item: item, theme: theme)
-            statusIcon.image = NSImage(systemSymbolName: statusImg, accessibilityDescription: nil)
-            statusIcon.contentTintColor = statusColor
+            categoryIcon.isHidden = false
         }
     }
 

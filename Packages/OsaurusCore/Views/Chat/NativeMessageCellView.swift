@@ -2332,8 +2332,8 @@ enum NativeCellHeightEstimator {
             return max(h, 48)
 
         case let .toolCallGroup(calls):
-            // each row self-sizes at ~41pt (40pt header + 1pt separator)
-            return CGFloat(calls.count) * 41 + 8
+            // each row self-sizes at the node header height + 1pt reserved gap
+            return CGFloat(calls.count) * (NativeToolCallRowView.rowHeaderHeight + 1) + 8
 
         case let .preflightCapabilities(items):
             return 8 + PreflightCapabilitiesRowHeight.estimated(items: items, tableWidth: width)
