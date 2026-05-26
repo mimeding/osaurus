@@ -500,7 +500,8 @@ extension ContentBlock {
                 )
             }
 
-            if !isStreaming && turn.role == .assistant,
+            // stats must be shown only on the final turn (intermediate tool calling turns should not display them)
+            if !isStreaming && turn.role == .assistant && isLastInGroup,
                 turn.timeToFirstToken != nil || turn.generationTokensPerSecond != nil
             {
                 turnBlocks.append(
