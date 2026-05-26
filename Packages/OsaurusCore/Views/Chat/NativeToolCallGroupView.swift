@@ -433,12 +433,10 @@ final class NativeToolCallRowView: NSView {
     /// Category glyph in the node foreground (db cylinder, terminal, file, …).
     /// The node's ring color carries the status; this carries the tool identity.
     private let categoryIcon = NSImageView()
-    /// Replaces `categoryIcon` while this row's call is still running
-    /// (no result yet) or while a `speak` call is still playing audio
-    /// (matched via `TTSService.activeSpeakCallId`).
-    private let statusSpinner = NSProgressIndicator()
-    /// Circular timeline node — category-tinted fill, status-colored ring,
-    /// holds the category glyph (`categoryIcon`/`statusSpinner`) in the foreground.
+    /// Shown in place of `nameLabel` while the call is running (no result yet,
+    /// or a `speak` call still playing) — the title shimmers to signal progress.
+    private let shimmerLabel = ShimmerLabel()
+    /// Circular timeline node — status-tinted fill + ring, holds the category glyph.
     private let categoryBg = NSView()
     /// Vertical rail segments connecting consecutive nodes. `railAbove` runs
     /// from the row top to the node center, `railBelow` from the node center to
@@ -517,7 +515,7 @@ final class NativeToolCallRowView: NSView {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.refreshStatusIndicator()
+                self?.applyStatusAndShimmer()
             }
         }
     }
@@ -571,19 +569,12 @@ final class NativeToolCallRowView: NSView {
         currentItemId = item.call.id
         currentItem = item
 
-        refreshStatusIndicator()
-
-        // Node: category icon shape in the foreground; both the glyph and the
-        // circle (fill + ring) are colored by run status — accent while running,
-        // green on success, red on error.
+        // Node: category icon shape in the foreground. The icon/circle colors and
+        // the running shimmer are applied in `applyStatusAndShimmer()` below.
         let category = ToolCategory.from(toolName: item.call.function.name)
-        let statusColor = statusColor(item: item, theme: theme)
         let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
         categoryIcon.image = NSImage(systemSymbolName: category.icon, accessibilityDescription: nil)?
             .withSymbolConfiguration(cfg)
-        categoryIcon.contentTintColor = statusColor
-        categoryBg.layer?.backgroundColor = statusColor.withAlphaComponent(0.14).cgColor
-        categoryBg.layer?.borderColor = statusColor.withAlphaComponent(0.55).cgColor
 
         // Rail connects consecutive calls; a lone call (only row) shows none.
         let railColor = NSColor(theme.tertiaryText).withAlphaComponent(0.28).cgColor
@@ -603,6 +594,9 @@ final class NativeToolCallRowView: NSView {
             nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         }
         nameLabel.textColor = NSColor(theme.primaryText)
+
+        // Node colors (status-driven) + running shimmer on the title.
+        applyStatusAndShimmer()
 
         // Argument preview is a technical detail — keep the collapsed chip clean
         // and only surface it when expanded (alongside the full ARGUMENTS section).
@@ -915,12 +909,10 @@ final class NativeToolCallRowView: NSView {
         categoryIcon.imageScaling = .scaleProportionallyUpOrDown
         categoryBg.addSubview(categoryIcon)
 
-        statusSpinner.translatesAutoresizingMaskIntoConstraints = false
-        statusSpinner.style = .spinning
-        statusSpinner.controlSize = .small
-        statusSpinner.isIndeterminate = true
-        statusSpinner.isDisplayedWhenStopped = false
-        categoryBg.addSubview(statusSpinner)
+        // Shimmering title (running state); overlays the static nameLabel slot.
+        shimmerLabel.translatesAutoresizingMaskIntoConstraints = false
+        shimmerLabel.isHidden = true
+        addSubview(shimmerLabel)
 
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
         nameLabel.isEditable = false; nameLabel.isBordered = false; nameLabel.drawsBackground = false
@@ -1010,8 +1002,10 @@ final class NativeToolCallRowView: NSView {
             categoryIcon.widthAnchor.constraint(equalToConstant: 14),
             categoryIcon.heightAnchor.constraint(equalToConstant: 14),
 
-            statusSpinner.centerXAnchor.constraint(equalTo: categoryBg.centerXAnchor),
-            statusSpinner.centerYAnchor.constraint(equalTo: categoryBg.centerYAnchor),
+            // Shimmer title occupies the same slot as nameLabel (only one shows).
+            shimmerLabel.leadingAnchor.constraint(equalTo: categoryBg.trailingAnchor, constant: 10),
+            shimmerLabel.centerYAnchor.constraint(equalTo: categoryBg.centerYAnchor),
+            shimmerLabel.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -8),
 
             // Rail: a 2pt vertical line centered on the node. It connects the
             // node *edges* (not the center) so it never crosses through a circle.
@@ -1175,34 +1169,49 @@ final class NativeToolCallRowView: NSView {
         contentBottomToArgs?.isActive = true
     }
 
-    /// Color of the node circle (fill tint + ring), driven by run status:
+    /// A call is "running" while it has no result yet, or while a `speak` call
+    /// is still playing its audio (matched via `TTSService.activeSpeakCallId`).
+    private func isRunning(_ item: ToolCallItem) -> Bool {
+        if item.result == nil { return true }
+        return item.call.function.name == "speak"
+            && TTSService.shared.activeSpeakCallId == item.call.id
+    }
+
+    /// Color of the node (icon + fill tint + ring), driven by run status:
     /// running = accent, error = red, success = green.
-    private func statusColor(item: ToolCallItem, theme: any ThemeProtocol) -> NSColor {
-        if item.result == nil { return NSColor(theme.accentColor) }
+    private func nodeStatusColor(item: ToolCallItem, theme: any ThemeProtocol) -> NSColor {
+        if isRunning(item) { return NSColor(theme.accentColor) }
         if let r = item.result, ToolEnvelope.isError(r) {
             return NSColor(theme.errorColor)
         }
         return NSColor(theme.successColor)
     }
 
-    /// Spinner while the call is still running (no result yet) or while a
-    /// `speak` call is still playing; otherwise the static category glyph.
-    private func refreshStatusIndicator() {
-        guard let item = currentItem else {
-            statusSpinner.stopAnimation(nil)
-            categoryIcon.isHidden = false
-            return
-        }
-        let isRunning = item.result == nil
-        let isSpeakInFlight =
-            item.call.function.name == "speak"
-            && TTSService.shared.activeSpeakCallId == item.call.id
-        if isRunning || isSpeakInFlight {
-            categoryIcon.isHidden = true
-            statusSpinner.startAnimation(nil)
+    /// Apply status colors to the node and, while running, shimmer the title
+    /// (swapping `nameLabel` for the animated `shimmerLabel`). Idempotent —
+    /// also called from the TTS observer so a `speak` call's running state
+    /// flips when playback starts/stops.
+    private func applyStatusAndShimmer() {
+        guard let item = currentItem, let theme = lastConfiguredTheme else { return }
+        let color = nodeStatusColor(item: item, theme: theme)
+        categoryIcon.contentTintColor = color
+        categoryBg.layer?.backgroundColor = color.withAlphaComponent(0.14).cgColor
+        categoryBg.layer?.borderColor = color.withAlphaComponent(0.55).cgColor
+
+        if isRunning(item) {
+            shimmerLabel.configure(
+                text: nameLabel.stringValue,
+                font: nameLabel.font ?? NSFont.systemFont(ofSize: 12, weight: .semibold),
+                baseColor: NSColor(theme.primaryText).withAlphaComponent(0.4),
+                highlightColor: NSColor(theme.primaryText)
+            )
+            nameLabel.isHidden = true
+            shimmerLabel.isHidden = false
+            shimmerLabel.start()
         } else {
-            statusSpinner.stopAnimation(nil)
-            categoryIcon.isHidden = false
+            shimmerLabel.stop()
+            shimmerLabel.isHidden = true
+            nameLabel.isHidden = false
         }
     }
 

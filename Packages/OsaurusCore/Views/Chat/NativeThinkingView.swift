@@ -25,7 +25,9 @@ final class NativeThinkingView: NSView {
     private let iconNode = NSView()
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: L("Thinking"))
-    private let streamingSpinner = NSProgressIndicator()
+    /// Shown in place of `titleLabel` while streaming — the title shimmers to
+    /// signal in-progress reasoning (replaces the old streaming spinner).
+    private let shimmerLabel = ShimmerLabel()
     private let charCountLabel = NSTextField(labelWithString: "")
     private let chevronView = NSImageView()
     private let separatorView = NSView()
@@ -97,11 +99,26 @@ final class NativeThinkingView: NSView {
 
         let charCount = thinkingLength ?? thinking.count
 
-        titleLabel.font = NSFont.systemFont(ofSize: CGFloat(theme.captionSize), weight: .semibold)
+        let titleFont = NSFont.systemFont(ofSize: CGFloat(theme.captionSize), weight: .semibold)
+        titleLabel.font = titleFont
         titleLabel.textColor = thinkingTint
 
-        streamingSpinner.isHidden = !isStreaming
-        if isStreaming { streamingSpinner.startAnimation(nil) } else { streamingSpinner.stopAnimation(nil) }
+        // While streaming, shimmer the "Thinking" title; otherwise show it static.
+        if isStreaming {
+            shimmerLabel.configure(
+                text: titleLabel.stringValue,
+                font: titleFont,
+                baseColor: thinkingTint.withAlphaComponent(0.45),
+                highlightColor: thinkingTint
+            )
+            titleLabel.isHidden = true
+            shimmerLabel.isHidden = false
+            shimmerLabel.start()
+        } else {
+            shimmerLabel.stop()
+            shimmerLabel.isHidden = true
+            titleLabel.isHidden = false
+        }
 
         charCountLabel.isHidden = isExpanded || charCount == 0
         charCountLabel.stringValue = formatCharCount(charCount)
@@ -186,10 +203,10 @@ final class NativeThinkingView: NSView {
         titleLabel.isEditable = false; titleLabel.isBordered = false; titleLabel.drawsBackground = false
         addSubview(titleLabel)
 
-        streamingSpinner.translatesAutoresizingMaskIntoConstraints = false
-        streamingSpinner.style = .spinning; streamingSpinner.controlSize = .small
-        streamingSpinner.isIndeterminate = true; streamingSpinner.isHidden = true
-        addSubview(streamingSpinner)
+        // Shimmering "Thinking" title (streaming state); overlays titleLabel's slot.
+        shimmerLabel.translatesAutoresizingMaskIntoConstraints = false
+        shimmerLabel.isHidden = true
+        addSubview(shimmerLabel)
 
         charCountLabel.translatesAutoresizingMaskIntoConstraints = false
         charCountLabel.isEditable = false; charCountLabel.isBordered = false; charCountLabel.drawsBackground = false
@@ -239,10 +256,9 @@ final class NativeThinkingView: NSView {
             titleLabel.leadingAnchor.constraint(equalTo: iconNode.trailingAnchor, constant: 10),
             titleLabel.centerYAnchor.constraint(equalTo: iconNode.centerYAnchor),
 
-            streamingSpinner.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
-            streamingSpinner.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            streamingSpinner.widthAnchor.constraint(equalToConstant: 16),
-            streamingSpinner.heightAnchor.constraint(equalToConstant: 16),
+            // Shimmer title occupies the same slot as titleLabel (only one shows).
+            shimmerLabel.leadingAnchor.constraint(equalTo: iconNode.trailingAnchor, constant: 10),
+            shimmerLabel.centerYAnchor.constraint(equalTo: iconNode.centerYAnchor),
 
             chevronView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             chevronView.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),

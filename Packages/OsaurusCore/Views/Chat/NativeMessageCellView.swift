@@ -2280,9 +2280,11 @@ enum NativeCellHeightEstimator {
             // 4 top + ~22 content + 6 bottom (tight to header / thinking row above)
             return 32
 
-        case let .pendingToolCall(_, argPreview, _):
-            // header row + 52pt arg box + cell vertical insets
-            return argPreview != nil ? 112 : 62
+        case .pendingToolCall:
+            // Mirrors a single running group row (node + shimmer title) so the
+            // pending → group transition doesn't change height: 8pt top inset +
+            // node row + 8pt bottom inset, node centered at the same Y as a group row.
+            return NativeToolCallRowView.rowHeaderHeight + 8
 
         case let .thinking(_, text, _):
             if !isExpanded { return 56 }

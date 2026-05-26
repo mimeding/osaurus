@@ -530,7 +530,11 @@ extension ContentBlock {
             previousTurnId = turn.id
         }
 
-        return coalesceToolGroups(blocks)
+        // NOTE: coalescing of adjacent tool groups is applied at the display
+        // chokepoint (`BlockMemoizer.limited`), not here, so the incremental
+        // block cache keeps stable per-turn group ids while the view still sees
+        // a single stitched timeline (including across the incremental seam).
+        return blocks
     }
 
     /// Merge directly-adjacent `.toolCallGroup` blocks into one. The agent loop
@@ -540,7 +544,12 @@ extension ContentBlock {
     /// disconnected lone nodes. Anything else between two groups (thinking, a
     /// chart/artifact, the final answer) breaks the run, as intended. The merged
     /// block keeps the first group's id/turnId so diffing stays stable.
-    private static func coalesceToolGroups(_ blocks: [ContentBlock]) -> [ContentBlock] {
+    ///
+    /// Applied to the array handed to the view (not the cache) so that the
+    /// memoizer's prefix/suffix incremental regeneration — which stores per-turn
+    /// group blocks — still renders consecutive calls as one connected rail the
+    /// moment the second call appears.
+    static func coalesceToolGroups(_ blocks: [ContentBlock]) -> [ContentBlock] {
         var result: [ContentBlock] = []
         result.reserveCapacity(blocks.count)
         for block in blocks {
