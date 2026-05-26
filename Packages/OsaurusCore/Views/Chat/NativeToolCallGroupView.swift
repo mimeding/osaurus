@@ -609,7 +609,11 @@ final class NativeToolCallRowView: NSView {
         }
         nameLabel.textColor = NSColor(theme.primaryText)
 
-        if let preview = PreviewGenerator.jsonPreview(item.call.function.arguments, maxLength: 80) {
+        // Argument preview is a technical detail — keep the collapsed chip clean
+        // and only surface it when expanded (alongside the full ARGUMENTS section).
+        if isExpanded,
+            let preview = PreviewGenerator.jsonPreview(item.call.function.arguments, maxLength: 80)
+        {
             argPreviewLabel.stringValue = preview
             argPreviewLabel.isHidden = false
         } else {
