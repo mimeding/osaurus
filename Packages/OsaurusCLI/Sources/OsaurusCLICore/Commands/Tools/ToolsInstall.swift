@@ -86,6 +86,7 @@ public struct ToolsInstall {
                 }
                 try data.write(to: zipFile)
                 try unzip(zipURL: zipFile, to: tmpDir)
+                try ArchiveSafety.validate(extractedRoot: tmpDir)
             } catch {
                 fputs("Download/Unzip error: \(error)\n", stderr)
                 exit(EXIT_FAILURE)
@@ -109,6 +110,7 @@ public struct ToolsInstall {
                 } else if pathURL.pathExtension.lowercased() == "zip" {
                     do {
                         try unzip(zipURL: pathURL, to: tmpDir)
+                        try ArchiveSafety.validate(extractedRoot: tmpDir)
                     } catch {
                         fputs("Unzip error: \(error)\n", stderr)
                         exit(EXIT_FAILURE)
