@@ -2950,7 +2950,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                         path: "/chat/completions",
                         userAgent: logUserAgent,
                         requestBody: logRequestBody,
-                        responseStatus: 500,
+                        responseStatus: Int(status.code),
                         startTime: logStartTime,
                         model: logModel,
                         errorMessage: error.localizedDescription
