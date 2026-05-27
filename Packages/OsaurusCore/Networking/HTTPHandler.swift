@@ -1514,6 +1514,11 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         let isPermanent: Bool
     }
 
+    /// Placeholder written to the Insights log in place of a freshly-minted
+    /// API key. Surfaces clearly in the UI so operators know a redaction
+    /// happened, while being inert as a credential.
+    fileprivate static let redactedAPIKeyPlaceholder = "osk-v1-***REDACTED***"
+
     /// POST /pair — unauthenticated endpoint for cryptographic Bonjour pairing.
     private func handlePairEndpoint(
         head: HTTPRequestHead,
@@ -1708,6 +1713,20 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 (try? JSONEncoder().encode(response)).map { String(decoding: $0, as: UTF8.self) }
                 ?? #"{"error":"Encoding failed"}"#
 
+            // Build a redacted copy for Insights: the full osk-v1 key is a
+            // bearer secret that grants master-scoped API access. It must
+            // never sit in the in-app log ring buffer, where it could leak
+            // via screen recordings, support-bundle exports, or memory
+            // dumps. The wire response is unchanged.
+            let redactedResponse = PairResponse(
+                agentAddress: agentAddress,
+                apiKey: Self.redactedAPIKeyPlaceholder,
+                isPermanent: isPermanent
+            )
+            let redactedJson =
+                (try? JSONEncoder().encode(redactedResponse)).map { String(decoding: $0, as: UTF8.self) }
+                ?? #"{"redacted":true}"#
+
             hop {
                 var headers = [("Content-Type", "application/json; charset=utf-8")]
                 headers.append(contentsOf: cors)
@@ -1717,7 +1736,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     path: "/pair",
                     userAgent: logUserAgent,
                     requestBody: logRequestBody,
-                    responseBody: json,
+                    responseBody: redactedJson,
                     responseStatus: 200,
                     startTime: logStartTime
                 )
