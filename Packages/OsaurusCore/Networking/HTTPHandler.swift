@@ -1040,15 +1040,61 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
     }
 
     /// Loads the dev proxy URL for a plugin from the dev-proxy.json config file.
+    ///
+    /// dev-proxy.json is a developer convenience that lets plugin authors hot-
+    /// reload their web UI from a local dev server (vite, webpack-dev-server,
+    /// next dev, …). The file lives under `~/.osaurus/config/` and is
+    /// trusted-on-the-machine.
+    ///
+    /// Two guards apply:
+    ///
+    /// * Release builds ignore the file entirely. A user who didn't go out of
+    ///   their way to enable DEBUG can never have a plugin web UI re-routed to
+    ///   an arbitrary URL just because some other process wrote that config
+    ///   file. (Anyone with that level of local access has worse options
+    ///   available to them, but defense-in-depth.)
+    ///
+    /// * The URL is constrained to http(s)://localhost or http(s)://127.x or
+    ///   http(s)://[::1]. The dev-server use case only ever needs loopback;
+    ///   anything else is either a misconfiguration or an attempt to use this
+    ///   plugin-web channel as an SSRF primitive into RFC1918 or the public
+    ///   internet.
     private static func loadDevProxyURL(for pluginId: String) -> String? {
-        let configFile = OsaurusPaths.config().appendingPathComponent("dev-proxy.json")
-        guard let data = try? Data(contentsOf: configFile),
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let configPluginId = obj["plugin_id"] as? String,
-            configPluginId == pluginId,
-            let proxyURL = obj["web_proxy"] as? String
-        else { return nil }
-        return proxyURL
+        #if !DEBUG
+            return nil
+        #else
+            let configFile = OsaurusPaths.config().appendingPathComponent("dev-proxy.json")
+            guard let data = try? Data(contentsOf: configFile),
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let configPluginId = obj["plugin_id"] as? String,
+                configPluginId == pluginId,
+                let proxyURL = obj["web_proxy"] as? String,
+                Self.isLoopbackProxyURL(proxyURL)
+            else { return nil }
+            return proxyURL
+        #endif
+    }
+
+    /// Returns true if `urlString` parses to an http(s) URL whose host is on
+    /// the loopback family (`localhost`, `127.0.0.0/8`, or `::1`). Used to
+    /// constrain the developer-only dev-proxy.json config to its intended
+    /// purpose — hitting a local dev server, never a remote host.
+    static func isLoopbackProxyURL(_ urlString: String) -> Bool {
+        guard let url = URL(string: urlString),
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
+            let host = url.host?.lowercased()
+        else { return false }
+
+        if host == "localhost" || host == "::1" { return true }
+
+        // IPv4 dotted notation: only allow 127.x.x.x.
+        let octets = host.split(separator: ".").compactMap { UInt8($0) }
+        if octets.count == 4 {
+            return octets[0] == 127
+        }
+
+        return false
     }
 
     /// Proxies a web request to a local dev server for HMR support.
