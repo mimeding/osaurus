@@ -7,6 +7,7 @@
 
 import Foundation
 import Observation
+import OsaurusRepository
 import SwiftUI
 
 public enum SkillFileError: Error, LocalizedError {
@@ -310,6 +311,15 @@ public final class SkillManager {
 
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         try await FileManager.default.unzipItem(at: zipURL, to: tempDir)
+
+        // Defense in depth: skill archives are user-provided (drag-and-drop)
+        // and unsigned. Reject ZIP-slip and symlink-escape entries before
+        // any skill metadata is read or copied into the skills directory.
+        do {
+            try ArchiveSafety.validate(extractedRoot: tempDir)
+        } catch {
+            throw SkillFileError.invalidSkillArchive
+        }
 
         guard let skillMdURL = findSkillMd(in: tempDir) else {
             throw SkillFileError.invalidSkillArchive

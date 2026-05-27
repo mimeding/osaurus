@@ -7,6 +7,7 @@
 
 import Foundation
 import MCP
+import OsaurusRepository
 
 class MCPBundleManager {
     struct BundleInfo {
@@ -114,6 +115,17 @@ class MCPBundleManager {
 
         // Use unzip CLI
         try unzipWithCLI(bundlePath, to: extractPath)
+
+        // Defense in depth: reject ZIP-slip and symlink escape entries
+        // before reading the bundle manifest. Bundles are loaded from
+        // local paths the user picked, so they're trusted-ish, but
+        // validating costs almost nothing and shrinks the trust surface.
+        do {
+            try ArchiveSafety.validate(extractedRoot: URL(fileURLWithPath: extractPath))
+        } catch {
+            try? FileManager.default.removeItem(atPath: extractPath)
+            throw BundleLoadError.extractionFailed("Unsafe bundle layout: \(error)")
+        }
 
         let manifestPath = "\(extractPath)/manifest.json"
         guard FileManager.default.fileExists(atPath: manifestPath) else {

@@ -128,6 +128,19 @@ public final class PluginInstallManager: @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: tmpDir) }
         try unzip(zipURL: tmpZip, to: tmpDir)
 
+        // Defense in depth against ZIP-slip and symlink escape. macOS
+        // Info-ZIP already rejects absolute and ".."-laden entries by
+        // default, but symlinks inside the archive whose targets exit the
+        // extraction root still extract. The bundle is signature-verified
+        // above, so the threat surface here is mostly "publisher key
+        // compromise" — but the cost of validating is trivial relative to
+        // the cost of recovering from a successful escape.
+        do {
+            try ArchiveSafety.validate(extractedRoot: tmpDir)
+        } catch {
+            throw PluginInstallError.layoutInvalid("Archive contains escaping entry: \(error)")
+        }
+
         guard let dylibURL = findFirstDylib(in: tmpDir) else {
             throw PluginInstallError.layoutInvalid("No .dylib found in archive")
         }
