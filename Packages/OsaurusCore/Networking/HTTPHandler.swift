@@ -4089,7 +4089,25 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     finishReason: .toolCalls
                 )
             } catch {
-                let errorResp = AnthropicError(message: error.localizedDescription, errorType: "api_error")
+                // Mirror the /v1/chat/completions mapping from PR #863: an
+                // unknown model id is a 404 client error, a missing provider
+                // is 503, etc. Without this, every misconfigured request
+                // looks like a 500 server fault and the WorkView error
+                // classifier / API consumers can't give actionable feedback.
+                let status: HTTPResponseStatus
+                let anthropicErrorType: String
+                if let engineError = error as? ChatEngine.EngineError {
+                    status = HTTPResponseStatus(statusCode: engineError.httpStatus)
+                    anthropicErrorType = engineError.httpStatus >= 500 ? "api_error" : "invalid_request_error"
+                } else {
+                    status = .internalServerError
+                    anthropicErrorType = "api_error"
+                }
+                let errorMessage =
+                    (error as? ChatEngine.EngineError)?.errorDescription
+                    ?? error.localizedDescription
+                let errorResp = AnthropicError(
+                    message: errorMessage, errorType: anthropicErrorType)
                 let errorJson =
                     (try? JSONEncoder().encode(errorResp))
                     .map { String(decoding: $0, as: UTF8.self) }
@@ -4098,9 +4116,10 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 headers.append(contentsOf: cors)
                 let headersCopy = headers
                 let body = errorJson
+                let wireStatus = status
 
                 hop {
-                    var responseHead = HTTPResponseHead(version: head.version, status: .internalServerError)
+                    var responseHead = HTTPResponseHead(version: head.version, status: wireStatus)
                     var buffer = ctx.value.channel.allocator.buffer(capacity: body.utf8.count)
                     buffer.writeString(body)
                     var nioHeaders = HTTPHeaders()
@@ -4121,7 +4140,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     path: "/messages",
                     userAgent: logUserAgent,
                     requestBody: logRequestBody,
-                    responseStatus: 500,
+                    responseStatus: Int(status.code),
                     startTime: logStartTime,
                     model: logModel,
                     errorMessage: error.localizedDescription
@@ -4696,7 +4715,25 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     finishReason: .toolCalls
                 )
             } catch {
-                let errorResp = OpenResponsesErrorResponse(code: "api_error", message: error.localizedDescription)
+                // Mirror the /v1/chat/completions mapping from PR #863:
+                // unknown-model is 404, service-unavailable is 503, etc.,
+                // so API consumers and the WorkView error classifier see
+                // the same actionable status codes here as on the OpenAI
+                // chat-completions endpoint.
+                let status: HTTPResponseStatus
+                let errorCode: String
+                if let engineError = error as? ChatEngine.EngineError {
+                    status = HTTPResponseStatus(statusCode: engineError.httpStatus)
+                    errorCode = engineError.httpStatus >= 500 ? "api_error" : "invalid_request_error"
+                } else {
+                    status = .internalServerError
+                    errorCode = "api_error"
+                }
+                let errorMessage =
+                    (error as? ChatEngine.EngineError)?.errorDescription
+                    ?? error.localizedDescription
+                let errorResp = OpenResponsesErrorResponse(
+                    code: errorCode, message: errorMessage)
                 let errorJson =
                     (try? JSONEncoder().encode(errorResp))
                     .map { String(decoding: $0, as: UTF8.self) }
@@ -4705,9 +4742,10 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 headers.append(contentsOf: cors)
                 let headersCopy = headers
                 let body = errorJson
+                let wireStatus = status
 
                 hop {
-                    var responseHead = HTTPResponseHead(version: head.version, status: .internalServerError)
+                    var responseHead = HTTPResponseHead(version: head.version, status: wireStatus)
                     var buffer = ctx.value.channel.allocator.buffer(capacity: body.utf8.count)
                     buffer.writeString(body)
                     var nioHeaders = HTTPHeaders()
@@ -4728,7 +4766,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     path: "/responses",
                     userAgent: logUserAgent,
                     requestBody: logRequestBody,
-                    responseStatus: 500,
+                    responseStatus: Int(status.code),
                     startTime: logStartTime,
                     model: logModel,
                     errorMessage: error.localizedDescription
