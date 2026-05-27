@@ -40,21 +40,29 @@ enum WorkFolderToolHelpers {
     ///    confirm the result still sits under `rootPath`. This catches the
     ///    overwhelmingly common case of an agent emitting `"../etc/passwd"`
     ///    without touching the filesystem.
-    /// 2. After `.resolvingSymlinksInPath()`: follow symbolic links and
-    ///    re-check containment. Without this second pass, an attacker (or a
-    ///    careless project layout) could plant a symlink inside the work
-    ///    root that points outside it; the agent would then read or write
-    ///    through that link believing it was contained.
+    /// 2. Symlink-aware: walk the relative components one at a time on top
+    ///    of the symlink-resolved root, resolving any symlink encountered
+    ///    along the way, and re-check containment. Without this second
+    ///    pass, an attacker (or a careless project layout) could plant a
+    ///    symlink inside the work root that points outside it; the agent
+    ///    would then read or write through that link believing it was
+    ///    contained.
     ///
-    /// Containment is checked by *path components* after both sides are
-    /// run through `resolvingSymlinksInPath().standardized`. Pure-string
-    /// prefix matching breaks on macOS because the system canonicalizes
-    /// `/var` to `/private/var` only sometimes (the enumerator, the
-    /// symlink resolver, and `.standardized` each apply different rules
-    /// depending on whether the path was already in canonical form). Using
-    /// `Array.starts(with:)` over `pathComponents` avoids those mismatches
-    /// and also avoids the "sibling whose name shares a prefix" foot-gun
-    /// (e.g. `/work/foo-baz` vs `/work/foo`).
+    /// We don't just call `URL.resolvingSymlinksInPath()` on the full
+    /// candidate path because macOS uses strict-realpath semantics: when
+    /// any path component doesn't exist yet (e.g. `/root/escape/newfile`
+    /// where `newfile` hasn't been created), it returns the input
+    /// **unchanged** rather than resolving the components that DO exist.
+    /// That left `escape`'s symlink target undetected and let the test
+    /// for "symlink escape rejected" pass silently in CI. Walking
+    /// components manually and resolving each existing prefix gets us
+    /// realpath -m semantics.
+    ///
+    /// Containment is compared by `pathComponents` arrays with
+    /// `Array.starts(with:)` so macOS's `/var` ↔ `/private/var`
+    /// canonicalization can't produce a one-sided string mismatch, and so
+    /// a sibling whose name shares a prefix (e.g. `/work/foo-baz` vs
+    /// `/work/foo`) can't slip through.
     static func resolvePath(_ relativePath: String, rootPath: URL) throws -> URL {
         let cleanPath = relativePath.hasPrefix("/") ? String(relativePath.dropFirst()) : relativePath
         let resolvedURL = rootPath.appendingPathComponent(cleanPath).standardized
@@ -64,17 +72,46 @@ enum WorkFolderToolHelpers {
             throw WorkFolderToolError.pathOutsideRoot(relativePath)
         }
 
-        // Symlink-aware re-check. Canonicalize both sides the same way
-        // (resolve symlinks, then standardize) so macOS's /var ↔
-        // /private/var folder canonicalization can't produce a one-sided
-        // mismatch. Compare as `pathComponents` arrays to avoid the
-        // shared-prefix-substring bug.
-        let canonicalCandidate = resolvedURL.resolvingSymlinksInPath().standardized
+        // Symlink-aware containment.
         let canonicalRoot = rootPath.resolvingSymlinksInPath().standardized
+        let canonicalCandidate = Self.resolveExistingComponents(
+            relativeTo: canonicalRoot,
+            relativePath: cleanPath
+        )
         guard canonicalCandidate.pathComponents.starts(with: canonicalRoot.pathComponents) else {
             throw WorkFolderToolError.pathOutsideRoot(relativePath)
         }
         return resolvedURL
+    }
+
+    /// Walk `relativePath` one component at a time on top of `rootPath`,
+    /// resolving symlinks for every component that currently exists on
+    /// disk and appending the remainder lexically once we run off the end
+    /// of the existing tree. This is the moral equivalent of `realpath -m`
+    /// on Linux — exactly what we need for path containment when the
+    /// caller is asking about a file that may not have been created yet.
+    private static func resolveExistingComponents(
+        relativeTo rootPath: URL,
+        relativePath: String
+    ) -> URL {
+        let fm = FileManager.default
+        let parts = relativePath.split(separator: "/").map(String.init)
+        var current = rootPath
+        var stillResolving = true
+
+        for part in parts {
+            // Defensive: `/foo//bar` would yield an empty part, which
+            // `appendingPathComponent` rejects. Skip them.
+            if part.isEmpty { continue }
+            let next = current.appendingPathComponent(part)
+            if stillResolving && fm.fileExists(atPath: next.path) {
+                current = next.resolvingSymlinksInPath()
+            } else {
+                stillResolving = false
+                current = current.appendingPathComponent(part)
+            }
+        }
+        return current.standardized
     }
 
     /// Parse JSON arguments to dictionary
