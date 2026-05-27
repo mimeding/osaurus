@@ -1458,9 +1458,30 @@ final class ChatSession: ObservableObject {
         ServerController.signalGenerationEnd()
         trimTrailingEmptyAssistantTurn()
         consolidateAssistantTurns()
+        markUnfinishedToolCallsInterrupted()
         rebuildVisibleBlocks()
         save()
         flushQueuedSendIfEligible()
+    }
+
+    /// A stopped (or errored) run can leave an assistant tool call that never
+    /// received a result. Record a synthetic error result so the UI renders it
+    /// as failed — red node, shimmer stopped — via the normal error path, rather
+    /// than leaving it perpetually "running"; this also persists correctly so a
+    /// reloaded chat shows the interrupted call as failed. No-op on a clean
+    /// finish, where every issued call already has a result.
+    private func markUnfinishedToolCallsInterrupted() {
+        guard stopRequested || lastStreamError != nil else { return }
+        for turn in turns where turn.role == .assistant {
+            guard let calls = turn.toolCalls, !calls.isEmpty else { continue }
+            for call in calls where turn.toolResults[call.id] == nil {
+                turn.toolResults[call.id] = ToolEnvelope.failure(
+                    kind: .executionError,
+                    message: "Stopped before completing.",
+                    tool: call.function.name
+                )
+            }
+        }
     }
 
     /// Dispatch any queued send when the run ended naturally (no `stop()`
@@ -1897,6 +1918,9 @@ final class ChatSession: ObservableObject {
                 rebuildVisibleBlocks()  // running (shimmer) + connector draws in for calls 2+
                 await pause(0.9)
 
+                // `isRunActive` is false once stopped (it checks Task.isCancelled),
+                // so the in-flight call is left without a result — completeRunCleanup()
+                // then marks it interrupted (red node, shimmer stopped).
                 guard isRunActive(runId) else { return }
                 turn.toolResults[callId] = step.result
                 turn.notifyContentChanged()
