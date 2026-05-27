@@ -204,15 +204,21 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
             var finishReason: InferenceLog.FinishReason = .stop
             var errorMsg: String? = nil
             var toolInvocation: (name: String, args: String)? = nil
-            var lastDeltaTime = startTime
+            #if DEBUG
+                var lastDeltaTime = startTime
+            #endif
 
-            print("[Osaurus][Stream] Starting stream wrapper for model: \(model)")
+            #if DEBUG
+                print("[Osaurus][Stream] Starting stream wrapper for model: \(model)")
+            #endif
 
             do {
                 for try await delta in inner {
                     // Check for task cancellation to allow early termination
                     if Task.isCancelled {
-                        print("[Osaurus][Stream] Task cancelled after \(deltaCount) deltas")
+                        #if DEBUG
+                            print("[Osaurus][Stream] Task cancelled after \(deltaCount) deltas")
+                        #endif
                         continuation.finish()
                         return
                     }
@@ -224,17 +230,20 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
                     }
 
                     deltaCount += 1
-                    let now = Date()
-                    let timeSinceStart = now.timeIntervalSince(startTime)
-                    let timeSinceLastDelta = now.timeIntervalSince(lastDeltaTime)
-                    lastDeltaTime = now
 
-                    // Log every 50th delta or if there's a long gap (potential freeze indicator)
-                    if deltaCount % 50 == 1 || timeSinceLastDelta > 2.0 {
-                        print(
-                            "[Osaurus][Stream] Delta #\(deltaCount): +\(String(format: "%.2f", timeSinceStart))s total, gap=\(String(format: "%.3f", timeSinceLastDelta))s, len=\(delta.count)"
-                        )
-                    }
+                    #if DEBUG
+                        let now = Date()
+                        let timeSinceStart = now.timeIntervalSince(startTime)
+                        let timeSinceLastDelta = now.timeIntervalSince(lastDeltaTime)
+                        lastDeltaTime = now
+
+                        // Log every 50th delta or if there's a long gap (potential freeze indicator)
+                        if deltaCount % 50 == 1 || timeSinceLastDelta > 2.0 {
+                            print(
+                                "[Osaurus][Stream] Delta #\(deltaCount): +\(String(format: "%.2f", timeSinceStart))s total, gap=\(String(format: "%.3f", timeSinceLastDelta))s, len=\(delta.count)"
+                            )
+                        }
+                    #endif
 
                     // Estimate tokens: each delta chunk is roughly proportional to tokens
                     // More accurate: count whitespace-separated words, or use tokenizer
@@ -242,25 +251,33 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
                     continuation.yield(delta)
                 }
 
-                let totalTime = Date().timeIntervalSince(startTime)
-                print(
-                    "[Osaurus][Stream] Stream completed: \(deltaCount) deltas in \(String(format: "%.2f", totalTime))s"
-                )
+                #if DEBUG
+                    let totalTime = Date().timeIntervalSince(startTime)
+                    print(
+                        "[Osaurus][Stream] Stream completed: \(deltaCount) deltas in \(String(format: "%.2f", totalTime))s"
+                    )
+                #endif
 
                 continuation.finish()
             } catch let inv as ServiceToolInvocation {
-                print("[Osaurus][Stream] Tool invocation: \(inv.toolName)")
+                #if DEBUG
+                    print("[Osaurus][Stream] Tool invocation: \(inv.toolName)")
+                #endif
                 toolInvocation = (inv.toolName, inv.jsonArguments)
                 finishReason = .toolCalls
                 continuation.finish(throwing: inv)
             } catch {
                 // Check if this is a CancellationError (expected when consumer stops)
                 if Task.isCancelled || error is CancellationError {
-                    print("[Osaurus][Stream] Stream cancelled after \(deltaCount) deltas")
+                    #if DEBUG
+                        print("[Osaurus][Stream] Stream cancelled after \(deltaCount) deltas")
+                    #endif
                     continuation.finish()
                     return
                 }
-                print("[Osaurus][Stream] Stream error after \(deltaCount) deltas: \(error.localizedDescription)")
+                #if DEBUG
+                    print("[Osaurus][Stream] Stream error after \(deltaCount) deltas: \(error.localizedDescription)")
+                #endif
                 finishReason = .error
                 errorMsg = error.localizedDescription
                 continuation.finish(throwing: error)

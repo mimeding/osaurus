@@ -246,17 +246,19 @@ struct StreamAccumulator: AsyncSequence, Sendable {
 
                 // Log info events and surface generation stats downstream.
                 if let info = event.info {
-                    print(
-                        String(
-                            format: "[MLX] prompt: %d tokens %.1f tok/s (%.2fs) | gen: %d tokens %.1f tok/s (%.2fs)",
-                            info.promptTokenCount,
-                            info.promptTokensPerSecond,
-                            info.promptTime,
-                            info.generationTokenCount,
-                            info.tokensPerSecond,
-                            info.generateTime
+                    #if DEBUG
+                        print(
+                            String(
+                                format: "[MLX] prompt: %d tokens %.1f tok/s (%.2fs) | gen: %d tokens %.1f tok/s (%.2fs)",
+                                info.promptTokenCount,
+                                info.promptTokensPerSecond,
+                                info.promptTime,
+                                info.generationTokenCount,
+                                info.tokensPerSecond,
+                                info.generateTime
+                            )
                         )
-                    )
+                    #endif
                     // Emit GPU-accurate stats as a signpost event so they appear in
                     // Instruments and can be captured by `log stream --type signpost`.
                     accumSignposter.emitEvent(
