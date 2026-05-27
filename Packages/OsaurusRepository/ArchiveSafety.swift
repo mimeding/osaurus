@@ -45,11 +45,22 @@ public enum ArchiveSafetyError: Error, CustomStringConvertible {
 public enum ArchiveSafety {
 
     /// Walk `extractedRoot` and verify every entry is contained — both
-    /// lexically (after `.standardized`) and after symlink resolution.
+    /// lexically (no `..` escapes) and after symlink resolution.
     ///
     /// Throws `ArchiveSafetyError` on the first escape encountered.
     /// Callers should treat the entire extracted tree as untrusted and
     /// remove it on failure.
+    ///
+    /// Containment is compared by *path components* (after both sides go
+    /// through `resolvingSymlinksInPath().standardized`) rather than by
+    /// string prefix. On macOS the TemporaryDirectory and the URLs the
+    /// `FileManager.enumerator` returns are canonicalized inconsistently
+    /// (`/var` vs `/private/var` depending on the API), and a string
+    /// `hasPrefix` check produced false positives whenever one side was
+    /// resolved and the other wasn't. `Array.starts(with:)` on
+    /// `pathComponents` avoids that mismatch and is also immune to the
+    /// "shared name prefix" foot-gun (e.g. `/work/foo-baz` vs
+    /// `/work/foo`).
     public static func validate(extractedRoot: URL) throws {
         let fm = FileManager.default
         var isDir: ObjCBool = false
@@ -57,12 +68,15 @@ public enum ArchiveSafety {
             throw ArchiveSafetyError.extractionRootMissing(extractedRoot.path)
         }
 
-        // Compare against a symlink-resolved root so projects whose temp dir
-        // happens to live under a system symlink (e.g. macOS /var ->
-        // /private/var) don't fail spuriously.
-        let resolvedRoot = extractedRoot.resolvingSymlinksInPath().standardized.path
-        let rootWithSeparator =
-            resolvedRoot.hasSuffix("/") ? resolvedRoot : resolvedRoot + "/"
+        // Canonicalize the root once. We compare candidate paths against
+        // BOTH the symlink-resolved form (catches a symlink whose target
+        // exits the root) AND the lexically-standardized form (catches a
+        // candidate whose own enumerator URL was returned with a different
+        // /var ↔ /private/var canonicalization than the root).
+        let canonicalRoot = extractedRoot.resolvingSymlinksInPath().standardized
+        let lexicalRoot = extractedRoot.standardized
+        let canonicalRootComponents = canonicalRoot.pathComponents
+        let lexicalRootComponents = lexicalRoot.pathComponents
 
         guard
             let enumerator = fm.enumerator(
@@ -75,26 +89,29 @@ public enum ArchiveSafety {
         }
 
         for case let item as URL in enumerator {
-            // 1. Lexical containment: each entry's standardized path must
-            //    start with the resolved root prefix. This catches the
-            //    happy-path case for plain files in a well-formed archive.
-            let standardized = item.standardized.path
-            guard standardized == resolvedRoot || standardized.hasPrefix(rootWithSeparator) else {
-                throw ArchiveSafetyError.escapingPath(item.path)
-            }
+            // 1. Lexical containment — catches '..' / absolute-path entries
+            //    that slipped past unzip. Compared against the lexically-
+            //    standardized root.
+            let lexicalCandidate = item.standardized.pathComponents
+            let passesLexical = lexicalCandidate.starts(with: lexicalRootComponents)
 
-            // 2. Symlink-aware containment: if `item` itself is a symlink
-            //    OR any component along its path is, the symlink's target
-            //    must still live inside the root. We resolve the entry
-            //    once and compare.
-            let resolved = item.resolvingSymlinksInPath().standardized.path
-            guard resolved == resolvedRoot || resolved.hasPrefix(rootWithSeparator) else {
+            // 2. Symlink-aware containment — catches a symlink whose target
+            //    exits the root. Compared against the symlink-resolved root.
+            let canonicalCandidate = item.resolvingSymlinksInPath().standardized.pathComponents
+            let passesCanonical = canonicalCandidate.starts(with: canonicalRootComponents)
+
+            // Either canonicalization being inside is enough; macOS's
+            // /var ↔ /private/var inconsistency means one form or the
+            // other may match while the other doesn't, and both forms
+            // refer to the same real file.
+            guard passesLexical || passesCanonical else {
                 let isSymlink =
                     (try? item.resourceValues(forKeys: [.isSymbolicLinkKey]))?
                     .isSymbolicLink ?? false
                 if isSymlink {
                     let target =
-                        (try? fm.destinationOfSymbolicLink(atPath: item.path)) ?? resolved
+                        (try? fm.destinationOfSymbolicLink(atPath: item.path))
+                        ?? item.resolvingSymlinksInPath().path
                     throw ArchiveSafetyError.escapingSymlink(linkPath: item.path, target: target)
                 }
                 throw ArchiveSafetyError.escapingPath(item.path)
