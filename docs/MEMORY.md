@@ -384,7 +384,10 @@ curl http://127.0.0.1:1337/memory/ingest \
 |-----------|------|-------------|
 | `agent_id` | string | Identifier for the agent whose memory is being populated |
 | `conversation_id` | string | Identifier for the conversation session |
-| `turns` | array | Array of turn objects, each with `user` and `assistant` fields |
+| `turns` | array | Array of turn objects, each with `user` and `assistant` fields (optional `date`, optional `source_mode` per turn) |
+| `session_date` | string (optional) | ISO date applied to any turn without its own `date` |
+| `skip_extraction` | bool (optional) | When `true`, store chunks only and skip background memory extraction |
+| `source_mode` | string (optional) | Default execution context for all turns in this batch. One of `chat` (default), `chat_sandbox`, `work_host`, `work_sandbox`. Pure-chat recall filters out tool-using modes, so tagging ingested logs correctly prevents phantom tool affordances from leaking back into chat-only sessions. |
 
 Memory extraction runs asynchronously in the background — ingested turns are processed without blocking the API response.
 
