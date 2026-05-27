@@ -59,13 +59,23 @@ final class PluginHostContext: @unchecked Sendable {
     private(set) var hostAPIPtr: UnsafeMutablePointer<osr_host_api>?
 
     /// Shared URLSession for plugin HTTP requests (thread-safe).
+    /// Shared URLSession used by the plugin host `http_request` callback when
+    /// the caller has asked for redirect-following. The session-level delegate
+    /// re-runs `checkSSRF` on every redirect target so a 30x to a private
+    /// address can't bypass the initial SSRF guard. See SSRFCheckedRedirectDelegate.
     private static let httpSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpMaximumConnectionsPerHost = 10
-        return URLSession(configuration: config)
+        return URLSession(
+            configuration: config,
+            delegate: SSRFCheckedRedirectDelegate.shared,
+            delegateQueue: nil
+        )
     }()
 
-    /// Shared URLSession that suppresses redirects. Singleton to avoid per-request session leaks.
+    /// Shared URLSession that suppresses redirects entirely. Singleton to
+    /// avoid per-request session leaks. Used when the plugin explicitly
+    /// passes `follow_redirects: false`.
     private static let noRedirectSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpMaximumConnectionsPerHost = 10
@@ -1532,6 +1542,40 @@ private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unche
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
         completionHandler(nil)
+    }
+}
+
+// MARK: - SSRF-Checked Redirect URLSession Delegate
+
+/// URLSession delegate that re-runs `PluginHostContext.checkSSRF` on every
+/// redirect target before allowing the redirect to proceed.
+///
+/// Without this, an upstream `http://attacker.example.com` could 30x-redirect
+/// to `http://127.0.0.1:1337/...` or any RFC1918 address and the initial SSRF
+/// guard on the request URL would be bypassed. This delegate is attached to
+/// the plugin host's redirect-following URLSession; the no-redirect session
+/// retains its existing block-everything behavior.
+private final class SSRFCheckedRedirectDelegate: NSObject, URLSessionTaskDelegate,
+    @unchecked Sendable
+{
+    static let shared = SSRFCheckedRedirectDelegate()
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        if let url = request.url, PluginHostContext.checkSSRF(url: url) != nil {
+            // Refuse the redirect. URLSession will surface the original 3xx
+            // response (status code + headers) to the caller, who can detect
+            // the blocked redirect from the status without ever connecting
+            // to the private target.
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }
 
