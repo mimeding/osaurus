@@ -19,6 +19,8 @@ public struct ChatTurnData: Codable, Identifiable, Sendable {
     /// Wall-clock duration (seconds) each tool call took, keyed by call id.
     /// Drives the "· 1.2s" elapsed label; empty for legacy turns.
     public var toolCallDurations: [String: TimeInterval]
+    /// Seconds the model spent thinking; drives "Thought for 30s". Nil when unknown.
+    public var thinkingDuration: TimeInterval?
     public var thinking: String
     /// Wall-clock when the turn was created. Nil for legacy turns saved
     /// before v5 of the chat-history schema.
@@ -43,6 +45,7 @@ public struct ChatTurnData: Codable, Identifiable, Sendable {
         toolCallId: String? = nil,
         toolResults: [String: String] = [:],
         toolCallDurations: [String: TimeInterval] = [:],
+        thinkingDuration: TimeInterval? = nil,
         thinking: String = "",
         createdAt: Date? = nil,
         completedAt: Date? = nil,
@@ -57,6 +60,7 @@ public struct ChatTurnData: Codable, Identifiable, Sendable {
         self.toolCallId = toolCallId
         self.toolResults = toolResults
         self.toolCallDurations = toolCallDurations
+        self.thinkingDuration = thinkingDuration
         self.thinking = thinking
         self.createdAt = createdAt
         self.completedAt = completedAt
@@ -75,6 +79,7 @@ public struct ChatTurnData: Codable, Identifiable, Sendable {
         toolResults = try container.decodeIfPresent([String: String].self, forKey: .toolResults) ?? [:]
         toolCallDurations =
             try container.decodeIfPresent([String: TimeInterval].self, forKey: .toolCallDurations) ?? [:]
+        thinkingDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .thinkingDuration)
         thinking = try container.decodeIfPresent(String.self, forKey: .thinking) ?? ""
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
@@ -101,6 +106,7 @@ public struct ChatTurnData: Codable, Identifiable, Sendable {
         if !toolCallDurations.isEmpty {
             try container.encode(toolCallDurations, forKey: .toolCallDurations)
         }
+        try container.encodeIfPresent(thinkingDuration, forKey: .thinkingDuration)
         try container.encode(thinking, forKey: .thinking)
         try container.encodeIfPresent(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(completedAt, forKey: .completedAt)
@@ -112,6 +118,7 @@ public struct ChatTurnData: Codable, Identifiable, Sendable {
         case id, role, content, attachments
         case attachedImages  // legacy key for reading old sessions
         case toolCalls, toolCallId, toolResults, toolCallDurations, thinking
+        case thinkingDuration
         case createdAt, completedAt, generationTokenCount, timeToFirstToken
     }
 }
@@ -130,6 +137,7 @@ extension ChatTurnData {
         self.toolCallId = turn.toolCallId
         self.toolResults = turn.toolResults
         self.toolCallDurations = turn.toolCallDurations
+        self.thinkingDuration = turn.thinkingDuration
         self.thinking = turn.thinking
         self.createdAt = turn.createdAt
         self.completedAt = turn.completedAt
@@ -152,6 +160,7 @@ extension ChatTurn {
         self.toolCallId = data.toolCallId
         self.toolResults = data.toolResults
         self.toolCallDurations = data.toolCallDurations
+        self.thinkingDuration = data.thinkingDuration
         self.thinking = data.thinking
         self.completedAt = data.completedAt
         self.generationTokenCount = data.generationTokenCount

@@ -65,6 +65,8 @@ final class ChatTurn: ObservableObject, Identifiable {
     /// Call `notifyContentChanged()` after batch appends to update UI.
     func appendContent(_ s: String) {
         guard !s.isEmpty else { return }
+        // First visible content marks the end of any thinking phase.
+        finalizeThinkingDuration()
         contentChunks.append(s)
         _contentLength += s.count
         _cachedContent = nil  // Invalidate cache
@@ -134,6 +136,7 @@ final class ChatTurn: ObservableObject, Identifiable {
     /// Efficiently append thinking without triggering immediate UI update.
     func appendThinking(_ s: String) {
         guard !s.isEmpty else { return }
+        if thinkingStartedAt == nil { thinkingStartedAt = Date() }
         thinkingChunks.append(s)
         _thinkingLength += s.count
         _cachedThinking = nil  // Invalidate cache
@@ -180,6 +183,12 @@ final class ChatTurn: ObservableObject, Identifiable {
     /// id. Recorded by `setToolResult(_:for:)` and persisted so a reloaded chat
     /// still shows "· 1.2s" next to the tool title.
     @Published var toolCallDurations: [String: TimeInterval] = [:]
+    /// How long the model spent thinking (seconds) — from the first reasoning
+    /// token to the first content/tool that follows. Drives "Thought for 30s";
+    /// persisted so it survives reload.
+    @Published var thinkingDuration: TimeInterval?
+    /// First reasoning-token time (ephemeral), used to compute `thinkingDuration`.
+    private var thinkingStartedAt: Date?
     /// Tool name detected during streaming before the full invocation is ready.
     var pendingToolName: String? = nil {
         didSet {
@@ -242,9 +251,22 @@ final class ChatTurn: ObservableObject, Identifiable {
     /// uses the pending-detection start when present (so the timer spans the
     /// whole detect→result window), else now.
     func markToolCallStarted(_ callId: String) {
+        // A tool following reasoning also ends the thinking phase.
+        finalizeThinkingDuration()
         guard toolCallStartedAt[callId] == nil else { return }
         toolCallStartedAt[callId] = pendingToolStartedAt ?? Date()
         pendingToolStartedAt = nil
+    }
+
+    /// Record the thinking duration once, at the first content/tool that follows
+    /// reasoning. No-op for turns without thinking, after it's measured, or below
+    /// the display threshold.
+    private func finalizeThinkingDuration() {
+        guard thinkingDuration == nil, let start = thinkingStartedAt else { return }
+        let elapsed = Date().timeIntervalSince(start)
+        if elapsed >= Self.minDisplayableToolDuration {
+            thinkingDuration = elapsed
+        }
     }
 
     /// Set a tool call's result and record how long it took (if we saw it start).

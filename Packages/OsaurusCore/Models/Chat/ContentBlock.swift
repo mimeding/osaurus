@@ -33,7 +33,7 @@ enum ContentBlockKind: Equatable {
     case header(role: MessageRole, agentName: String, isFirstInGroup: Bool)
     case paragraph(index: Int, text: String, isStreaming: Bool, role: MessageRole)
     case toolCallGroup(calls: [ToolCallItem])
-    case thinking(index: Int, text: String, isStreaming: Bool)
+    case thinking(index: Int, text: String, isStreaming: Bool, duration: TimeInterval?)
     case userMessage(text: String, attachments: [Attachment])
     case sharedArtifact(artifact: SharedArtifact)
     case pendingToolCall(toolName: String, argPreview: String?, argSize: Int)
@@ -74,9 +74,9 @@ enum ContentBlockKind: Equatable {
         case let (.toolCallGroup(lCalls), .toolCallGroup(rCalls)):
             return lCalls == rCalls
 
-        case let (.thinking(lIdx, lText, lStream), .thinking(rIdx, rText, rStream)):
+        case let (.thinking(lIdx, lText, lStream, lDur), .thinking(rIdx, rText, rStream, rDur)):
             // Same optimization as paragraph
-            guard lIdx == rIdx && lStream == rStream else { return false }
+            guard lIdx == rIdx && lStream == rStream && lDur == rDur else { return false }
             guard lText.count == rText.count else { return false }
             return lText == rText
 
@@ -196,13 +196,18 @@ struct ContentBlock: Identifiable, Equatable, Hashable {
         )
     }
 
-    static func thinking(turnId: UUID, index: Int, text: String, isStreaming: Bool, position: BlockPosition)
-        -> ContentBlock
-    {
+    static func thinking(
+        turnId: UUID,
+        index: Int,
+        text: String,
+        isStreaming: Bool,
+        duration: TimeInterval?,
+        position: BlockPosition
+    ) -> ContentBlock {
         ContentBlock(
             id: "think-\(turnId.uuidString)-\(index)",
             turnId: turnId,
-            kind: .thinking(index: index, text: text, isStreaming: isStreaming),
+            kind: .thinking(index: index, text: text, isStreaming: isStreaming, duration: duration),
             position: position
         )
     }
@@ -380,6 +385,7 @@ extension ContentBlock {
                         index: 0,
                         text: turn.thinking,
                         isStreaming: isStreaming && !hasVisibleContent,
+                        duration: turn.thinkingDuration,
                         position: .middle
                     )
                 )
@@ -412,6 +418,7 @@ extension ContentBlock {
                             index: 0,
                             text: "",
                             isStreaming: true,
+                            duration: nil,
                             position: .middle
                         )
                     )

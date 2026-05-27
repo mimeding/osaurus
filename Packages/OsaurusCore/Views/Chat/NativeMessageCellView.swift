@@ -1177,11 +1177,12 @@ final class NativeMessageCellView: NSTableCellView {
                 sameKind: sameKind
             )
 
-        case let .thinking(_, text, isStreaming):
+        case let .thinking(_, text, isStreaming, duration):
             configureAsThinking(
                 block: block,
                 text: text,
                 isStreaming: isStreaming,
+                duration: duration,
                 context: context,
                 sameKind: sameKind
             )
@@ -1388,6 +1389,7 @@ final class NativeMessageCellView: NSTableCellView {
         block: ContentBlock,
         text: String,
         isStreaming: Bool,
+        duration: TimeInterval?,
         context: CellRenderingContext,
         sameKind: Bool
     ) {
@@ -1405,7 +1407,7 @@ final class NativeMessageCellView: NSTableCellView {
         }
         let tv = nativeThinkingView!
         let thinkingLen: Int?
-        if case .thinking(_, _, _) = block.kind { thinkingLen = text.count } else { thinkingLen = nil }
+        if case .thinking = block.kind { thinkingLen = text.count } else { thinkingLen = nil }
 
         let isExpanded = context.expandedIds.contains(block.id)
         tv.configure(
@@ -1414,6 +1416,7 @@ final class NativeMessageCellView: NSTableCellView {
             width: context.width - 32,
             isStreaming: isStreaming,
             isExpanded: isExpanded,
+            duration: duration,
             theme: context.theme,
             blockId: block.id,
             onToggle: { [weak self] in
@@ -2287,7 +2290,7 @@ enum NativeCellHeightEstimator {
             // node row + 8pt bottom inset, node centered at the same Y as a group row.
             return NativeToolCallRowView.rowHeaderHeight + 8
 
-        case let .thinking(_, text, _):
+        case let .thinking(_, text, _, _):
             if !isExpanded { return 56 }
             let innerW = max(width - 64, 100)
             let charsPerLine = max(Int(innerW / 7), 20)

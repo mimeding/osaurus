@@ -86,7 +86,7 @@ private struct GenerativeGreetingTrigger: ViewModifier {
     /// the mock instead of calling the model — flip it back to `false` (or set
     /// env `OSAURUS_MOCK_STREAM=1` to enable without editing code) when done.
     enum MockToolStream {
-        static let forceEnabled = true
+        static let forceEnabled = false
         static var enabled: Bool {
             forceEnabled || ProcessInfo.processInfo.environment["OSAURUS_MOCK_STREAM"] == "1"
         }
