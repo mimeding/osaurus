@@ -1454,6 +1454,7 @@ final class NativeMessageCellView: NSTableCellView {
             expandedIds: context.expandedIds,
             width: context.width - 32,
             theme: context.theme,
+            isStreaming: context.isStreaming,
             onToggle: { id in context.onToggleExpand(id) },
             onHeightChanged: { [weak self] in
                 guard let self, let gv = self.nativeToolCallGroupView, let id = self.currentBlockId else { return }

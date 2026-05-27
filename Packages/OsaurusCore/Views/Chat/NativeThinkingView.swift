@@ -48,10 +48,6 @@ final class NativeThinkingView: NSView {
     var onToggle: (() -> Void)?
     var onHeightChanged: (() -> Void)?
 
-    // MARK: Colors
-
-    private let thinkingTint = NSColor(red: 0.55, green: 0.45, blue: 0.85, alpha: 1)
-
     // MARK: Init
 
     override init(frame: NSRect) {
@@ -99,17 +95,23 @@ final class NativeThinkingView: NSView {
 
         let charCount = thinkingLength ?? thinking.count
 
+        // Thinking chrome follows the current theme's text color.
+        let tint = NSColor(theme.primaryText)
         let titleFont = NSFont.systemFont(ofSize: CGFloat(theme.captionSize), weight: .semibold)
         titleLabel.font = titleFont
-        titleLabel.textColor = thinkingTint
+        titleLabel.textColor = tint
+
+        iconView.contentTintColor = tint
+        iconNode.layer?.backgroundColor = tint.withAlphaComponent(0.15).cgColor
+        iconNode.layer?.borderColor = tint.withAlphaComponent(0.55).cgColor
 
         // While streaming, shimmer the "Thinking" title; otherwise show it static.
         if isStreaming {
             shimmerLabel.configure(
                 text: titleLabel.stringValue,
                 font: titleFont,
-                baseColor: thinkingTint.withAlphaComponent(0.45),
-                highlightColor: thinkingTint
+                baseColor: tint.withAlphaComponent(0.45),
+                highlightColor: tint
             )
             titleLabel.isHidden = true
             shimmerLabel.isHidden = false
@@ -127,9 +129,6 @@ final class NativeThinkingView: NSView {
 
         updateChevron(expanded: isExpanded, animated: isExpanded != self.isExpanded)
         self.isExpanded = isExpanded
-
-        // Borderless: node/glyph chrome is static (set once in buildViews()),
-        // so configure() does not touch layer colors per streaming token.
 
         contentContainer.isHidden = !isExpanded
         separatorView.isHidden = !isExpanded
@@ -184,18 +183,19 @@ final class NativeThinkingView: NSView {
         addSubview(headerButton)
 
         // Circular node (tinted fill + ring), matching the tool timeline nodes.
+        // Colors are applied per-theme in configure(); these are neutral defaults.
         iconNode.translatesAutoresizingMaskIntoConstraints = false
         iconNode.wantsLayer = true
         iconNode.layer?.cornerRadius = 14
         iconNode.layer?.borderWidth = 1.5
-        iconNode.layer?.backgroundColor = thinkingTint.withAlphaComponent(0.15).cgColor
-        iconNode.layer?.borderColor = thinkingTint.withAlphaComponent(0.55).cgColor
+        iconNode.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.15).cgColor
+        iconNode.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.55).cgColor
         addSubview(iconNode)
 
         // glyph in the node foreground
         iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
-        iconView.contentTintColor = thinkingTint
+        iconView.image = NSImage(systemSymbolName: "brain", accessibilityDescription: nil)
+        iconView.contentTintColor = NSColor.labelColor
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconNode.addSubview(iconView)
 

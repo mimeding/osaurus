@@ -80,6 +80,19 @@ private struct GenerativeGreetingTrigger: ViewModifier {
     }
 }
 
+#if DEBUG
+    /// Debug-only switch for the canned tool-call timeline used to test the
+    /// tool-call rail animation. With `forceEnabled = true`, every send streams
+    /// the mock instead of calling the model — flip it back to `false` (or set
+    /// env `OSAURUS_MOCK_STREAM=1` to enable without editing code) when done.
+    enum MockToolStream {
+        static let forceEnabled = true
+        static var enabled: Bool {
+            forceEnabled || ProcessInfo.processInfo.environment["OSAURUS_MOCK_STREAM"] == "1"
+        }
+    }
+#endif
+
 @MainActor
 final class ChatSession: ObservableObject {
     @Published var turns: [ChatTurn] = []
@@ -1814,6 +1827,101 @@ final class ChatSession: ObservableObject {
         return (capturedInvocations, currentTurn)
     }
 
+    #if DEBUG
+        /// Streams a fixed sequence of tool calls (no model) so the tool-call
+        /// timeline + rail draw-in animation can be tested by just pressing enter.
+        /// Each step appends a single-call assistant turn (mirroring the real
+        /// agent loop's one-call-per-turn shape); consecutive turns coalesce into
+        /// one timeline group, and each new call triggers the connector animation.
+        @MainActor
+        private func streamMockToolTimeline(runId: UUID, firstTurn: ChatTurn) async {
+            func pause(_ seconds: Double) async {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            }
+
+            // Tools that render as plain timeline nodes (avoid render_chart /
+            // share_artifact / agent-loop tools, which become specialised blocks).
+            let steps:
+                [(name: String, args: String, result: String)] = [
+                    (
+                        "db_insert",
+                        #"{"table":"food_log","row":{"name":"Oatmeal","calories":320}}"#,
+                        #"{"ok":true,"id":1}"#
+                    ),
+                    (
+                        "db_insert",
+                        #"{"table":"food_log","row":{"name":"Black coffee","calories":5}}"#,
+                        #"{"ok":true,"id":2}"#
+                    ),
+                    (
+                        "db_query",
+                        #"{"sql":"SELECT SUM(calories) AS total FROM food_log"}"#,
+                        #"{"total":325}"#
+                    ),
+                    ("file_read", #"{"path":"notes/diet.md"}"#, #"{"bytes":1840}"#),
+                    ("search_memory", #"{"query":"calorie target"}"#, #"{"hits":2}"#),
+                ]
+
+            // Longer thinking pass (lorem ipsum) so the thinking block can be
+            // exercised at a realistic length.
+            let mockThinking = """
+                Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod \
+                tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, \
+                quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo \
+                consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse \
+                cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non \
+                proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+                """
+            for ch in mockThinking {
+                guard isRunActive(runId) else { return }
+                firstTurn.appendThinkingAndNotify(String(ch))
+                rebuildVisibleBlocks()
+                await pause(0.006)
+            }
+            await pause(0.3)
+
+            for (i, step) in steps.enumerated() {
+                guard isRunActive(runId) else { return }
+                // First call reuses the leading assistant turn; the rest get their own.
+                let turn = i == 0 ? firstTurn : ChatTurn(role: .assistant, content: "")
+                if i != 0 { turns.append(turn) }
+
+                let callId = "mock-\(runId.uuidString.prefix(6))-\(i)"
+                turn.toolCalls = [
+                    ToolCall(
+                        id: callId,
+                        type: "function",
+                        function: ToolCallFunction(name: step.name, arguments: step.args)
+                    )
+                ]
+                rebuildVisibleBlocks()  // running (shimmer) + connector draws in for calls 2+
+                await pause(0.9)
+
+                guard isRunActive(runId) else { return }
+                turn.toolResults[callId] = step.result
+                turn.notifyContentChanged()
+                rebuildVisibleBlocks()  // node completes → past-tense title
+                await pause(0.5)
+            }
+
+            // Final assistant text turn, with stats so the footer appears once.
+            guard isRunActive(runId) else { return }
+            let finalTurn = ChatTurn(role: .assistant, content: "")
+            turns.append(finalTurn)
+            for ch in "Logged 2 items — your total so far is 325 calories." {
+                guard isRunActive(runId) else { return }
+                finalTurn.appendContentAndNotify(String(ch))
+                rebuildVisibleBlocks()
+                await pause(0.015)
+            }
+            finalTurn.completedAt = Date()
+            finalTurn.timeToFirstToken = 0.12
+            finalTurn.generationTokensPerSecond = 92
+            finalTurn.generationTokenCount = 64
+            rebuildVisibleBlocks()
+        }
+    #endif
+
     func send(_ text: String, attachments: [Attachment] = []) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasContent = !trimmed.isEmpty || !attachments.isEmpty
@@ -1895,6 +2003,17 @@ final class ChatSession: ObservableObject {
             // Must refresh block memoizer before first delta — otherwise visibleBlocks stays
             // user-only while isStreaming is true and the table early-returns without assistant rows.
             rebuildVisibleBlocks()
+
+            #if DEBUG
+                // Dev aid: stream a canned tool-call timeline instead of the real
+                // model so the tool-call rail animation can be exercised on demand.
+                // Toggle via `MockToolStream.forceEnabled` (or env OSAURUS_MOCK_STREAM=1).
+                if MockToolStream.enabled {
+                    await streamMockToolTimeline(runId: runId, firstTurn: assistantTurn)
+                    return  // `defer { finalizeRun(...) }` handles cleanup
+                }
+            #endif
+
             #if DEBUG
                 let ttftTrace: TTFTTrace? = TTFTTrace()
             #else
