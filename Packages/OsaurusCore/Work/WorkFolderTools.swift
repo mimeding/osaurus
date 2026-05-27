@@ -32,13 +32,47 @@ enum WorkFolderToolError: LocalizedError {
 
 /// Shared utilities for folder tools
 enum WorkFolderToolHelpers {
-    /// Resolve and validate a relative path, ensuring it's within rootPath
+    /// Resolve and validate a relative path, ensuring it's within rootPath.
+    ///
+    /// The check runs twice:
+    ///
+    /// 1. After lexical `.standardized` normalization, which collapses `..`
+    ///    segments and removes redundant `/./`. This catches the
+    ///    overwhelmingly common case of an agent emitting `"../etc/passwd"`.
+    /// 2. After `.resolvingSymlinksInPath()`, which follows any symbolic
+    ///    links along the resolved path. Without this second pass an
+    ///    attacker (or a careless project layout) could plant a symlink
+    ///    inside the work root that points outside it; the agent would
+    ///    then read or write through that link believing it's contained.
+    ///
+    /// The work-root prefix used for the containment test is itself
+    /// symlink-resolved so the comparison is apples-to-apples — otherwise
+    /// a project whose root is itself reached through a symlink (a common
+    /// macOS pattern, e.g. `/var` → `/private/var`) would incorrectly
+    /// fail containment.
     static func resolvePath(_ relativePath: String, rootPath: URL) throws -> URL {
         let cleanPath = relativePath.hasPrefix("/") ? String(relativePath.dropFirst()) : relativePath
         let resolvedURL = rootPath.appendingPathComponent(cleanPath).standardized
         let rootPathString = rootPath.standardized.path
 
         guard resolvedURL.path.hasPrefix(rootPathString) else {
+            throw WorkFolderToolError.pathOutsideRoot(relativePath)
+        }
+
+        // Symlink-aware re-check. Containment is enforced even if the
+        // resolved path traverses a symlink that exits the work root.
+        // Compare against a symlink-resolved root so projects whose root
+        // is itself reached through a symlink don't fail spuriously.
+        let symlinkResolvedURL = resolvedURL.resolvingSymlinksInPath()
+        let symlinkResolvedRoot = rootPath.resolvingSymlinksInPath().standardized.path
+        let rootWithSeparator =
+            symlinkResolvedRoot.hasSuffix("/") ? symlinkResolvedRoot : symlinkResolvedRoot + "/"
+
+        let resolvedPath = symlinkResolvedURL.path
+        let isInside =
+            resolvedPath == symlinkResolvedRoot
+            || resolvedPath.hasPrefix(rootWithSeparator)
+        guard isInside else {
             throw WorkFolderToolError.pathOutsideRoot(relativePath)
         }
         return resolvedURL
