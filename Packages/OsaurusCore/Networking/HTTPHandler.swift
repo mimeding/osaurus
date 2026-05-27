@@ -2010,14 +2010,22 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     session_id: req.session_id
                 )
 
-                var responseContent = ""
+                // Accumulate deltas in an array and join once at the end.
+                // The previous `responseContent += delta` formed the assistant
+                // turn via repeated `String` concatenation, which is O(n^2) in
+                // the number of streamed characters because each `+=` builds a
+                // fresh `String` storage. Long agent turns (especially on /run
+                // SSE) made this measurable on top of inference latency.
+                var deltaBuffer: [String] = []
+                var accumulatedLength = 0
                 var toolInvoked: ServiceToolInvocation?
 
                 do {
                     let stream = try await chatEngine.streamChat(request: iterationReq)
                     for try await delta in stream {
                         if StreamingToolHint.isSentinel(delta) { continue }
-                        responseContent += delta
+                        deltaBuffer.append(delta)
+                        accumulatedLength += delta.utf8.count
                         hop {
                             writerBound.value.writeContent(
                                 delta,
@@ -2047,8 +2055,18 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     return
                 }
 
+                // Materialize the full assistant text exactly once. Single
+                // allocation: `String.reserveCapacity` + chunk-by-chunk
+                // append is O(n) versus the O(n^2) cost of `+=` on the
+                // streaming hot path. The tool-invocation branch below
+                // reads this too (as the assistant's pre-tool-call text),
+                // so it has to live outside the `guard`.
+                var responseContent = String()
+                responseContent.reserveCapacity(accumulatedLength)
+                for chunk in deltaBuffer { responseContent.append(chunk) }
+
                 guard let invocation = toolInvoked else {
-                    // Final text response — done
+                    // Final text response — done.
                     messages.append(ChatMessage(role: "assistant", content: responseContent))
                     break
                 }
