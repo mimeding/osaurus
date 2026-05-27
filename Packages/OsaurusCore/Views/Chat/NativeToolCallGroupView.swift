@@ -317,23 +317,22 @@ final class RailLineView: NSView {
     private var drawPending = false
     private var pendingDelay: CFTimeInterval = 0
 
+    /// Backing layer (returned from `makeBackingLayer`) — kept typed so we never
+    /// need to force-cast `layer`.
+    private let shape = CAShapeLayer()
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        shape.lineWidth = 2
+        shape.lineCap = .round
+        shape.fillColor = NSColor.clear.cgColor
+        shape.strokeEnd = 1
         wantsLayer = true
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func makeBackingLayer() -> CALayer {
-        let l = CAShapeLayer()
-        l.lineWidth = 2
-        l.lineCap = .round
-        l.fillColor = NSColor.clear.cgColor
-        l.strokeEnd = 1
-        return l
-    }
-
-    private var shape: CAShapeLayer { layer as! CAShapeLayer }
+    override func makeBackingLayer() -> CALayer { shape }
 
     var color: CGColor? {
         get { shape.strokeColor }
@@ -411,21 +410,20 @@ final class TimelineNodeView: NSView {
     private var drawPending = false
     private var pendingDelay: CFTimeInterval = 0
 
+    /// Backing layer (returned from `makeBackingLayer`) — kept typed so we never
+    /// need to force-cast `layer`.
+    private let shape = CAShapeLayer()
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        shape.lineWidth = 1.5
+        shape.strokeEnd = 1
         wantsLayer = true
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func makeBackingLayer() -> CALayer {
-        let l = CAShapeLayer()
-        l.lineWidth = 1.5
-        l.strokeEnd = 1
-        return l
-    }
-
-    private var shape: CAShapeLayer { layer as! CAShapeLayer }
+    override func makeBackingLayer() -> CALayer { shape }
 
     var fillColor: CGColor? {
         get { shape.fillColor }
