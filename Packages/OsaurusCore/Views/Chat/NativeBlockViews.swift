@@ -360,7 +360,7 @@ final class NativePendingToolCallView: NSView {
         // the pending → running-group → done transition is seamless — no args
         // box flashing in and out. `argPreview`/`argSize` are unused.
         shimmerLabel.configure(
-            text: ToolDisplayName.friendly(for: toolName),
+            text: ToolDisplayName.friendly(for: toolName, running: true),
             font: NSFont.systemFont(ofSize: 12, weight: .semibold),
             baseColor: NSColor(theme.primaryText).withAlphaComponent(0.4),
             highlightColor: NSColor(theme.primaryText)
