@@ -1533,6 +1533,11 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             requestBodyString = nil
         }
 
+        // Resolve the remote IP for the per-IP rate limit. UNIX-socket and
+        // unknown-address callers are bucketed under a sentinel so a misconfig
+        // can't grant "unknown" callers unlimited /pair attempts.
+        let remoteIPForGuard = context.channel.remoteAddress?.ipAddress ?? "unknown"
+
         guard let req = try? JSONDecoder().decode(PairRequest.self, from: data) else {
             var headers = [("Content-Type", "application/json; charset=utf-8")]
             headers.append(contentsOf: stateRef.value.corsHeaders)
@@ -1545,6 +1550,29 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 requestBody: requestBodyString,
                 responseBody: body,
                 responseStatus: 400,
+                startTime: startTime
+            )
+            return
+        }
+
+        // Rate-limit before we spend cycles on signature verification. A
+        // misbehaving or hostile LAN peer that floods /pair shouldn't be
+        // able to keep the event loop busy with secp256k1 recoveries.
+        if !PairingReplayGuard.shared.allowAttempt(ip: remoteIPForGuard) {
+            var headers = [("Content-Type", "application/json; charset=utf-8")]
+            headers.append(contentsOf: stateRef.value.corsHeaders)
+            let body = #"{"error":"Too many pairing attempts. Try again later."}"#
+            sendResponse(
+                context: context, version: head.version, status: .tooManyRequests,
+                headers: headers, body: body
+            )
+            logRequest(
+                method: "POST",
+                path: "/pair",
+                userAgent: userAgent,
+                requestBody: requestBodyString,
+                responseBody: body,
+                responseStatus: 429,
                 startTime: startTime
             )
             return
@@ -1578,6 +1606,39 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     var headers = [("Content-Type", "application/json; charset=utf-8")]
                     headers.append(contentsOf: cors)
                     let body = #"{"error":"Signature verification failed"}"#
+                    self.sendResponse(
+                        context: ctx.value,
+                        version: head.version,
+                        status: .unauthorized,
+                        headers: headers,
+                        body: body
+                    )
+                    logSelf.logRequest(
+                        method: "POST",
+                        path: "/pair",
+                        userAgent: logUserAgent,
+                        requestBody: logRequestBody,
+                        responseBody: body,
+                        responseStatus: 401,
+                        startTime: logStartTime
+                    )
+                }
+                return
+            }
+
+            // 1b. Single-use nonce. Reject if (connectorAddress, nonce) has
+            //     already been consumed within the replay window. Without
+            //     this, an attacker who captured a valid pairing request
+            //     could replay it to mint a new master key for themselves;
+            //     the signature alone proves only that the original
+            //     connector approved *some* pairing — not *this* attempt.
+            if !PairingReplayGuard.shared.consumeNonce(
+                connector: req.connectorAddress, nonce: req.nonce)
+            {
+                hop {
+                    var headers = [("Content-Type", "application/json; charset=utf-8")]
+                    headers.append(contentsOf: cors)
+                    let body = #"{"error":"Replayed pairing request"}"#
                     self.sendResponse(
                         context: ctx.value,
                         version: head.version,
