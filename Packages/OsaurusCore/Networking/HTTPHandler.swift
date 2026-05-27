@@ -2055,13 +2055,18 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     return
                 }
 
+                // Materialize the full assistant text exactly once. Single
+                // allocation: `String.reserveCapacity` + chunk-by-chunk
+                // append is O(n) versus the O(n^2) cost of `+=` on the
+                // streaming hot path. The tool-invocation branch below
+                // reads this too (as the assistant's pre-tool-call text),
+                // so it has to live outside the `guard`.
+                var responseContent = String()
+                responseContent.reserveCapacity(accumulatedLength)
+                for chunk in deltaBuffer { responseContent.append(chunk) }
+
                 guard let invocation = toolInvoked else {
-                    // Final text response — done. Single allocation here:
-                    // `String.reserveCapacity` + `join` is O(n) versus the
-                    // O(n^2) cost of repeated `+=` on the streaming hot path.
-                    var responseContent = String()
-                    responseContent.reserveCapacity(accumulatedLength)
-                    for chunk in deltaBuffer { responseContent.append(chunk) }
+                    // Final text response — done.
                     messages.append(ChatMessage(role: "assistant", content: responseContent))
                     break
                 }
