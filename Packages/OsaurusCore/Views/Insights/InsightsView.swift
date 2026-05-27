@@ -38,8 +38,9 @@ struct InsightsView: View {
                 .padding(.top, 16)
                 .opacity(hasAppeared ? 1 : 0)
 
-            // Request logs
-            if insightsService.filteredLogs.isEmpty {
+            // Request logs. displayedLogs is the debounced cache; see
+            // statsBar comment for why this matters.
+            if insightsService.displayedLogs.isEmpty {
                 emptyStateView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(hasAppeared ? 1 : 0)
@@ -135,7 +136,10 @@ struct InsightsView: View {
     // MARK: - Stats Bar
 
     private var statsBar: some View {
-        let stats = insightsService.stats
+        // displayedStats is a debounced, Combine-driven cache. Reading it
+        // here means typing in the search field doesn't trigger an O(n)
+        // stats recompute on every keystroke (was: `insightsService.stats`).
+        let stats = insightsService.displayedStats
 
         return HStack(spacing: 0) {
             StatPill(
@@ -247,10 +251,18 @@ struct InsightsView: View {
             Divider()
                 .background(theme.primaryBorder.opacity(0.3))
 
-            // Log rows
+            // Log rows. displayedLogs is the Combine-driven, debounced
+            // mirror of `filteredLogs`. SwiftUI re-evaluates `body` whenever
+            // an @Published property of `insightsService` changes; reading
+            // the displayedLogs cache here keeps that work O(1) at body
+            // time and shifts the O(n) filter pass onto the debounced
+            // background pipeline. Cache `displayedLogs` locally so we
+            // don't index it twice per row.
+            let logsForDisplay = insightsService.displayedLogs
+            let lastLogId = logsForDisplay.last?.id
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(insightsService.filteredLogs) { log in
+                    ForEach(logsForDisplay) { log in
                         RequestLogRow(
                             log: log,
                             isExpanded: selectedLogId == log.id,
@@ -265,7 +277,7 @@ struct InsightsView: View {
                             }
                         )
 
-                        if log.id != insightsService.filteredLogs.last?.id {
+                        if log.id != lastLogId {
                             Divider()
                                 .background(theme.primaryBorder.opacity(0.2))
                                 .padding(.horizontal, 24)
