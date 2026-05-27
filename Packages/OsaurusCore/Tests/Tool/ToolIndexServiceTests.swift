@@ -83,6 +83,35 @@ struct ToolDatabaseTests {
         #expect(all.count == 3)
     }
 
+    @Test func loadEntriesByIdsReturnsOnlyRequested() throws {
+        let db = try makeTempDB()
+        try db.upsertEntry(sampleEntry(id: "a", name: "alpha"))
+        try db.upsertEntry(sampleEntry(id: "b", name: "beta"))
+        try db.upsertEntry(sampleEntry(id: "c", name: "gamma"))
+
+        let subset = try db.loadEntries(ids: ["a", "c"])
+        #expect(subset.count == 2)
+        let ids = Set(subset.map { $0.id })
+        #expect(ids == ["a", "c"])
+    }
+
+    @Test func loadEntriesByIdsEmptyInputSkipsQuery() throws {
+        let db = try makeTempDB()
+        try db.upsertEntry(sampleEntry(id: "a", name: "alpha"))
+
+        let result = try db.loadEntries(ids: [])
+        #expect(result.isEmpty)
+    }
+
+    @Test func loadEntriesByIdsIgnoresUnknownIds() throws {
+        let db = try makeTempDB()
+        try db.upsertEntry(sampleEntry(id: "a", name: "alpha"))
+
+        let result = try db.loadEntries(ids: ["a", "does-not-exist", "also-not-here"])
+        #expect(result.count == 1)
+        #expect(result.first?.id == "a")
+    }
+
     @Test func entryCountIsAccurate() throws {
         let db = try makeTempDB()
         #expect(try db.entryCount() == 0)
