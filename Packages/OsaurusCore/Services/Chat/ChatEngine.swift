@@ -175,6 +175,8 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
                 maxTokens: maxTok
             )
 
+        case .unavailable(let requested):
+            throw EngineError(kind: .noServiceAvailable(requested: requested))
         case .none:
             throw EngineError(kind: .modelNotFound(requested: request.model))
         }
@@ -486,6 +488,8 @@ actor ChatEngine: Sendable, ChatEngineProtocol {
                 usage: usage,
                 system_fingerprint: nil
             )
+        case .unavailable(let requested):
+            throw EngineError(kind: .noServiceAvailable(requested: requested))
         case .none:
             throw EngineError(kind: .modelNotFound(requested: request.model))
         }

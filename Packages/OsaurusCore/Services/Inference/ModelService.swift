@@ -202,7 +202,16 @@ protocol ToolCapableService: ModelService {
 
 /// Simple router that selects a service based on the request and environment.
 enum ModelRoute {
+    /// A service is available and will handle this request.
     case service(service: ModelService, effectiveModel: String)
+    /// A service is configured to handle this model id but reports
+    /// `isAvailable() == false` (e.g. foundation models on hardware that
+    /// doesn't support them, or a backend temporarily unhealthy). API layers
+    /// should respond with 503, not 404, so clients know to retry instead of
+    /// reinstalling.
+    case unavailable(requestedModel: String)
+    /// Nothing in the candidate set claims to handle this model id at all.
+    /// API layers should respond with 404.
     case none
 }
 
@@ -212,6 +221,13 @@ struct ModelServiceRouter {
     ///   - requestedModel: Model string requested by client. "default" or empty means system default.
     ///   - services: Candidate services to consider (default includes FoundationModels service when present).
     ///   - remoteServices: Optional array of remote provider services to also consider.
+    ///
+    /// Note on remote providers: callers are expected to pass the *connected*
+    /// remote services list. A configured-but-disconnected remote provider
+    /// is not visible to this router, so its absence is reported as `.none`.
+    /// Distinguishing "remote provider exists but is offline" requires
+    /// `RemoteProviderManager` to track configured-but-disconnected services,
+    /// which is a separate change.
     static func resolve(
         requestedModel: String?,
         services: [ModelService],
@@ -219,31 +235,43 @@ struct ModelServiceRouter {
     ) -> ModelRoute {
         let trimmed = requestedModel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let isDefault = trimmed.isEmpty || trimmed.caseInsensitiveCompare("default") == .orderedSame
+        var sawHandlerButUnavailable = false
 
         // First, check remote provider services (they use prefixed model names like "openai/gpt-4")
         // These take priority for explicit model requests with provider prefixes
         if !isDefault {
             for svc in remoteServices {
-                guard svc.isAvailable() else { continue }
                 if svc.handles(requestedModel: trimmed) {
-                    return .service(service: svc, effectiveModel: trimmed)
+                    if svc.isAvailable() {
+                        return .service(service: svc, effectiveModel: trimmed)
+                    }
+                    sawHandlerButUnavailable = true
                 }
             }
         }
 
         // Then check local services
         for svc in services {
-            guard svc.isAvailable() else { continue }
             // Route default to a service that handles it
             if isDefault && svc.handles(requestedModel: requestedModel) {
-                return .service(service: svc, effectiveModel: "foundation")
+                if svc.isAvailable() {
+                    return .service(service: svc, effectiveModel: "foundation")
+                }
+                sawHandlerButUnavailable = true
+                continue
             }
             // Allow explicit "foundation" (or other service-specific id) to select the service
-            if svc.handles(requestedModel: trimmed), !isDefault {
-                return .service(service: svc, effectiveModel: trimmed)
+            if !isDefault && svc.handles(requestedModel: trimmed) {
+                if svc.isAvailable() {
+                    return .service(service: svc, effectiveModel: trimmed)
+                }
+                sawHandlerButUnavailable = true
             }
         }
 
+        if sawHandlerButUnavailable {
+            return .unavailable(requestedModel: trimmed.isEmpty ? "default" : trimmed)
+        }
         return .none
     }
 }
