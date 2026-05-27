@@ -147,7 +147,11 @@ public actor CoreModelService {
                 parameters: params,
                 requestedModel: model
             )
-        case .none:
+        case .unavailable, .none:
+            // CoreModelError doesn't currently distinguish "unavailable" vs
+            // "unknown" — both surface as `modelUnavailable`. Public API
+            // consumers go through ChatEngine, which does have the
+            // distinction (.modelNotFound vs .noServiceAvailable).
             throw CoreModelError.modelUnavailable(model)
         }
     }
