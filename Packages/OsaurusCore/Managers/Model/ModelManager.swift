@@ -188,7 +188,27 @@ final class ModelManager: NSObject, ObservableObject {
 
         // Pull the OsaurusAI HF org listing once on launch so newly published
         // models surface in the Recommended tab without requiring a code push.
-        Task { [weak self] in await self?.loadOsaurusAIOrgModels() }
+        //
+        // The unit-test runner constructs `ModelManager()` repeatedly to drive
+        // `applyOsaurusOrgFetch` directly. If the launch-time HF fetch races
+        // with those test calls, whichever finishes last wins and the merge
+        // result is non-deterministic — that's the regression class behind
+        // `ModelManagerSuggestedTests/applyOsaurusOrgFetch_*` flaking in CI.
+        // Skip the background fetch under XCTest; production launches still
+        // get it because `XCTestConfigurationFilePath` is only set inside
+        // a test host.
+        if !Self.isRunningInTestEnvironment {
+            Task { [weak self] in await self?.loadOsaurusAIOrgModels() }
+        }
+    }
+
+    /// True when the current process was launched by xctest. Used to gate
+    /// network-touching launch-time side effects so tests can drive the
+    /// affected code paths deterministically.
+    nonisolated private static var isRunningInTestEnvironment: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
     }
 
     // MARK: - Public Methods
