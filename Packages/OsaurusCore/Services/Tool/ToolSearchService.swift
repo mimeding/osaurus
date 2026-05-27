@@ -134,8 +134,12 @@ public actor ToolSearchService {
             }
 
             let toolIdSet = Set(toolIds)
-            let entries = try ToolDatabase.shared.loadAllEntries()
-                .filter { toolIdSet.contains($0.id) && enabledNames.contains($0.name) }
+            // Pull just the candidate rows from the tool_index table instead
+            // of paging in every row and filtering in Swift. On a large tool
+            // catalogue (plugin-heavy workspaces, large MCP bundles) this
+            // changes per-query cost from O(catalog_size) to O(candidates).
+            let entries = try ToolDatabase.shared.loadEntries(ids: toolIdSet)
+                .filter { enabledNames.contains($0.name) }
             let entryById = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
             return Array(

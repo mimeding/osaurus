@@ -335,6 +335,37 @@ public final class ToolDatabase: @unchecked Sendable {
         return entries
     }
 
+    /// Load only the entries whose `id` is in `ids`. Used by `ToolSearchService`
+    /// which already has a small candidate set returned by VecturaKit; without
+    /// this method it has to call `loadAllEntries()` and filter in Swift —
+    /// every RAG-style tool query then pays the cost of reading and decoding
+    /// every row in `tool_index`, which is O(catalog_size) per query.
+    ///
+    /// The generated SQL uses `IN (?, ?, ?, …)` with a placeholder per id;
+    /// SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` (999) bounds the safe
+    /// batch size, far above any realistic search-candidate count.
+    public func loadEntries(ids: Set<String>) throws -> [ToolIndexEntry] {
+        guard !ids.isEmpty else { return [] }
+        let idArray = Array(ids)
+        let placeholders = Array(repeating: "?", count: idArray.count).joined(separator: ",")
+        let sql = "SELECT \(Self.columns) FROM tool_index WHERE id IN (\(placeholders))"
+        var entries: [ToolIndexEntry] = []
+        try prepareAndExecute(
+            sql,
+            bind: { stmt in
+                for (i, id) in idArray.enumerated() {
+                    Self.bindText(stmt, index: Int32(i + 1), value: id)
+                }
+            },
+            process: { stmt in
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    entries.append(Self.readEntry(from: stmt))
+                }
+            }
+        )
+        return entries
+    }
+
     public func entryCount() throws -> Int {
         var count = 0
         try prepareAndExecute(
