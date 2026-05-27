@@ -1144,10 +1144,12 @@ final class ChatSession: ObservableObject {
                             }
                         }
 
-                        let totalTime = Date().timeIntervalSince(streamStartTime)
-                        print(
-                            "[Osaurus][UI] Stream consumption completed: \(uiDeltaCount) deltas in \(String(format: "%.2f", totalTime))s, final contentLen=\(assistantTurn.contentLength)"
-                        )
+                        #if DEBUG
+                            let totalTime = Date().timeIntervalSince(streamStartTime)
+                            print(
+                                "[Osaurus][UI] Stream consumption completed: \(uiDeltaCount) deltas in \(String(format: "%.2f", totalTime))s, final contentLen=\(assistantTurn.contentLength)"
+                            )
+                        #endif
 
                         break  // finished normally
                     } catch let inv as ServiceToolInvocation {
