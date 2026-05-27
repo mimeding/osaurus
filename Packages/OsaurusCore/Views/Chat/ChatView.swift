@@ -1475,10 +1475,14 @@ final class ChatSession: ObservableObject {
         for turn in turns where turn.role == .assistant {
             guard let calls = turn.toolCalls, !calls.isEmpty else { continue }
             for call in calls where turn.toolResults[call.id] == nil {
-                turn.toolResults[call.id] = ToolEnvelope.failure(
-                    kind: .executionError,
-                    message: "Stopped before completing.",
-                    tool: call.function.name
+                // `setToolResult` also records the elapsed-until-stop duration.
+                turn.setToolResult(
+                    ToolEnvelope.failure(
+                        kind: .executionError,
+                        message: "Stopped before completing.",
+                        tool: call.function.name
+                    ),
+                    for: call.id
                 )
             }
         }
@@ -1708,7 +1712,10 @@ final class ChatSession: ObservableObject {
                     currentTurn.clearPendingToolArgs()
                     if currentTurn.toolCalls == nil { currentTurn.toolCalls = [] }
                     currentTurn.toolCalls!.append(call)
-                    currentTurn.toolResults[done.callId] = done.result
+                    // Duration spans the pending-detect phase here (call + result
+                    // arrive together), so the timer started when `pendingToolName` set.
+                    currentTurn.markToolCallStarted(done.callId)
+                    currentTurn.setToolResult(done.result, for: done.callId)
                     let toolTurn = ChatTurn(role: .tool, content: done.result)
                     toolTurn.toolCallId = done.callId
                     let newAssistantTurn = ChatTurn(role: .assistant, content: "")
@@ -1915,6 +1922,7 @@ final class ChatSession: ObservableObject {
                         function: ToolCallFunction(name: step.name, arguments: step.args)
                     )
                 ]
+                turn.markToolCallStarted(callId)
                 rebuildVisibleBlocks()  // running (shimmer) + connector draws in for calls 2+
                 await pause(0.9)
 
@@ -1922,7 +1930,7 @@ final class ChatSession: ObservableObject {
                 // so the in-flight call is left without a result — completeRunCleanup()
                 // then marks it interrupted (red node, shimmer stopped).
                 guard isRunActive(runId) else { return }
-                turn.toolResults[callId] = step.result
+                turn.setToolResult(step.result, for: callId)
                 turn.notifyContentChanged()
                 rebuildVisibleBlocks()  // node completes → past-tense title
                 await pause(0.5)
@@ -2398,6 +2406,9 @@ final class ChatSession: ObservableObject {
                         assistantTurn.clearPendingToolArgs()
                         if assistantTurn.toolCalls == nil { assistantTurn.toolCalls = [] }
                         assistantTurn.toolCalls!.append(call)
+                        // Start the duration timer now; the call renders running
+                        // until `recordToolTurn` lands the result after execution.
+                        assistantTurn.markToolCallStarted(callId)
 
                         // Build the matching tool-result turn for this call.
                         // Every assistant `tool_use` MUST be paired with a
@@ -2410,7 +2421,7 @@ final class ChatSession: ObservableObject {
                         // there's only one place that gets the pairing right.
                         @discardableResult
                         func recordToolTurn(_ result: String) -> ChatTurn {
-                            assistantTurn.toolResults[callId] = result
+                            assistantTurn.setToolResult(result, for: callId)
                             let toolTurn = ChatTurn(role: .tool, content: result)
                             toolTurn.toolCallId = callId
                             return toolTurn

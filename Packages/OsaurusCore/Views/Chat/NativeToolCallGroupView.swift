@@ -880,12 +880,33 @@ final class NativeToolCallRowView: NSView {
             nameLabel.stringValue = item.call.function.name
             nameLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
             runningTitle = item.call.function.name
+            nameLabel.textColor = NSColor(theme.primaryText)
         } else {
-            nameLabel.stringValue = ToolDisplayName.friendly(for: item.call.function.name, running: false)
-            nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+            let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+            nameLabel.font = titleFont
+            let past = ToolDisplayName.friendly(for: item.call.function.name, running: false)
             runningTitle = ToolDisplayName.friendly(for: item.call.function.name, running: true)
+            // Append the recorded duration after an interpunct, dimmed.
+            if let elapsed = item.duration {
+                let s = NSMutableAttributedString(
+                    string: past,
+                    attributes: [.font: titleFont, .foregroundColor: NSColor(theme.primaryText)]
+                )
+                s.append(
+                    NSAttributedString(
+                        string: " · \(Self.formatElapsed(elapsed))",
+                        attributes: [
+                            .font: NSFont.systemFont(ofSize: 12, weight: .regular),
+                            .foregroundColor: NSColor(theme.tertiaryText),
+                        ]
+                    )
+                )
+                nameLabel.attributedStringValue = s
+            } else {
+                nameLabel.stringValue = past
+                nameLabel.textColor = NSColor(theme.primaryText)
+            }
         }
-        nameLabel.textColor = NSColor(theme.primaryText)
 
         // Node colors (status-driven) + running shimmer on the title.
         applyStatusAndShimmer()
@@ -1468,6 +1489,13 @@ final class NativeToolCallRowView: NSView {
         resultView = nil
 
         contentBottomToArgs?.isActive = true
+    }
+
+    /// Compact elapsed-time label: "320ms", "1.2s", or "1m 5s".
+    private static func formatElapsed(_ t: TimeInterval) -> String {
+        if t < 1 { return "\(Int((t * 1000).rounded()))ms" }
+        if t < 60 { return String(format: "%.1fs", t) }
+        return "\(Int(t) / 60)m \(Int(t) % 60)s"
     }
 
     /// A call is "running" while it has no result yet, or while a `speak` call

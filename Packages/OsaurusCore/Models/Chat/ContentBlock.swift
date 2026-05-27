@@ -19,9 +19,12 @@ enum BlockPosition: Equatable {
 struct ToolCallItem: Equatable {
     let call: ToolCall
     let result: String?
+    /// How long the call took to finish (seconds), shown as "· 1.2s". Nil until
+    /// measured / for calls whose duration wasn't recorded.
+    var duration: TimeInterval? = nil
 
     static func == (lhs: ToolCallItem, rhs: ToolCallItem) -> Bool {
-        lhs.call.id == rhs.call.id && lhs.result == rhs.result
+        lhs.call.id == rhs.call.id && lhs.result == rhs.result && lhs.duration == rhs.duration
     }
 }
 
@@ -482,7 +485,9 @@ extension ContentBlock {
                         flushRegularItems()
                         turnBlocks.append(.chart(turnId: turn.id, spec: spec.normalized, position: .middle))
                     } else {
-                        regularItems.append(ToolCallItem(call: call, result: result))
+                        regularItems.append(
+                            ToolCallItem(call: call, result: result, duration: turn.toolCallDurations[call.id])
+                        )
                     }
                 }
                 flushRegularItems()

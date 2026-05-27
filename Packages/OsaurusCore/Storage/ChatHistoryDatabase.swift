@@ -127,6 +127,7 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
         if current < 3 { try migrateToV3() }
         if current < 4 { try migrateToV4() }
         if current < 5 { try migrateToV5() }
+        if current < 6 { try migrateToV6() }
     }
 
     private func getSchemaVersion() throws -> Int {
@@ -228,6 +229,14 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
         try executeRaw("ALTER TABLE turns ADD COLUMN generation_token_count INTEGER")
         try executeRaw("ALTER TABLE turns ADD COLUMN time_to_first_token REAL")
         try setSchemaVersion(5)
+    }
+
+    /// v6: add `tool_call_durations` — a JSON map of `callId -> seconds` so the
+    /// chat UI can show "· 1.2s" next to each completed tool call after reload.
+    /// Nullable; legacy turns just surface no durations.
+    private func migrateToV6() throws {
+        try executeRaw("ALTER TABLE turns ADD COLUMN tool_call_durations TEXT")
+        try setSchemaVersion(6)
     }
 
     // MARK: - Public API: sessions
@@ -669,6 +678,9 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
         if let results = try? encoder.encode(turn.toolResults) {
             hasher.update(data: results)
         }
+        if !turn.toolCallDurations.isEmpty, let durations = try? encoder.encode(turn.toolCallDurations) {
+            hasher.update(data: durations)
+        }
         // Timing fields are part of the hash so that a turn whose
         // `completedAt` / token-count lands after the initial save still
         // triggers `upsertTurnsIncrementally` to write the updated row.
@@ -781,8 +793,9 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
         INSERT INTO turns
             (id, session_id, seq, role, content, attachments,
              tool_calls, tool_call_id, tool_results, thinking, content_hash,
-             created_at, completed_at, generation_token_count, time_to_first_token)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             created_at, completed_at, generation_token_count, time_to_first_token,
+             tool_call_durations)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         ON CONFLICT(id) DO UPDATE SET
             session_id             = excluded.session_id,
             seq                    = excluded.seq,
@@ -797,12 +810,14 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
             created_at             = excluded.created_at,
             completed_at           = excluded.completed_at,
             generation_token_count = excluded.generation_token_count,
-            time_to_first_token    = excluded.time_to_first_token
+            time_to_first_token    = excluded.time_to_first_token,
+            tool_call_durations    = excluded.tool_call_durations
         """
 
     private static let selectTurnsSQL = """
         SELECT id, role, content, attachments, tool_calls, tool_call_id, tool_results, thinking,
-               created_at, completed_at, generation_token_count, time_to_first_token
+               created_at, completed_at, generation_token_count, time_to_first_token,
+               tool_call_durations
         FROM turns
         WHERE session_id = ?1
         ORDER BY seq ASC
@@ -863,6 +878,10 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
         let completedAt = readNullableDate(stmt, index: 9)
         let tokenCount = readNullableInt(stmt, index: 10)
         let timeToFirstToken = readNullableDouble(stmt, index: 11)
+        let toolCallDurations: [String: TimeInterval] =
+            sqlite3_column_text(stmt, 12)
+            .map { String(cString: $0) }
+            .flatMap(decodeJSON) ?? [:]
         return ChatTurnData(
             id: UUID(uuidString: idStr) ?? UUID(),
             role: role,
@@ -871,6 +890,7 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
             toolCalls: toolCalls,
             toolCallId: toolCallId,
             toolResults: toolResults,
+            toolCallDurations: toolCallDurations,
             thinking: thinking,
             createdAt: createdAt,
             completedAt: completedAt,
@@ -916,6 +936,7 @@ public final class ChatHistoryDatabase: @unchecked Sendable {
         bindNullableDouble(stmt, index: 13, value: turn.completedAt?.timeIntervalSince1970)
         bindNullableInt(stmt, index: 14, value: turn.generationTokenCount)
         bindNullableDouble(stmt, index: 15, value: turn.timeToFirstToken)
+        bindText(stmt, index: 16, value: turn.toolCallDurations.isEmpty ? nil : encodeJSON(turn.toolCallDurations))
     }
 
     static func bindNullableDouble(_ stmt: OpaquePointer, index: Int, value: Double?) {
