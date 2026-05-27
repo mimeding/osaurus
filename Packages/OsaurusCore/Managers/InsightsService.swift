@@ -18,6 +18,15 @@ final class InsightsService: ObservableObject {
     /// Maximum number of logs to retain in memory
     private let maxLogCount: Int = 500
 
+    /// Debounce window applied to the search field. Long enough to skip a
+    /// typed character while the user is still typing, short enough to feel
+    /// instantaneous when they pause.
+    private static let searchDebounceMs: Int = 150
+
+    /// Coalescing window for raw-log -> stats / filtered-list updates. Keeps
+    /// the UI from doing N filter passes when a burst of requests arrives.
+    private static let recomputeDebounceMs: Int = 50
+
     // MARK: - Published State
 
     /// All logged requests (most recent first)
@@ -35,12 +44,100 @@ final class InsightsService: ObservableObject {
     /// Active filter for HTTP method
     @Published var methodFilter: MethodFilter = .all
 
-    // MARK: - Computed Properties
+    /// Cached, view-ready filtered list. Recomputed off the UI hot path via
+    /// the Combine pipeline in `init()`. SwiftUI views should read this
+    /// instead of the legacy computed `filteredLogs`.
+    @Published private(set) var displayedLogs: [RequestLog] = []
 
-    /// Filtered logs based on current filter settings
+    /// Cached summary stats. Updated alongside `displayedLogs` so a single
+    /// objectWillChange propagates both to the view.
+    @Published private(set) var displayedStats: InsightsStats = InsightsStats(
+        totalRequests: 0,
+        successRate: 0,
+        errorCount: 0,
+        averageDurationMs: 0,
+        inferenceCount: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        averageSpeed: 0
+    )
+
+    // MARK: - Computed Properties (legacy / test-only)
+
+    /// Filtered logs based on current filter settings.
+    ///
+    /// This computed property runs the filter on every access. Views should
+    /// read `displayedLogs` instead — it's kept in sync by a Combine pipeline
+    /// that debounces search-field typing and coalesces log-append bursts so
+    /// every keystroke / token-stream chunk doesn't trigger an O(n) filter
+    /// pass on the main actor.
     var filteredLogs: [RequestLog] {
+        InsightsService.applyFilters(
+            to: logs,
+            searchFilter: searchFilter,
+            sourceFilter: sourceFilter,
+            methodFilter: methodFilter
+        )
+    }
+
+    /// Summary statistics. Same caveat as `filteredLogs`: views should read
+    /// `displayedStats`.
+    var stats: InsightsStats {
+        InsightsService.computeStats(for: logs)
+    }
+
+    // MARK: - Initialization
+
+    private var cancellables = Set<AnyCancellable>()
+
+    private init() {
+        // The view bottleneck before this pipeline was that every keystroke
+        // in the search field triggered both `filteredLogs` and `stats` to
+        // run on the main actor with N=500 logs in the worst case. We now
+        // coalesce on log-append bursts (recomputeDebounceMs) and on search
+        // typing (searchDebounceMs), and emit a single new value through
+        // displayedLogs / displayedStats that the view observes directly.
+        let logsPublisher = $logs
+            .removeDuplicates { $0.count == $1.count && $0.first?.id == $1.first?.id }
+            .debounce(
+                for: .milliseconds(Self.recomputeDebounceMs), scheduler: DispatchQueue.main)
+
+        let searchPublisher = $searchFilter
+            .removeDuplicates()
+            .debounce(for: .milliseconds(Self.searchDebounceMs), scheduler: DispatchQueue.main)
+
+        let sourcePublisher = $sourceFilter.removeDuplicates()
+        let methodPublisher = $methodFilter.removeDuplicates()
+
+        Publishers.CombineLatest4(logsPublisher, searchPublisher, sourcePublisher, methodPublisher)
+            .map { logs, search, source, method in
+                (
+                    Self.applyFilters(
+                        to: logs, searchFilter: search,
+                        sourceFilter: source, methodFilter: method),
+                    Self.computeStats(for: logs)
+                )
+            }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] filtered, stats in
+                self?.displayedLogs = filtered
+                self?.displayedStats = stats
+            }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - Filter / Stats Implementations
+
+    /// Pure-function filter applied to a snapshot of logs. Lives as a static
+    /// helper so the computed `filteredLogs` and the Combine pipeline that
+    /// drives `displayedLogs` share the same logic.
+    nonisolated static func applyFilters(
+        to logs: [RequestLog],
+        searchFilter: String,
+        sourceFilter: SourceFilter,
+        methodFilter: MethodFilter
+    ) -> [RequestLog] {
         logs.filter { log in
-            // Search filter (path, model, or pluginId) using fuzzy matching
             if !searchFilter.isEmpty {
                 let matchesPath = SearchService.matches(query: searchFilter, in: log.path)
                 let matchesModel = log.model.map { SearchService.matches(query: searchFilter, in: $0) } ?? false
@@ -51,7 +148,6 @@ final class InsightsService: ObservableObject {
                 }
             }
 
-            // Source filter
             switch sourceFilter {
             case .all:
                 break
@@ -63,7 +159,6 @@ final class InsightsService: ObservableObject {
                 if log.source != .plugin { return false }
             }
 
-            // Method filter
             switch methodFilter {
             case .all:
                 break
@@ -77,15 +172,15 @@ final class InsightsService: ObservableObject {
         }
     }
 
-    /// Summary statistics
-    var stats: InsightsStats {
+    /// Pure-function stats over a snapshot of logs. Reused by the computed
+    /// `stats` and the Combine pipeline that drives `displayedStats`.
+    nonisolated static func computeStats(for logs: [RequestLog]) -> InsightsStats {
         let total = logs.count
         let successCount = logs.filter { $0.isSuccess }.count
         let successRate = total > 0 ? Double(successCount) / Double(total) * 100 : 0
         let errors = logs.filter { $0.isError }.count
         let avgDuration = logs.isEmpty ? 0 : logs.map(\.durationMs).reduce(0, +) / Double(logs.count)
 
-        // Inference-specific stats (only from chat requests)
         let inferenceLogs = logs.filter { $0.isInference }
         let totalInputTokens = inferenceLogs.reduce(0) { $0 + ($1.inputTokens ?? 0) }
         let totalOutputTokens = inferenceLogs.reduce(0) { $0 + ($1.outputTokens ?? 0) }
@@ -105,10 +200,6 @@ final class InsightsService: ObservableObject {
             averageSpeed: avgSpeed
         )
     }
-
-    // MARK: - Initialization
-
-    private init() {}
 
     // MARK: - Logging Methods
 
