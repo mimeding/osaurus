@@ -116,13 +116,38 @@ public actor MemoryContextAssembler {
         return context
     }
 
-    /// Invalidate cached context for a specific agent.
+    /// Invalidate cached context for a specific agent, or the entire cache
+    /// when `agentId` is nil.
+    ///
+    /// Cache entries are keyed by `(agentId, toolsAvailable)` (see `cacheKey`).
+    /// Removing only the bare `agentId` would leave stale `tools=0`/`tools=1`
+    /// snapshots in place for up to `cacheTTL` seconds, defeating callers like
+    /// `ChatWindowManager` that invalidate after user-visible memory edits.
+    /// Drop both partitions for the given agent.
     public func invalidateCache(agentId: String? = nil) {
         if let agentId {
-            cache.removeValue(forKey: agentId)
+            cache.removeValue(forKey: Self.cacheKey(agentId: agentId, toolsAvailable: true))
+            cache.removeValue(forKey: Self.cacheKey(agentId: agentId, toolsAvailable: false))
         } else {
             cache.removeAll()
         }
+    }
+
+    /// Test-only helper: returns true if a non-expired cache entry exists for
+    /// the given `(agentId, toolsAvailable)` pair. Used to verify that
+    /// `invalidateCache(agentId:)` evicts both partitions.
+    internal func _hasCachedEntry(agentId: String, toolsAvailable: Bool) -> Bool {
+        guard let entry = cache[Self.cacheKey(agentId: agentId, toolsAvailable: toolsAvailable)] else {
+            return false
+        }
+        return Date().timeIntervalSince(entry.timestamp) < Self.cacheTTL
+    }
+
+    /// Test-only helper: seeds a cache entry for the given agent/partition.
+    /// Avoids needing a fully wired `MemoryDatabase` for cache-eviction tests.
+    internal func _seedCache(agentId: String, toolsAvailable: Bool, context: String = "seeded") {
+        cache[Self.cacheKey(agentId: agentId, toolsAvailable: toolsAvailable)] =
+            CacheEntry(context: context, timestamp: Date())
     }
 
     private func buildContext(

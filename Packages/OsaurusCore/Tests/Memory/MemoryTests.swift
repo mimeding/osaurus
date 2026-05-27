@@ -243,6 +243,55 @@ struct MemoryContextAssemblerTests {
         )
         #expect(baseContext == queryContext)
     }
+
+    /// Regression test for a cache-key mismatch where `invalidateCache(agentId:)`
+    /// removed entries keyed solely on `agentId` while the cache was actually
+    /// keyed on `(agentId, toolsAvailable)`. The bug let stale 10-second
+    /// snapshots survive user-visible memory edits, contradicting the
+    /// invalidation contract that callers like `ChatWindowManager` rely on.
+    @Test func invalidateCacheEvictsBothToolsPartitions() async {
+        let assembler = MemoryContextAssembler.shared
+        let agentId = "cache-test-\(UUID().uuidString)"
+
+        await assembler._seedCache(agentId: agentId, toolsAvailable: true)
+        await assembler._seedCache(agentId: agentId, toolsAvailable: false)
+
+        let beforeWithTools = await assembler._hasCachedEntry(
+            agentId: agentId, toolsAvailable: true)
+        let beforeChatOnly = await assembler._hasCachedEntry(
+            agentId: agentId, toolsAvailable: false)
+        #expect(beforeWithTools)
+        #expect(beforeChatOnly)
+
+        await assembler.invalidateCache(agentId: agentId)
+
+        let afterWithTools = await assembler._hasCachedEntry(
+            agentId: agentId, toolsAvailable: true)
+        let afterChatOnly = await assembler._hasCachedEntry(
+            agentId: agentId, toolsAvailable: false)
+        #expect(!afterWithTools)
+        #expect(!afterChatOnly)
+    }
+
+    @Test func invalidateCacheScopedToAgent() async {
+        let assembler = MemoryContextAssembler.shared
+        let target = "target-\(UUID().uuidString)"
+        let other = "other-\(UUID().uuidString)"
+
+        await assembler._seedCache(agentId: target, toolsAvailable: true)
+        await assembler._seedCache(agentId: other, toolsAvailable: true)
+
+        await assembler.invalidateCache(agentId: target)
+
+        let targetStillCached = await assembler._hasCachedEntry(
+            agentId: target, toolsAvailable: true)
+        let otherStillCached = await assembler._hasCachedEntry(
+            agentId: other, toolsAvailable: true)
+        #expect(!targetStillCached)
+        #expect(otherStillCached)
+
+        await assembler.invalidateCache(agentId: other)
+    }
 }
 
 struct MemoryDatabaseTests {
