@@ -137,14 +137,14 @@ public actor MCPOAuthDiscovery {
     private var prmCache: [URL: MCPProtectedResourceMetadata] = [:]
     private var asmCache: [URL: MCPAuthorizationServerMetadata] = [:]
     /// Test seam for swapping in a fixture-driven fetcher in unit tests.
-    private var fetcher: (URL) async throws -> (Data, HTTPURLResponse) = MCPOAuthDiscovery.defaultFetch
+    private var fetcher: @Sendable (URL) async throws -> (Data, HTTPURLResponse) = MCPOAuthDiscovery.defaultFetch
 
     public init() {}
 
     // MARK: - Test seam
 
     /// Replace the underlying network fetcher (call from tests only).
-    public func _setFetcher(_ fetcher: @escaping (URL) async throws -> (Data, HTTPURLResponse)) {
+    public func _setFetcher(_ fetcher: @escaping @Sendable (URL) async throws -> (Data, HTTPURLResponse)) {
         self.fetcher = fetcher
     }
 
@@ -174,8 +174,10 @@ public actor MCPOAuthDiscovery {
     }
 
     /// Fetch (and cache) the PRM document for an MCP server.
-    public func fetchProtectedResourceMetadata(serverURL: URL, hint: URL?) async throws -> MCPProtectedResourceMetadata
-    {
+    public func fetchProtectedResourceMetadata(
+        serverURL: URL,
+        hint: URL?
+    ) async throws -> MCPProtectedResourceMetadata {
         guard let prmURL = Self.prmURL(forServer: serverURL, hint: hint) else {
             throw MCPOAuthDiscoveryError.invalidServerURL
         }
@@ -207,9 +209,10 @@ public actor MCPOAuthDiscovery {
 
     /// Fetch (and cache) ASM for a given authorization-server URL.
     /// Tries RFC 8414 first, falls back to OIDC discovery.
-    public func fetchAuthorizationServerMetadata(authServerURL: URL, resourceServerURL: URL? = nil) async throws
-        -> MCPAuthorizationServerMetadata
-    {
+    public func fetchAuthorizationServerMetadata(
+        authServerURL: URL,
+        resourceServerURL: URL? = nil
+    ) async throws -> MCPAuthorizationServerMetadata {
         guard MCPOAuthURLPolicy.allowsDiscoveredURL(authServerURL, from: resourceServerURL ?? authServerURL) else {
             throw MCPOAuthDiscoveryError.unsafeDiscoveredURL(authServerURL.absoluteString)
         }
