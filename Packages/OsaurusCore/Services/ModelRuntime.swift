@@ -2269,10 +2269,11 @@ public actor ModelRuntime {
         // Non-JANG models have no jang_config.json — nothing to validate.
         guard FileManager.default.fileExists(atPath: jangConfigURL.path) else { return }
 
-        // Only read the `weight_format` field; ignore anything else so format
-        // drift (new fields, missing optionals) doesn't break the preflight.
+        // Read only routing stamps; ignore all other fields so format drift
+        // (new fields, missing optionals) doesn't break the preflight.
         struct JangConfigProbe: Decodable {
             let weight_format: String?
+            let format: String?
         }
         guard let data = try? Data(contentsOf: jangConfigURL),
             let probe = try? JSONDecoder().decode(JangConfigProbe.self, from: data)
@@ -2291,6 +2292,10 @@ public actor ModelRuntime {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         let isMxtq = normalizedStamp == "mxtq"
+        let normalizedFormat = (probe.format ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let declaresJANGTQFormat = normalizedFormat == "jangtq"
 
         // Forward mismatch: declared JANGTQ, sidecar missing.
         if isMxtq && !sidecarPresent {
@@ -2309,7 +2314,7 @@ public actor ModelRuntime {
         // Inverse mismatch: sidecar present but stamp says non-JANGTQ. The
         // safetensors carry `tq_norms` / `tq_packed` keys vmlx's base class
         // can't decode → "Unhandled keys" runtime error. Catch it here.
-        if sidecarPresent && !isMxtq {
+        if sidecarPresent && !isMxtq && !declaresJANGTQFormat {
             let actualStamp = (probe.weight_format?.isEmpty == false) ? probe.weight_format! : "absent"
             throw NSError(
                 domain: "ModelRuntime",

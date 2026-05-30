@@ -138,6 +138,20 @@ struct ModelRuntimeFindDirectoryTests {
         }
     }
 
+    @Test("JANGTQ format stamp with sidecar passes even when weight_format is absent")
+    func jangtq_formatStampWithSidecar_passes() throws {
+        let dir = try makeIsolatedDir()
+        // Step 3.7 JANGTQ_K bundles can declare the runtime via
+        // `format: "jangtq"` while omitting the older top-level
+        // `weight_format` key. vmlx infers the JANGTQ route from the
+        // sidecar/codebook; Osaurus preflight must not block that valid
+        // bundle shape.
+        let json = #"{"format":"jangtq"}"#
+        try Data(json.utf8).write(to: dir.appendingPathComponent("jang_config.json"))
+        try Data("dummy".utf8).write(to: dir.appendingPathComponent("jangtq_runtime.safetensors"))
+        try ModelRuntime.validateJANGTQSidecarIfRequired(at: dir, name: "Step-3.7-JANGTQ_K")
+    }
+
     /// Genuine bf16 dense bundle: stamp says bf16 AND no sidecar. This is
     /// the common case for non-quantized JANG bundles (DSV4-Flash-JANG_2L,
     /// Mistral-Small-4-JANG_2L, etc.) — must pass through cleanly.
