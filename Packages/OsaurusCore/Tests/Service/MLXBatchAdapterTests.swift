@@ -651,6 +651,42 @@ struct MLXBatchAdapterTests {
                 modelName: "Gemma-4-26B-A4B-it-JANG_4M-CRACK"
             ) == "fp16"
         )
+        #expect(
+            ModelRuntime.cacheKVModeTag(
+                for: settings.cache,
+                modelName: "JANGQ-AI/Step-3.7-Flash-JANG_2L",
+                cacheTopology: ModelCacheTopologySnapshot(
+                    layerCount: 45,
+                    kvLayerCount: 12,
+                    turboQuantKVLayerCount: 0,
+                    rotatingKVLayerCount: 33
+                )
+            ) == "fp16"
+        )
+        #expect(
+            ModelRuntime.cacheKVModeTag(
+                for: settings.cache,
+                modelName: "JANGQ-AI/Step-3.7-Flash-JANGTQ_K",
+                cacheTopology: ModelCacheTopologySnapshot(
+                    layerCount: 45,
+                    kvLayerCount: 12,
+                    turboQuantKVLayerCount: 0,
+                    rotatingKVLayerCount: 33
+                )
+            ) == "fp16"
+        )
+        #expect(
+            ModelRuntime.cacheKVModeTag(
+                for: settings.cache,
+                modelName: "MiniMax-M2.7-JANG_K-CRACK",
+                cacheTopology: ModelCacheTopologySnapshot(
+                    layerCount: 62,
+                    kvLayerCount: 62,
+                    turboQuantKVLayerCount: 0,
+                    rotatingKVLayerCount: 0
+                )
+            ) == "turbo(3,3)"
+        )
 
         settings.cache.liveKVCodec = .native
         #expect(
