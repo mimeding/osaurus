@@ -199,20 +199,22 @@ Boundary:
   unknown path-dependent topologies native by default.
 - Focused Osaurus tests now expect `turbo(3,3)` for known Step JANG_2L and
   Step JANGTQ_K topology tags, and source guards pin the Step exception text.
-- Boundary: this is a source/topology and focused-test proof. A fresh no-sign
-  app row from the final PR head should still be used before claiming measured
-  live Step TurboQuant KV compression, token/s, and warm L2 hit behavior.
+- Boundary: this is a source/topology and focused-test proof for the policy
+  itself. The no-sign app artifacts above are the measured live evidence for
+  Step tool behavior, token/s, topology, and warm disk-L2 reuse.
 
 ## Partial / Blocked Rows
 
 Step JANG_2L:
 
-- Earlier app attempts under current machine load did not produce a clean live
-  Osaurus pass. The app entered generation and timed out before returning
-  output. Sampling showed real generation work, not keychain/signing.
-- A separate Step CRACK process was consuming about 82 GB RSS and high CPU/GPU
-  during these attempts, so this row remains blocked/partial until rerun on a
-  less contended machine.
+- Superseded older partial attempts with the final artifact
+  `/tmp/osaurus-step37-final-430481c-step-jang2l-tool-20260530-204607/step-3.7-flash-jang_2l_summary.json`,
+  which reports `passed: true` and `failed_checks: []` for strict
+  required/none/required multi-turn tool behavior.
+- Current-head 2026-05-31 smoke also confirmed one-turn required-tool behavior
+  through the no-sign app while the device was contended by a separate Step MLX
+  job. Treat the final 2026-05-30 artifact as the full matrix proof and the
+  2026-05-31 row as current-head smoke confirmation.
 
 Step JANGTQ_K:
 
@@ -220,7 +222,9 @@ Step JANGTQ_K:
   `/tmp/osaurus-step37-jangtqk-open-proof-20260530-151428` failed because the
   native Step template kept the required-tool contract inside hidden thinking.
 - The final row above supersedes that red artifact for required-tool behavior.
-- Warm disk-L2 hit reuse remains partial as described above.
+- Warm disk-L2 hit reuse is proven by
+  `/tmp/osaurus-step37-discoveryfix-430481c-step-jangtqk-warm-20260530-221128/step-3.7-flash-jangtq_k_summary.json`,
+  which reports `passed: true`, `failed_checks: []`, and `block_disk_hits +1`.
 
 Step JANGTQ2:
 
