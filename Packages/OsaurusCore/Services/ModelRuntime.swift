@@ -645,7 +645,12 @@ public actor ModelRuntime {
         // gets a clear error and the server stays up.
         try Self.validateUnsupportedPlainDSV4AffineJANG(at: localURL, name: name)
         try await Self.ensureJANGTQSidecar(at: localURL, modelId: id, name: name)
-        let weightsBytes = Self.computeWeightsSizeBytes(at: localURL)
+        let weightsBytes: Int64
+        if policy == .manualMultiModel {
+            weightsBytes = Self.computeWeightsSizeBytes(at: localURL)
+        } else {
+            weightsBytes = 0
+        }
         genLog.info(
             "loadContainer: pre-load checks done model=\(name, privacy: .public) weightsBytes=\(weightsBytes, privacy: .public)"
         )
@@ -2227,14 +2232,18 @@ public actor ModelRuntime {
 
     private static func computeWeightsSizeBytes(at url: URL) -> Int64 {
         let fm = FileManager.default
-        guard
-            let enumerator = fm.enumerator(
-                at: url,
-                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
-            )
-        else { return 0 }
+        let fileURLs: [URL]
+        if let entries = try? fm.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            fileURLs = entries
+        } else {
+            return 0
+        }
         var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
+        for fileURL in fileURLs {
             if fileURL.pathExtension.lowercased() == "safetensors" {
                 if let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
                     let size = attrs[.size] as? NSNumber

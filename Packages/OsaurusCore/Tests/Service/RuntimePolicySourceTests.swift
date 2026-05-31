@@ -1546,6 +1546,31 @@ struct RuntimePolicySourceTests {
         )
     }
 
+    @Test("ModelRuntime keeps weight-size directory scans out of the default load path")
+    func modelRuntimeWeightSizePreflightIsManualMultiModelOnly() throws {
+        let runtime = try Self.source("Services/ModelRuntime.swift")
+        let start = try #require(runtime.range(of: "private static func computeWeightsSizeBytes"))
+        let end = runtime.range(of: "private static func findLocalDirectory", range: start.upperBound..<runtime.endIndex)?.lowerBound
+            ?? runtime.endIndex
+        let body = String(runtime[start.lowerBound..<end])
+
+        #expect(body.contains("contentsOfDirectory("))
+        #expect(
+            !body.contains("enumerator("),
+            "Weight-size preflight must not recursively walk huge model bundles or symlinked cache folders on the request path."
+        )
+
+        let loadStart = try #require(runtime.range(of: "func loadContainer(id: String, name: String)"))
+        let loadEnd = try #require(runtime.range(of: "let loadID = allocateLoadingTaskID()", range: loadStart.upperBound..<runtime.endIndex))
+        let loadPreflight = String(runtime[loadStart.lowerBound..<loadEnd.lowerBound])
+        #expect(loadPreflight.contains("if policy == .manualMultiModel"))
+        #expect(loadPreflight.contains("weightsBytes = Self.computeWeightsSizeBytes(at: localURL)"))
+        #expect(
+            loadPreflight.contains("} else {\n            weightsBytes = 0"),
+            "Default single-model loads must not block on directory size scans before vmlx starts loading."
+        )
+    }
+
     @Test("MTP bundles auto-resolve vmlx tuning into load and generation")
     func mtpBundlesAutoResolveVMLXTuningIntoLoadAndGeneration() throws {
         let runtime = try Self.source("Services/ModelRuntime.swift")

@@ -151,6 +151,33 @@ Boundary:
   this as tool/reasoning/topology/disk-L2 proof, not as a claim that all Step
   rotating layers use TurboQuant KV.
 
+## 2026-05-31 Current-Head Retest Boundary
+
+- App:
+  `/private/tmp/osaurus-step37-full-pr/build/DerivedData-step37-hostfix-nosign-17c8b5ec/Build/Products/Release/osaurus.app`.
+- Launch path: LaunchServices with `launchctl setenv
+  OSAURUS_DISABLE_KEYCHAIN_FOR_TESTS 1`, isolated `OSAURUS_TEST_ROOT`, and
+  `OSU_MODELS_DIR=/tmp/osaurus-step37-localmeta-modelroot`.
+- No `security`, `notarytool`, Developer ID signing, or password/keychain
+  prompt was used. The only signing-sensitive process observed was the
+  long-lived system `CodeSigningHelper.xpc`, not a validation/build lane.
+- `step-3.7-flash-jang_2l` one-turn `tool_choice: required` stream returned
+  `line_count` with exact arguments `{"text":"red\ngreen\nblue"}` and
+  `finish_reason=tool_calls`.
+- `step-3.7-flash-jangtq_k` one-turn `tool_choice: required` stream returned
+  `line_count` with exact arguments `{"text":"red\ngreen\nblue"}` and
+  `finish_reason=tool_calls`.
+- `/health` after the JANGTQ_K row was healthy, had no in-flight request, and
+  had `step-3.7-flash-jangtq_k` resident.
+- `/admin/cache-stats` after the JANGTQ_K row reported the expected Step
+  topology: 45 layers, 12 KV layers, 33 rotating KV layers,
+  `requires_disk_backed_restore=true`, paged-incompatible, and
+  `turbo_quant_kv_layer_count=0`.
+- This current-head retest ran concurrently with a separate Step MLX job using
+  the device, so first-token latency was about 13-14 minutes per one-turn row.
+  It confirms current app/tool/topology wiring but does not replace the
+  2026-05-30 full three-turn and warm L2 proof artifacts above.
+
 ## Current Step TurboQuant KV Policy Proof
 
 - vMLX commit `430481cee9625d2a942b8a043ac2d509a13274fd` fixes the Step cache

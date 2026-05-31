@@ -132,6 +132,18 @@ and PR hygiene.
 - Step 3.7 JANG_2L is green for this PR lane.
 - Step JANGTQ_K is green for this PR lane, including a warm `disk_l2_hits +1`
   row.
+- 2026-05-31 retest boundary: a fresh no-sign, LaunchServices-launched,
+  keychain-disabled app at
+  `/private/tmp/osaurus-step37-full-pr/build/DerivedData-step37-hostfix-nosign-17c8b5ec/Build/Products/Release/osaurus.app`
+  confirmed one-turn `tool_choice: required` behavior for
+  `step-3.7-flash-jang_2l` and `step-3.7-flash-jangtq_k`. Both streamed exact
+  `line_count` tool calls with args `{"text":"red\ngreen\nblue"}` and
+  `finish_reason=tool_calls`; `/health` was healthy with no in-flight request
+  after the rows. The retest ran while a separate Step MLX job was consuming the
+  device, so first-token latency was about 13 minutes per row. Treat the
+  2026-05-30 artifacts above as the full multi-turn/warm-cache proof and this
+  2026-05-31 retest as current-head smoke confirmation, not a replacement
+  three-turn matrix.
 - LFM through Osaurus was not re-proven in this final artifact.
 - MXFP4/MXFP8 sibling bundles are not claimed by this proof.
 - VL/media rows are not claimed by this proof.
