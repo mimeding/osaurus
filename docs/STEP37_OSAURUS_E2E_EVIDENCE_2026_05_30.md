@@ -1,6 +1,6 @@
 # Step 3.7 Osaurus E2E Evidence - 2026-05-30
 
-Current vMLX pin: `430481cee9625d2a942b8a043ac2d509a13274fd`
+Current vMLX pin: `60b888659e1196995fa57f7af91d982e5948a680`
 
 This note records the final no-sign Osaurus proof for the Step 3.7 lane. It does
 not claim LFM, MXFP4/MXFP8, or VL rows unless explicitly listed below.
@@ -109,7 +109,7 @@ pass, disk-backed restore topology, rotating KV detection, and warm L2 reuse.
 ## Source and readiness guards
 
 The following passed after repinning Osaurus to vMLX
-`430481cee9625d2a942b8a043ac2d509a13274fd`:
+`60b888659e1196995fa57f7af91d982e5948a680`:
 
 - `git diff --check`
 - `RuntimePolicySourceTests/vmlxPinIncludesRuntimeHardening`
@@ -127,6 +127,49 @@ auto-detect settings, keychain-free proof paths, no hidden sampler or forced
 behavior repairs, reasoning/UI routing, tool-choice routing, HTTP cancellation,
 and PR hygiene.
 
+## 2026-05-31 Current-Head Retest
+
+The current retest used the rebuilt no-sign app:
+`/tmp/osaurus-1310-60b888-nosign-dd/Build/Products/Release/osaurus.app`.
+
+The launch used `scripts/live-proof/open-keychain-free-osaurus.sh` with
+`OSAURUS_DISABLE_KEYCHAIN_FOR_TESTS=1`, isolated
+`OSAURUS_TEST_ROOT=/tmp/osaurus-1310-60b888-live-root-20260531-031451`, and
+`OSU_MODELS_DIR=/tmp/osaurus-step37-localmeta-modelroot`.
+
+LFM2.5 JANG_2L:
+
+- Cold strict artifact:
+  `/tmp/osaurus-1310-60b888-final-lfm-jang2l-20260531-031510/lfm2.5-8b-a1b-jang_2l_summary.json`.
+- Warm strict cache-hit artifact:
+  `/tmp/osaurus-1310-60b888-final-lfm-jang2l-warm1024-20260531-031546/lfm2.5-8b-a1b-jang_2l_summary.json`.
+- Warm verdict: `passed=true`, `failed_checks=[]`.
+- Turn 1 and turn 3 produced exact `line_count` tool calls with
+  `red\ngreen\nblue` and `one\ntwo` respectively.
+- Turn 2 produced visible answer `Three lines were counted.`, no tool call, no
+  protocol leak, and no length-stop fake pass.
+- Topology/cache: 24 layers, 6 KV layers, 18 Mamba/SSM companion layers,
+  `requires_disk_backed_restore=true`, `requires_ssm_companion_state=true`,
+  `turbo_quant_kv_layer_count=0`, and warm deltas `disk_l2_hits +1`,
+  `ssm_companion_hits +1`, `companion_hits +1`.
+- Visible generation rate: 351 completion tokens in 4.090642167 seconds, about
+  85.81 tok/s.
+
+Step 3.7 JANG_2L:
+
+- Strict artifact:
+  `/tmp/osaurus-1310-60b888-final-step-jang2l-20260531-031601/step-3.7-flash-jang_2l_summary.json`.
+- Verdict: `passed=true`, `failed_checks=[]`.
+- Turn 1 and turn 3 produced exact `line_count` tool calls with
+  `red\ngreen\nblue` and `one\ntwo` respectively.
+- Turn 2 produced visible answer `Three lines were counted.`, no tool call, no
+  protocol leak, and no length-stop fake pass.
+- Topology/cache: 45 layers, 12 KV layers, 33 rotating KV layers,
+  `requires_disk_backed_restore=true`, paged-incompatible, and
+  `turbo_quant_compressions=2`.
+- Visible generation rate: 6 completion tokens in 0.745120167 seconds, about
+  8.05 tok/s.
+
 ## Boundaries
 
 - Step 3.7 JANG_2L is green for this PR lane.
@@ -141,10 +184,10 @@ and PR hygiene.
   `finish_reason=tool_calls`; `/health` was healthy with no in-flight request
   after the rows. The retest ran while a separate Step MLX job was consuming the
   device, so first-token latency was about 13 minutes per row. Treat the
-  2026-05-30 artifacts above as the full multi-turn/warm-cache proof and this
-  2026-05-31 retest as current-head smoke confirmation, not a replacement
-  three-turn matrix.
-- LFM through Osaurus was not re-proven in this final artifact.
+  2026-05-30 artifacts above as the full JANGTQ_K multi-turn/warm-cache proof.
+- LFM2.5 JANG_2L is green for this PR lane on the rebuilt 60b888 app, including
+  strict required/none/required tools and warm `disk_l2_hits +1`,
+  `ssm_companion_hits +1`, and `companion_hits +1`.
 - MXFP4/MXFP8 sibling bundles are not claimed by this proof.
 - VL/media rows are not claimed by this proof.
 - The Step topology is mixed full KV plus rotating KV. The runtime policy only

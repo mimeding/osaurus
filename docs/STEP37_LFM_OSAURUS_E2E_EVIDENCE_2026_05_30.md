@@ -5,8 +5,14 @@ vMLX pin. It deliberately separates proven rows from partial rows.
 
 ## Code State
 
-- vMLX pin: `430481cee9625d2a942b8a043ac2d509a13274fd`.
+- vMLX pin: `60b888659e1196995fa57f7af91d982e5948a680`.
 - vMLX fixes:
+  - Current pin `60b888659e1196995fa57f7af91d982e5948a680` includes the
+    prior Step runtime/cache work plus the LFM required-tool thinking-tail fix.
+  - LFM required-tool fallback closes the native thinking rail only when
+    `tool_choice` is explicit required/named, so required tool turns do not
+    spend the output budget in hidden reasoning before emitting a call. Optional
+    tools remain optional.
   - Step tool-call parser support for Step XML and narrow schema-gated bare
     `name({"arg": ...})` calls on reasoning/content rails.
   - Step required-tool fallback closes the native thinking rail before the
@@ -32,7 +38,7 @@ vMLX pin. It deliberately separates proven rows from partial rows.
 ## No-Sign / No-Keychain Boundary
 
 - App build:
-  `/tmp/osaurus-step37-pr/build/DerivedData-step37-nosign-discoveryfix/Build/Products/Release/osaurus.app`.
+  `/tmp/osaurus-1310-60b888-nosign-dd/Build/Products/Release/osaurus.app`.
 - Build path used `scripts/live-proof/build-keychain-free-osaurus.sh`.
 - Xcode build settings included `CODE_SIGNING_ALLOWED=NO`,
   `CODE_SIGNING_REQUIRED=NO`, empty `CODE_SIGN_IDENTITY`, and
@@ -41,6 +47,79 @@ vMLX pin. It deliberately separates proven rows from partial rows.
   no notary, no `security` command, and no password/keychain prompt.
 - Live app launches used `OSAURUS_DISABLE_KEYCHAIN_FOR_TESTS=1`, isolated
   `OSAURUS_TEST_ROOT`, and explicit `OSU_MODELS_DIR`.
+
+## 2026-05-31 Current-Head Proof: LFM2.5 JANG_2L
+
+- Osaurus worktree head at proof time:
+  `ff7b5ff9b70cb8ff23fe9b4c0a63c9f4071b0489` plus local repin/docs to vMLX
+  `60b888659e1196995fa57f7af91d982e5948a680`.
+- Built app:
+  `/tmp/osaurus-1310-60b888-nosign-dd/Build/Products/Release/osaurus.app`.
+- Launch root:
+  `/tmp/osaurus-1310-60b888-live-root-20260531-031451`.
+- Model root: `/tmp/osaurus-step37-localmeta-modelroot`.
+- Served model id: `lfm2.5-8b-a1b-jang_2l`.
+- Cold strict artifact:
+  `/tmp/osaurus-1310-60b888-final-lfm-jang2l-20260531-031510/lfm2.5-8b-a1b-jang_2l_summary.json`.
+- Warm strict cache-hit artifact:
+  `/tmp/osaurus-1310-60b888-final-lfm-jang2l-warm1024-20260531-031546/lfm2.5-8b-a1b-jang_2l_summary.json`.
+
+Behavior proven on the warm strict cache-hit row:
+
+- Overall verdict: `passed=true`, `failed_checks=[]`.
+- Turn 1 required tool call finished as `tool_calls`.
+- Turn 1 exact tool args: `{"text":"red\ngreen\nblue"}`.
+- Turn 2 produced visible answer: `Three lines were counted.`
+- Turn 2 had no tool call, no protocol leak, and no length-stop fake pass.
+- Turn 3 required tool call after history finished as `tool_calls`.
+- Turn 3 exact tool args: `{"text":"one\ntwo"}`.
+- No visible content leaked on tool-call turns.
+- App `/health` after the row was healthy with no in-flight request.
+- Visible generation throughput was recorded: 351 completion tokens in
+  4.090642167 seconds, about 85.81 tok/s.
+
+Cache/topology proven on the warm strict cache-hit row:
+
+- 24 total layers.
+- 6 KV layers.
+- 18 Mamba/SSM companion layers.
+- `companion=ssm`.
+- `requires_disk_backed_restore=true`.
+- `requires_ssm_companion_state=true`.
+- Paged cache incompatible for this hybrid row.
+- `turbo_quant_kv_layer_count=0`.
+- Warm row delta: `disk_l2_hits +1`, `ssm_companion_hits +1`,
+  `companion_hits +1`, and `disk_l2_stores +4`.
+
+Superseded failed warm attempt:
+
+- `/tmp/osaurus-1310-60b888-final-lfm-jang2l-warm-20260531-031528`
+  proved the same cache-hit deltas but failed turn 2 at `finish=length` under a
+  512-token cap. The 1024-token warm row above supersedes it and is the current
+  merge-readiness artifact.
+
+## 2026-05-31 Current-Head Proof: Step 3.7 JANG_2L
+
+- Strict artifact:
+  `/tmp/osaurus-1310-60b888-final-step-jang2l-20260531-031601/step-3.7-flash-jang_2l_summary.json`.
+- Overall verdict: `passed=true`, `failed_checks=[]`.
+- Turn 1 required tool call:
+  `line_count`, exact args `text == "red\ngreen\nblue"`, no visible content,
+  no protocol leak.
+- Turn 2 no-tool answer:
+  visible answer `Three lines were counted.`, no tool call, no protocol leak,
+  `finish=stop`, token/s recorded.
+- Turn 3 required tool call after tool-result history:
+  `line_count`, exact args `text == "one\ntwo"`, no visible content,
+  no protocol leak.
+- Health after row:
+  `status=healthy`, no in-flight requests, model resident.
+- Cache topology:
+  45 layers, 12 KV layers, 33 rotating KV layers,
+  `requires_disk_backed_restore=true`, paged-incompatible, and
+  `turbo_quant_compressions=2`.
+- Visible generation throughput was recorded: 6 completion tokens in
+  0.745120167 seconds, about 8.05 tok/s.
 
 ## Proven Live Row: LFM2.5 MXFP4
 
@@ -180,11 +259,12 @@ Boundary:
 
 ## Current Step TurboQuant KV Policy Proof
 
-- vMLX commit `430481cee9625d2a942b8a043ac2d509a13274fd` fixes the Step cache
-  construction path so `GenerateParameters.kvMode = .turboQuant` keeps
-  full-attention layers as `KVCacheSimple` even when Osaurus also supplies
-  `defaultMaxKVSize`. Without this, Step full-attention layers became bounded
-  `RotatingKVCache` instances and the TurboQuant hook had no eligible layers.
+- The current vMLX pin `60b888659e1196995fa57f7af91d982e5948a680` includes the
+  Step cache construction fix from the earlier pinned history: when
+  `GenerateParameters.kvMode = .turboQuant`, full-attention layers remain
+  `KVCacheSimple` even when Osaurus also supplies `defaultMaxKVSize`. Without
+  this, Step full-attention layers became bounded `RotatingKVCache` instances
+  and the TurboQuant hook had no eligible layers.
 - Focused vMLX coverage now pins both sides of the Step contract:
   `Step37ParserDispatchTests/stepCacheTopologyKeepsFullAttentionTQCompatible`
   and
