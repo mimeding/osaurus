@@ -788,6 +788,14 @@ struct RuntimePolicySourceTests {
                 && runtime.contains("Step 3.7 is the narrow exception"),
             "Step 3.7 must be the explicit mixed-SWA exception: only its proven full-attention KV layers default to TurboQuant while rotating layers stay disk-backed"
         )
+        let mlxService = try Self.source("Services/Inference/MLXService.swift")
+        #expect(
+            mlxService.contains("ModelFamilyNames.isStepFamily(modelId)")
+                && mlxService.contains("Step 3.7 currently runs through vMLX's Step text runtime")
+                && mlxService.contains("Step 3.7 tool parsing/template selection is owned by the pinned")
+                && mlxService.contains("return ModelMediaCapabilities.from(modelId: modelId)"),
+            "Step 3.7 runtime policy must stay text-only/tool-capable and must not block preflight on external bundle metadata until Step VLM is wired and proven"
+        )
     }
 
     @Test("Runtime cache telemetry keeps paged-prefix and disk-L2 counters separate")

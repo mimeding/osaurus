@@ -2464,6 +2464,23 @@ public actor ModelRuntime {
     /// uses; a flat-layout id (no `/` in it) cannot be mapped back to an
     /// HF repo and skips the fetch entirely, surfacing the original error.
     static func ensureJANGTQSidecar(at directory: URL, modelId: String, name: String) async throws {
+        if Self.isStepJANGTQName(modelId) || Self.isStepJANGTQName(name) {
+            let sidecarURL = directory.appendingPathComponent("jangtq_runtime.safetensors")
+            guard FileManager.default.fileExists(atPath: sidecarURL.path) else {
+                throw NSError(
+                    domain: "ModelRuntime",
+                    code: 2,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Model '\(name)' is a Step 3.7 JANGTQ bundle but is missing "
+                            + "required sidecar file 'jangtq_runtime.safetensors'. "
+                            + "Re-download the full model or obtain the sidecar from the original publisher."
+                    ]
+                )
+            }
+            return
+        }
+
         do {
             try validateJANGTQSidecarIfRequired(at: directory, name: name)
             return
@@ -2525,6 +2542,15 @@ public actor ModelRuntime {
                 ]
             )
         }
+    }
+
+    private static func isStepJANGTQName(_ value: String) -> Bool {
+        let normalized = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        return normalized.contains("step-3.7")
+            && normalized.contains("jangtq")
     }
 
     /// Build the ordered list of HF `<org>/<repo>` candidates to try when
@@ -2722,10 +2748,24 @@ public actor ModelRuntime {
         // the two symmetric here closes the asymmetry.
         let resolved = url.resolvingSymlinksInPath()
         let hasConfig = fm.fileExists(atPath: resolved.appendingPathComponent("config.json").path)
-        if let items = try? fm.contentsOfDirectory(at: resolved, includingPropertiesForKeys: nil),
-            hasConfig && items.contains(where: { $0.pathExtension == "safetensors" })
-        {
+        guard hasConfig else {
+            return nil
+        }
+        let directWeightSentinels = [
+            "model.safetensors",
+            "weights.safetensors",
+            "model-00001-of-00001.safetensors",
+        ]
+        if directWeightSentinels.contains(where: {
+            fm.fileExists(atPath: resolved.appendingPathComponent($0).path)
+        }) {
             return resolved
+        }
+        for shardCount in 2 ... 256 {
+            let candidate = String(format: "model-00001-of-%05d.safetensors", shardCount)
+            if fm.fileExists(atPath: resolved.appendingPathComponent(candidate).path) {
+                return resolved
+            }
         }
         return nil
     }

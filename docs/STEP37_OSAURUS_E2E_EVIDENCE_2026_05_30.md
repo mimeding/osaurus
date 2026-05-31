@@ -3,13 +3,12 @@
 Current vMLX pin: `430481cee9625d2a942b8a043ac2d509a13274fd`
 
 This note records the final no-sign Osaurus proof for the Step 3.7 lane. It does
-not claim LFM, Step JANGTQ_K, MXFP4/MXFP8, or VL rows unless explicitly listed
-below.
+not claim LFM, MXFP4/MXFP8, or VL rows unless explicitly listed below.
 
 ## Build and launch
 
 - Build path:
-  `/tmp/osaurus-step37-pr/build/DerivedData-step37-nosign-tqdiag-430481c/Build/Products/Release/osaurus.app`
+  `/tmp/osaurus-step37-pr/build/DerivedData-step37-nosign-discoveryfix/Build/Products/Release/osaurus.app`
 - Build command used the keychain-free wrapper:
   `scripts/live-proof/build-keychain-free-osaurus.sh`
 - Signing settings observed:
@@ -20,9 +19,9 @@ below.
 - Runtime launch used:
   `OSAURUS_DISABLE_KEYCHAIN_FOR_TESTS=1`,
   fresh `OSAURUS_TEST_ROOT`, and
-  `OSU_MODELS_DIR=/tmp/osaurus-step37-policyfix-modelroot-jang2l`.
-- Served model id:
-  `step-3.7-flash-jang_2l`.
+  `OSU_MODELS_DIR=/tmp/osaurus-step37-modelroot-jang-and-tqk`.
+- Served model ids:
+  `step-3.7-flash-jang_2l` and `step-3.7-flash-jangtq_k`.
 
 No `security`, `notarytool`, Developer ID signing, or password/keychain prompt
 was used in this proof lane.
@@ -71,6 +70,42 @@ This proves Step 3.7 JANG_2L through the real Osaurus app path for strict
 required/none/required multi-turn tool behavior, no loop/leak/length-stop fake
 pass, disk-backed restore topology, and live TurboQuant/L2 diagnostics.
 
+## Live Step JANGTQ_K tool/cache proof
+
+Cold artifact:
+`/tmp/osaurus-step37-discoveryfix-430481c-step-jangtqk-tool-20260530-221008/step-3.7-flash-jangtq_k_summary.json`
+
+Warm artifact:
+`/tmp/osaurus-step37-discoveryfix-430481c-step-jangtqk-warm-20260530-221128/step-3.7-flash-jangtq_k_summary.json`
+
+- Overall verdict: both rows reported `passed=true`, `failed_checks=[]`.
+- Turn 1 required tool call:
+  `line_count`, exact args `text == "red\ngreen\nblue"`, no visible content,
+  no protocol leak.
+- Turn 2 no-tool answer:
+  visible answer, no tool call, no protocol leak, `finish=stop`, token/s
+  recorded.
+- Turn 3 required tool call after tool-result history:
+  `line_count`, exact args `text == "one\ntwo"`, no visible content,
+  no protocol leak.
+- Health after rows:
+  `status=healthy`, no in-flight requests, model resident.
+- Cache topology:
+  45 layers, 12 KV layers, 33 rotating KV layers,
+  `requires_disk_backed_restore=true`, paged-incompatible,
+  `turbo_quant_kv_layer_count=0`.
+- Cold row cache:
+  `disk_l2_misses +2`, `disk_l2_stores +5`.
+- Warm row cache:
+  `disk_l2_hits +1`, `disk_l2_misses +0`, `disk_l2_stores +5`.
+- Warm visible generation rate:
+  2 completion tokens in 0.436365625 seconds, about 4.58 tok/s. Required
+  tool-call turns emitted zero completion tokens by design.
+
+This proves Step 3.7 JANGTQ_K through the real Osaurus app path for strict
+required/none/required multi-turn tool behavior, no loop/leak/length-stop fake
+pass, disk-backed restore topology, rotating KV detection, and warm L2 reuse.
+
 ## Source and readiness guards
 
 The following passed after repinning Osaurus to vMLX
@@ -95,7 +130,8 @@ and PR hygiene.
 ## Boundaries
 
 - Step 3.7 JANG_2L is green for this PR lane.
-- Step JANGTQ_K was not re-proven in this final Osaurus artifact.
+- Step JANGTQ_K is green for this PR lane, including a warm `disk_l2_hits +1`
+  row.
 - LFM through Osaurus was not re-proven in this final artifact.
 - MXFP4/MXFP8 sibling bundles are not claimed by this proof.
 - VL/media rows are not claimed by this proof.

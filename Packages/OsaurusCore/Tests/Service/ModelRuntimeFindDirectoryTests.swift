@@ -37,6 +37,24 @@ struct ModelRuntimeFindDirectoryTests {
         #expect(resolved?.resolvingSymlinksInPath().path == realModel.resolvingSymlinksInPath().path)
     }
 
+    @Test("Sharded symlinked model resolves from bounded sentinel")
+    func shardedSymlinkLayoutResolvesFromBoundedSentinel() throws {
+        let (root, realModel) = try makeRoot(layout: .symlinked)
+        try FileManager.default.createDirectory(at: realModel, withIntermediateDirectories: true)
+        try Data(#"{"model_type":"step3"}"#.utf8).write(
+            to: realModel.appendingPathComponent("config.json")
+        )
+        try Data("dummy".utf8).write(
+            to: realModel.appendingPathComponent("model-00001-of-00045.safetensors")
+        )
+
+        let resolved = ModelRuntime.resolveLocalModelDirectory(
+            forModelId: "OsaurusAI/TestModel",
+            in: root
+        )
+        #expect(resolved?.resolvingSymlinksInPath().path == realModel.resolvingSymlinksInPath().path)
+    }
+
     @Test("Missing config.json returns nil even when safetensors exist")
     func missingConfigRejects() throws {
         let (root, realModel) = try makeRoot()

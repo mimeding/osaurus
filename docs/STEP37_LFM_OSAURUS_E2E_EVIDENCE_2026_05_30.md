@@ -5,7 +5,7 @@ vMLX pin. It deliberately separates proven rows from partial rows.
 
 ## Code State
 
-- vMLX pin: `be2ad909e42f2175bd5aadfd2919edebfb3b60ce`.
+- vMLX pin: `430481cee9625d2a942b8a043ac2d509a13274fd`.
 - vMLX fixes:
   - Step tool-call parser support for Step XML and narrow schema-gated bare
     `name({"arg": ...})` calls on reasoning/content rails.
@@ -15,6 +15,10 @@ vMLX pin. It deliberately separates proven rows from partial rows.
 - Osaurus fix: local JANGTQ sidecar preflight accepts bundles that declare
   `format: "jangtq"` with `jangtq_runtime.safetensors` even when
   `weight_format` is absent.
+- Osaurus fix: Step JANGTQ_K sidecar preflight uses the sidecar sentinel
+  directly instead of blocking request load on external-bundle `jang_config.json`
+  reads. This preserves the sidecar requirement and lets pinned vMLX own Step
+  parser/template semantics.
 - Osaurus fix: SwiftTransformers local-tokenizer loading routes Step sentinel
   templates through the Step fallback, disables Step thinking only for explicit
   required tool choice, and preserves normal optional-tool behavior otherwise.
@@ -28,7 +32,7 @@ vMLX pin. It deliberately separates proven rows from partial rows.
 ## No-Sign / No-Keychain Boundary
 
 - App build:
-  `/tmp/osaurus-step37-pr/build/DerivedData-step37-nosign-623fffc3-258d207/Build/Products/Release/osaurus.app`.
+  `/tmp/osaurus-step37-pr/build/DerivedData-step37-nosign-discoveryfix/Build/Products/Release/osaurus.app`.
 - Build path used `scripts/live-proof/build-keychain-free-osaurus.sh`.
 - Xcode build settings included `CODE_SIGNING_ALLOWED=NO`,
   `CODE_SIGNING_REQUIRED=NO`, empty `CODE_SIGN_IDENTITY`, and
@@ -87,23 +91,29 @@ Boundary:
 ## Proven Live Row: Step 3.7 JANGTQ_K
 
 - Model id: `step-3.7-flash-jangtq_k`.
-- Model root: `/tmp/osaurus-step37-jangtqk-final-modelroot`.
-- Final artifact:
-  `/tmp/osaurus-step37-jangtqk-final-proof-20260530-154948`.
-- Summary:
-  `/tmp/osaurus-step37-jangtqk-final-proof-20260530-154948/step-3.7-flash-jangtq_k_summary.json`.
+- Model root: `/tmp/osaurus-step37-modelroot-jang-and-tqk`.
+- Cold artifact:
+  `/tmp/osaurus-step37-discoveryfix-430481c-step-jangtqk-tool-20260530-221008`.
+- Cold summary:
+  `/tmp/osaurus-step37-discoveryfix-430481c-step-jangtqk-tool-20260530-221008/step-3.7-flash-jangtq_k_summary.json`.
+- Warm artifact:
+  `/tmp/osaurus-step37-discoveryfix-430481c-step-jangtqk-warm-20260530-221128`.
+- Warm summary:
+  `/tmp/osaurus-step37-discoveryfix-430481c-step-jangtqk-warm-20260530-221128/step-3.7-flash-jangtq_k_summary.json`.
 - Harness:
   `scripts/live-proof/run-local-family-multiturn-tool-cache-proof.py`.
-- Required evidence: `cache_topology`, `requires_disk_backed_restore`, and
-  `rotating_kv_layer_count`.
-- Result: `passed: true`, `failed_checks: []`.
+- Required evidence: cold row required `cache_topology`,
+  `requires_disk_backed_restore`, and `rotating_kv_layer_count`; warm row also
+  required `disk_l2_hits`.
+- Result: both rows reported `passed: true`, `failed_checks: []`.
 
 Behavior proven:
 
 - Turn 1 required tool call finished as `tool_calls`.
 - Turn 1 exact tool args: `{"text":"red\ngreen\nblue"}`.
 - Turn 1 had `content=null`, no reasoning leak, and no visible protocol leak.
-- Turn 2 produced visible answer: `The line count tool counted 3 lines.`
+- Turn 2 produced visible answers with no tool call. The latest warm row
+  answered `3`.
 - Turn 2 had no tool call, no reasoning leak, no protocol leak, and no
   length-stop fake pass.
 - Turn 3 required tool call after assistant/tool history finished as
@@ -112,10 +122,9 @@ Behavior proven:
 - Turn 3 had no visible content leak and no protocol leak.
 - App `/health` after the row was healthy, resident on
   `step-3.7-flash-jangtq_k`, and had no in-flight request.
-- Token/s was recorded. This row is extremely slow on the current machine under
-  the concurrent Step CRACK load: visible turn 2 produced 10 completion tokens
-  in 326.031645042 seconds, about 0.0307 tok/s. Required tool-call turns emitted
-  zero completion tokens by design.
+- Token/s was recorded. The latest warm row visible turn 2 produced 2
+  completion tokens in 0.436365625 seconds, about 4.58 tok/s. Required
+  tool-call turns emitted zero completion tokens by design.
 
 Cache/topology proven:
 
@@ -125,28 +134,26 @@ Cache/topology proven:
 - `requires_disk_backed_restore=true`.
 - Paged cache incompatible for this rotating hybrid row.
 - `turbo_quant_kv_layer_count=0`.
-- Cold row delta: `block_disk_misses +2`, `block_disk_stores +4`,
+- Cold row delta: `block_disk_misses +2`, `block_disk_stores +5`,
   `block_disk_hits +0`.
+- Warm row delta: `block_disk_hits +1`, `block_disk_misses +0`,
+  `block_disk_stores +5`.
 
 Boundary:
 
 - This row proves Step JANGTQ_K required-tool parsing, reasoning separation,
   multi-turn tool-result history, no visible loop, no length-stop fake pass,
   and rotating/topology detection through the real no-sign Osaurus app.
-- This row does not prove warm disk-L2 hit reuse for Step JANGTQ_K. The cache
-  topology and disk-backed store path are proven, but `block_disk_hits` stayed
-  `0`. Do not claim Step JANGTQ_K warm cache-hit readiness until a repeat row
-  records `disk_l2_hits > 0` or `block_disk_hits > 0`.
-- This historical row predated the current Step engine-selected policy update
-  and therefore recorded `turbo_quant_kv_layer_count=0`. The current source
-  policy now defaults Step's full-attention KV layers to TurboQuant while
-  preserving rotating/SWA layers as native rotating cache. Treat this row as
-  the Step JANGTQ_K tool/reasoning/topology proof, not as the final live
-  TurboQuant-default proof.
+- The warm row proves disk L2 reuse for this Step JANGTQ_K path with
+  `disk_l2_hits +1`.
+- The current live rows record `turbo_quant_kv_layer_count=0` for Step
+  JANGTQ_K, while batch diagnostics record TurboQuant compression events. Treat
+  this as tool/reasoning/topology/disk-L2 proof, not as a claim that all Step
+  rotating layers use TurboQuant KV.
 
 ## Current Step TurboQuant KV Policy Proof
 
-- vMLX commit `be2ad909e42f2175bd5aadfd2919edebfb3b60ce` fixes the Step cache
+- vMLX commit `430481cee9625d2a942b8a043ac2d509a13274fd` fixes the Step cache
   construction path so `GenerateParameters.kvMode = .turboQuant` keeps
   full-attention layers as `KVCacheSimple` even when Osaurus also supplies
   `defaultMaxKVSize`. Without this, Step full-attention layers became bounded
@@ -202,6 +209,13 @@ VL/media:
 Focused Swift tests passed:
 
 - `ModelRuntimeFindDirectoryTests/jangtq_formatStampWithSidecar_passes`
+- `ModelRuntimeFindDirectoryTests/shardedSymlinkLayoutResolvesFromBoundedSentinel`
+- `ModelManagerTests/scanLocalModels_detectsShardedIndexWithoutListingAllWeights`
+- `ModelMediaCapabilitiesMCDCTests/step37TextRuntimeDoesNotAdvertiseMedia`
+- `MLXServiceRuntimePolicyTests/stepToolSupportDoesNotRequireBundleMetadataPreflight`
+- `MLXModelTests/step37DownloadedModelIsTextOnlyForPickerEvenWithVisionConfig`
+- `EnsureJANGTQSidecarTests/stepJANGTQUsesSidecarSentinelWithoutMetadataFetch`
+- `EnsureJANGTQSidecarTests/stepJANGTQMissingSidecarFailsWithoutAutoFetch`
 - `RuntimePolicySourceTests/vmlxPinIncludesRuntimeHardening`
 - `SwiftTransformersTokenizerLoaderTests/step37LocalTokenizerUsesRequiredToolFallbackAndClosesThinkingRail`
 - `MLXBatchAdapterTests/additionalContext_threadsRequiredToolChoiceToLocalTemplates`
