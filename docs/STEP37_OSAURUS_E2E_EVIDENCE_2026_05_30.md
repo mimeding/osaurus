@@ -1,0 +1,104 @@
+# Step 3.7 Osaurus E2E Evidence - 2026-05-30
+
+Current vMLX pin: `430481cee9625d2a942b8a043ac2d509a13274fd`
+
+This note records the final no-sign Osaurus proof for the Step 3.7 lane. It does
+not claim LFM, Step JANGTQ_K, MXFP4/MXFP8, or VL rows unless explicitly listed
+below.
+
+## Build and launch
+
+- Build path:
+  `/tmp/osaurus-step37-pr/build/DerivedData-step37-nosign-tqdiag-430481c/Build/Products/Release/osaurus.app`
+- Build command used the keychain-free wrapper:
+  `scripts/live-proof/build-keychain-free-osaurus.sh`
+- Signing settings observed:
+  `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`,
+  `CODE_SIGN_IDENTITY=`, `AD_HOC_CODE_SIGNING_ALLOWED=NO`.
+- The post-build bundle seal was local ad-hoc only:
+  `/usr/bin/codesign --sign - --timestamp=none`.
+- Runtime launch used:
+  `OSAURUS_DISABLE_KEYCHAIN_FOR_TESTS=1`,
+  fresh `OSAURUS_TEST_ROOT`, and
+  `OSU_MODELS_DIR=/tmp/osaurus-step37-policyfix-modelroot-jang2l`.
+- Served model id:
+  `step-3.7-flash-jang_2l`.
+
+No `security`, `notarytool`, Developer ID signing, or password/keychain prompt
+was used in this proof lane.
+
+## Live TurboQuant and L2 proof
+
+Artifact:
+`/tmp/osaurus-step37-tqdiag-430481c-live-20260530-203554/summary.json`
+
+- Cold row: HTTP 200, `finish=stop`, no protocol leak, no length stop.
+- Cold row deltas: `turbo_quant_compressions +1`, `disk_l2_misses +2`,
+  `disk_l2_stores +1`.
+- Warm row: HTTP 200, `finish=stop`, no protocol leak, no length stop.
+- Warm row deltas: `turbo_quant_compressions +1`, `disk_l2_hits +1`,
+  `disk_l2_stores +1`.
+- Visible generation token/s was recorded in the artifact.
+
+This proves the Osaurus app sees live TurboQuant compression diagnostics from
+the pinned vMLX runtime and reuses the disk L2 block store on a repeated prefix.
+
+## Live multi-turn tool proof
+
+Artifact:
+`/tmp/osaurus-step37-final-430481c-step-jang2l-tool-20260530-204607/step-3.7-flash-jang_2l_summary.json`
+
+- Overall verdict: `passed=true`, `failed_checks=[]`.
+- Turn 1 required tool call:
+  `line_count`, exact args `text == "red\ngreen\nblue"`, no visible content,
+  no protocol leak.
+- Turn 2 no-tool answer:
+  visible answer `Three lines were counted.`, no tool call, no protocol leak,
+  `finish=stop`, token/s recorded.
+- Turn 3 required tool call after tool-result history:
+  `line_count`, exact args `text == "one\ntwo"`, no visible content,
+  no protocol leak.
+- Health after row:
+  `status=healthy`, no in-flight requests, model resident.
+- Cache topology:
+  45 layers, 12 KV layers, 33 rotating KV layers,
+  `requires_disk_backed_restore=true`, paged-incompatible.
+- Batch diagnostics after row:
+  `turbo_quant_compressions=4`, `disk_l2_hits=1`,
+  `disk_l2_stores=7`.
+
+This proves Step 3.7 JANG_2L through the real Osaurus app path for strict
+required/none/required multi-turn tool behavior, no loop/leak/length-stop fake
+pass, disk-backed restore topology, and live TurboQuant/L2 diagnostics.
+
+## Source and readiness guards
+
+The following passed after repinning Osaurus to vMLX
+`430481cee9625d2a942b8a043ac2d509a13274fd`:
+
+- `git diff --check`
+- `RuntimePolicySourceTests/vmlxPinIncludesRuntimeHardening`
+- `MLXBatchAdapterTests/cacheKVModeTagTracksEffectiveCoordinatorPolicy`
+- `scripts/live-proof/assert-server-settings-runtime-wiring.sh`
+- `scripts/live-proof/assert-keychain-free-proof-path.sh`
+- `scripts/live-proof/assert-osaurus-vmlx-pr-readiness.sh`
+- `scripts/live-proof/assert-osaurus-no-forced-behavior-pr.sh`
+- `scripts/live-proof/assert-osaurus-pr-hygiene.sh`
+- `scripts/live-proof/assert-tool-choice-required-routing.sh`
+
+The guards cover vMLX pin surfaces, runtime settings save/invalidation,
+topology-gated engine-selected TurboQuant policy, block L2 settings, MTP
+auto-detect settings, keychain-free proof paths, no hidden sampler or forced
+behavior repairs, reasoning/UI routing, tool-choice routing, HTTP cancellation,
+and PR hygiene.
+
+## Boundaries
+
+- Step 3.7 JANG_2L is green for this PR lane.
+- Step JANGTQ_K was not re-proven in this final Osaurus artifact.
+- LFM through Osaurus was not re-proven in this final artifact.
+- MXFP4/MXFP8 sibling bundles are not claimed by this proof.
+- VL/media rows are not claimed by this proof.
+- The Step topology is mixed full KV plus rotating KV. The runtime policy only
+  permits TurboQuant KV for the compatible full-KV portion through the vMLX
+  engine-selected path and keeps disk-backed restore for the architecture.

@@ -948,6 +948,18 @@ public actor ModelRuntime {
         // layers and preserves RotatingKVCache sliding layers, so the disk
         // coordinator still owns SWA restore while full KV layers get the
         // proven TQ codec.
+        if ModelFamilyNames.isStepFamily(modelName) {
+            if let cacheTopology {
+                return cacheTopology.kvLayerCount > 0
+                    && cacheTopology.mambaLayerCount == 0
+                    && cacheTopology.arraysLayerCount == 0
+                    && cacheTopology.hybridPoolLayerCount == 0
+                    && cacheTopology.rotatingWrapperLayerCount == 0
+                    && cacheTopology.zayaCCALayerCount == 0
+            }
+            return true
+        }
+
         if ModelFamilyNames.isDSV4Family(modelName)
             || ModelFamilyNames.isZayaFamily(modelName)
             || ModelFamilyNames.isZayaVLFamily(modelName)
@@ -957,14 +969,6 @@ public actor ModelRuntime {
             return false
         }
         if let cacheTopology {
-            if ModelFamilyNames.isStepFamily(modelName) {
-                return cacheTopology.kvLayerCount > 0
-                    && cacheTopology.mambaLayerCount == 0
-                    && cacheTopology.arraysLayerCount == 0
-                    && cacheTopology.hybridPoolLayerCount == 0
-                    && cacheTopology.rotatingWrapperLayerCount == 0
-                    && cacheTopology.zayaCCALayerCount == 0
-            }
             if cacheTopology.mambaLayerCount > 0
                 || cacheTopology.arraysLayerCount > 0
                 || cacheTopology.hybridPoolLayerCount > 0
