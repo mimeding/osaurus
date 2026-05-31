@@ -5,7 +5,7 @@ vMLX pin. It deliberately separates proven rows from partial rows.
 
 ## Code State
 
-- vMLX pin: `0e5b8289bda477fa284d6c81f01e2c0a198021da`.
+- vMLX pin: `be2ad909e42f2175bd5aadfd2919edebfb3b60ce`.
 - vMLX fixes:
   - Step tool-call parser support for Step XML and narrow schema-gated bare
     `name({"arg": ...})` calls on reasoning/content rails.
@@ -146,8 +146,14 @@ Boundary:
 
 ## Current Step TurboQuant KV Policy Proof
 
-- vMLX commit `0e5b8289bda477fa284d6c81f01e2c0a198021da` adds a focused source
-  and topology test for the Step contract:
+- vMLX commit `be2ad909e42f2175bd5aadfd2919edebfb3b60ce` fixes the Step cache
+  construction path so `GenerateParameters.kvMode = .turboQuant` keeps
+  full-attention layers as `KVCacheSimple` even when Osaurus also supplies
+  `defaultMaxKVSize`. Without this, Step full-attention layers became bounded
+  `RotatingKVCache` instances and the TurboQuant hook had no eligible layers.
+- Focused vMLX coverage now pins both sides of the Step contract:
+  `Step37ParserDispatchTests/stepCacheTopologyKeepsFullAttentionTQCompatible`
+  and
   `Step37ParserDispatchTests/stepTurboQuantKVContractCoversOnlyFullAttentionLayers`.
 - That test proves the vMLX TurboQuant hook is constrained to `KVCacheSimple`
   full-attention layers and explicitly preserves `RotatingKVCache`,
