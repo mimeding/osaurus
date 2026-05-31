@@ -783,6 +783,11 @@ struct RuntimePolicySourceTests {
                 && runtime.contains("Self.isKnownHybridModel(name: modelName)"),
             "Engine-selected TurboQuant must stay off by default for DSV4, ZAYA/ZAYA-VL, and hybrid topologies until exact rows prove it"
         )
+        #expect(
+            runtime.contains("ModelFamilyNames.isStepFamily(modelName)")
+                && runtime.contains("Step 3.7 is the narrow exception"),
+            "Step 3.7 must be the explicit mixed-SWA exception: only its proven full-attention KV layers default to TurboQuant while rotating layers stay disk-backed"
+        )
     }
 
     @Test("Runtime cache telemetry keeps paged-prefix and disk-L2 counters separate")
