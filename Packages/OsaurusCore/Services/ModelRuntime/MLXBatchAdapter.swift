@@ -974,7 +974,7 @@ struct MLXBatchAdapter {
             draftStrategy: effectiveDraftStrategy,
             nativeMTPExplicitSamplingFallback: nativeMTPExplicitSamplingFallback
         )
-        let mlxParams = ModelRuntime.makeGenerateParameters(
+        var mlxParams = ModelRuntime.makeGenerateParameters(
             temperature: effective.temperature,
             maxTokens: effective.maxTokens,
             topP: effective.topP,
@@ -986,6 +986,15 @@ struct MLXBatchAdapter {
             enableCompiledBatchDecode: effective.compiledBatchDecode,
             prefillStepSize: runtime.concurrency.prefillStepSize
         )
+        let cacheTopology = await container.cacheTopologySnapshot()
+        let effectiveKVMode = ModelRuntime.defaultKVMode(
+            for: ServerRuntimeSettingsStore.snapshot().cache,
+            modelName: modelName,
+            cacheTopology: cacheTopology
+        )
+        if case .none = mlxParams.kvMode {
+            mlxParams.kvMode = effectiveKVMode
+        }
 
         // Best-effort per-request determinism: seed the MLX global random
         // state immediately before submission. Note: vmlx's `Sampler`

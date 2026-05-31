@@ -654,6 +654,18 @@ struct MLXBatchAdapterTests {
         #expect(
             ModelRuntime.cacheKVModeTag(
                 for: settings.cache,
+                modelName: "JANGQ-AI/Step-3.7-Flash-JANG_2L"
+            ) == "turbo(3,3)"
+        )
+        #expect(
+            ModelRuntime.cacheKVModeTag(
+                for: settings.cache,
+                modelName: "step-3.7-flash-jang_2l"
+            ) == "turbo(3,3)"
+        )
+        #expect(
+            ModelRuntime.cacheKVModeTag(
+                for: settings.cache,
                 modelName: "JANGQ-AI/Step-3.7-Flash-JANG_2L",
                 cacheTopology: ModelCacheTopologySnapshot(
                     layerCount: 45,
