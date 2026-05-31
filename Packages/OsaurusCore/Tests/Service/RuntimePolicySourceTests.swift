@@ -472,7 +472,7 @@ struct RuntimePolicySourceTests {
         // duplicate-product collisions with the app graph while keeping yyjson
         // as one shared C dependency. Osaurus must not carry SwiftPM
         // moduleAliases for that collision.
-        let expectedRuntimeHardenedRevision = "258d20770cfb3d2c07a756caac14c768ed7f9a24"
+        let expectedRuntimeHardenedRevision = "0e5b8289bda477fa284d6c81f01e2c0a198021da"
         let manifestRevision = try Self.vmlxPinRevision(in: manifest)
         let workspaceRevision = try Self.vmlxPinRevision(in: workspaceResolved)
         let appRevision = try Self.vmlxPinRevision(in: appResolved)
@@ -782,6 +782,11 @@ struct RuntimePolicySourceTests {
                 && runtime.contains("ModelFamilyNames.isZayaVLFamily(modelName)")
                 && runtime.contains("Self.isKnownHybridModel(name: modelName)"),
             "Engine-selected TurboQuant must stay off by default for DSV4, ZAYA/ZAYA-VL, and hybrid topologies until exact rows prove it"
+        )
+        #expect(
+            runtime.contains("ModelFamilyNames.isStepFamily(modelName)")
+                && runtime.contains("Step 3.7 is the narrow exception"),
+            "Step 3.7 must be the explicit mixed-SWA exception: only its proven full-attention KV layers default to TurboQuant while rotating layers stay disk-backed"
         )
     }
 

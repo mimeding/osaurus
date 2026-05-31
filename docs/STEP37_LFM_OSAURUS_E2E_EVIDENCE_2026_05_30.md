@@ -5,7 +5,7 @@ vMLX pin. It deliberately separates proven rows from partial rows.
 
 ## Code State
 
-- vMLX pin: `258d20770cfb3d2c07a756caac14c768ed7f9a24`.
+- vMLX pin: `0e5b8289bda477fa284d6c81f01e2c0a198021da`.
 - vMLX fixes:
   - Step tool-call parser support for Step XML and narrow schema-gated bare
     `name({"arg": ...})` calls on reasoning/content rails.
@@ -19,9 +19,11 @@ vMLX pin. It deliberately separates proven rows from partial rows.
   templates through the Step fallback, disables Step thinking only for explicit
   required tool choice, and preserves normal optional-tool behavior otherwise.
 - Osaurus cache policy: engine-selected TurboQuant KV remains topology-gated.
-  Full simple-KV models can use TurboQuant KV; Step hybrid rotating/sliding
-  cache and LFM SSM/Mamba hybrid cache use native KV plus disk-backed restore
-  and companion state.
+  Full simple-KV models can use TurboQuant KV. Step 3.7 is the explicit mixed
+  full-attention + SWA exception: vMLX converts only `KVCacheSimple`
+  full-attention layers to TurboQuant KV and preserves `RotatingKVCache`
+  sliding layers for disk-backed restore. LFM SSM/Mamba hybrid cache still uses
+  native KV plus disk-backed restore and SSM companion state.
 
 ## No-Sign / No-Keychain Boundary
 
@@ -135,8 +137,31 @@ Boundary:
   topology and disk-backed store path are proven, but `block_disk_hits` stayed
   `0`. Do not claim Step JANGTQ_K warm cache-hit readiness until a repeat row
   records `disk_l2_hits > 0` or `block_disk_hits > 0`.
-- Step remains native/fp16 by default in Osaurus because it is a rotating hybrid
-  topology. TurboQuant KV is not enabled by default for this row.
+- This historical row predated the current Step engine-selected policy update
+  and therefore recorded `turbo_quant_kv_layer_count=0`. The current source
+  policy now defaults Step's full-attention KV layers to TurboQuant while
+  preserving rotating/SWA layers as native rotating cache. Treat this row as
+  the Step JANGTQ_K tool/reasoning/topology proof, not as the final live
+  TurboQuant-default proof.
+
+## Current Step TurboQuant KV Policy Proof
+
+- vMLX commit `0e5b8289bda477fa284d6c81f01e2c0a198021da` adds a focused source
+  and topology test for the Step contract:
+  `Step37ParserDispatchTests/stepTurboQuantKVContractCoversOnlyFullAttentionLayers`.
+- That test proves the vMLX TurboQuant hook is constrained to `KVCacheSimple`
+  full-attention layers and explicitly preserves `RotatingKVCache`,
+  `DeepseekV4Cache`, `MambaCache`, and `CacheList` paths.
+- Osaurus `ModelRuntime.shouldUseTurboQuantByDefault` now enables
+  engine-selected TurboQuant only for Step topologies with KV layers and no
+  Mamba/arrays/hybrid-pool/rotating-wrapper/ZAYA-CCA companion state. The guard
+  still keeps DSV4, ZAYA/ZAYA-VL, Gemma, SSM/CCA/hybrid-pool families, and
+  unknown path-dependent topologies native by default.
+- Focused Osaurus tests now expect `turbo(3,3)` for known Step JANG_2L and
+  Step JANGTQ_K topology tags, and source guards pin the Step exception text.
+- Boundary: this is a source/topology and focused-test proof. A fresh no-sign
+  app row from the final PR head should still be used before claiming measured
+  live Step TurboQuant KV compression, token/s, and warm L2 hit behavior.
 
 ## Partial / Blocked Rows
 

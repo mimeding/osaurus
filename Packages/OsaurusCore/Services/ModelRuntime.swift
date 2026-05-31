@@ -942,6 +942,12 @@ public actor ModelRuntime {
         // Hybrid and path-dependent caches keep fp16 live KV by default until
         // a row proves TurboQuant for that exact topology. TurboQuant KV is
         // not a substitute for SSM/CCA/CSA/HSA/SWA companion-state restore.
+        //
+        // Step 3.7 is the narrow exception for mixed full-attention + SWA:
+        // vMLX's TurboQuant hook converts only KVCacheSimple full-attention
+        // layers and preserves RotatingKVCache sliding layers, so the disk
+        // coordinator still owns SWA restore while full KV layers get the
+        // proven TQ codec.
         if ModelFamilyNames.isDSV4Family(modelName)
             || ModelFamilyNames.isZayaFamily(modelName)
             || ModelFamilyNames.isZayaVLFamily(modelName)
@@ -951,6 +957,14 @@ public actor ModelRuntime {
             return false
         }
         if let cacheTopology {
+            if ModelFamilyNames.isStepFamily(modelName) {
+                return cacheTopology.kvLayerCount > 0
+                    && cacheTopology.mambaLayerCount == 0
+                    && cacheTopology.arraysLayerCount == 0
+                    && cacheTopology.hybridPoolLayerCount == 0
+                    && cacheTopology.rotatingWrapperLayerCount == 0
+                    && cacheTopology.zayaCCALayerCount == 0
+            }
             if cacheTopology.mambaLayerCount > 0
                 || cacheTopology.arraysLayerCount > 0
                 || cacheTopology.hybridPoolLayerCount > 0

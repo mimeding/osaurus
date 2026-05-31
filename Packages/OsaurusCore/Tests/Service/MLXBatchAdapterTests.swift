@@ -661,7 +661,7 @@ struct MLXBatchAdapterTests {
                     turboQuantKVLayerCount: 0,
                     rotatingKVLayerCount: 33
                 )
-            ) == "fp16"
+            ) == "turbo(3,3)"
         )
         #expect(
             ModelRuntime.cacheKVModeTag(
@@ -673,7 +673,7 @@ struct MLXBatchAdapterTests {
                     turboQuantKVLayerCount: 0,
                     rotatingKVLayerCount: 33
                 )
-            ) == "fp16"
+            ) == "turbo(3,3)"
         )
         #expect(
             ModelRuntime.cacheKVModeTag(
