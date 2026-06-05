@@ -176,6 +176,8 @@ Osaurus collects **anonymous, aggregated usage analytics** via [Aptabase](https:
 
 It's **consent-gated and opt-in**: nothing leaves your Mac unless you turn it on. Funnel events recorded during onboarding stay buffered locally and are transmitted *only* if you opt in. You can change your choice anytime in **Settings → Privacy → Share Anonymous Usage Data**.
 
+For the exact, exhaustive list of every event and property we capture — and an explicit list of what we never collect — see [Telemetry & KPIs](docs/TELEMETRY.md).
+
 ### Crash reporting
 
 **Crash and app-hang reporting** via [Sentry](https://sentry.io) is a **separate, independent** switch from usage analytics. Unlike analytics it's **opt-out** — on by default and active from launch — because crash reports carry no personal information and are what let us fix real bugs; you can turn it off anytime in **Settings → Privacy → Send Crash Reports**. It's limited to crash and hang diagnostics — no performance tracing, profiling, failed-request capture, network breadcrumbs, screenshots, or personal information; we drop the user object and device hostname from every event, on top of disabling PII. It needs a DSN to be configured, so like analytics it's off by default in source builds.
@@ -303,6 +305,9 @@ See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for the architecture guide and layer
 Osaurus is actively developed and we welcome contributions: bug fixes, new plugins, documentation, UI/UX improvements, and testing.
 
 Check out [Good First Issues](https://github.com/osaurus-ai/osaurus/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22), read the [Contributing Guide](CONTRIBUTING.md), or join [Discord](https://discord.gg/osaurus). See [docs/FEATURES.md](docs/FEATURES.md) for the full feature inventory.
+
+> [!NOTE]
+> **🌐 Help translate Osaurus.** We're looking for contributors to localize the app into **Spanish**, **Korean**, **Japanese**, and **Traditional Chinese** -- these locales are already wired up in Xcode, so you can start translating right away. See [docs/TRANSLATORS.md](docs/TRANSLATORS.md) for how to contribute and the contributor leaderboard.
 
 ## Community
 
