@@ -85,6 +85,38 @@ It requires real Osaurus chat-app and HTTP rows for VLM/omni media, reasoning
 settings, saved-setting isolation, generation defaults, parser leak checks, and
 cache stats before the consolidated package can be called production-clear.
 
+## Runtime proof validation
+
+Open runtime issues such as #1228, #1161, #1162, #1163, #903, and #1183 need
+evidence rows that separate `proven`, `partial`, `failed`, and `unproven`
+states. Source inspection or a load-only check is not enough to promote a
+model family, cache path, system-prompt path, cancellation path, or media route.
+
+[`RuntimeProofValidation.swift`](../Packages/OsaurusCore/Services/ModelRuntime/RuntimeProofValidation.swift)
+contains the source-level validator used to keep that language precise. A row
+marked `proven` is blocked unless the requirements it claims have matching
+evidence:
+
+- `tokensPerSecond` requires a recorded token/s value for generation rows.
+- `visibleOutput` requires non-empty visible assistant text.
+- `noParserMarkerLeak` rejects visible/runtime marker leaks such as tool-call,
+  reasoning, DSML, or streaming sentinel fragments.
+- `multiTurnCoherency` and `systemPromptInjection` require explicit positive
+  probes rather than a single happy-path answer.
+- `ramFootprint` and `cancellation` require physical-footprint and cleanup
+  evidence before a RAM or cancel row can be called proven.
+- `cacheHit` applies topology-specific checks: full-attention rows need KV,
+  prefix, and disk-L2 evidence; hybrid SSM rows need companion hits; ZAYA/CCA
+  and DeepSeek pool rows need their companion/pool evidence instead of generic
+  KV-only proof.
+- `mediaPayload` requires a real media payload, cache salt, media-path routing,
+  and cache-hit validation. Text-path evidence cannot prove an audio, image, or
+  video route.
+
+Rows marked `failed` remain valid evidence even when they lack the positive
+fields above, but they should still carry an artifact path so the failure can be
+replayed or inspected.
+
 osaurus deliberately does not pass `GenerateParameters.maxKVSize` -- a
 global rotating cache window forced from the app layer conflicted with
 sliding-window attention layers (e.g. Gemma-4 with a fixed per-layer
@@ -225,6 +257,7 @@ reasoning gets dropped together with the other sentinels.
 | `Events.swift` | `ModelRuntimeEvent` enum (`tokens` / `reasoning` / `toolInvocation` / `completionInfo`). |
 | `RuntimeConfig.swift` | Server-side default `topP`. |
 | `InferenceFeatureFlags.swift` | Single user-tunable: `mlxBatchEngineMaxBatchSize`. |
+| `RuntimeProofValidation.swift` | Source-level validation for runtime proof rows and issue-closure evidence. |
 | `MetalGate.swift` | Embedding-only counter (kept as the canonical hook for any future MLX-vs-CoreML interlock). |
 | `ModelLease.swift` | Per-model refcount; `unload(name)` waits for `count == 0` before freeing buffers. |
 | `ModelResidencyManager.swift` | Per-model idle timers and health snapshots for the Settings residency policy. |
@@ -238,6 +271,7 @@ reasoning gets dropped together with the other sentinels.
 | `ModelResidencyManagerTests` | Timer scheduling, cancellation on new use, never policy, and active-lease protection. |
 | `TaskCoalescerTests` | Single-flight engine-creation discipline and teardown-during-creation races. |
 | `RuntimePolicySourceTests` | Source-level guardrails for DSV4 cache ownership, vmlx pin, SSM re-derive opt-out, idle residency wiring, and max-batch docs. |
+| `RuntimeProofValidationTests` | Proven/partial/failed/unproven proof-row validation; token/s, parser leak, cache, media, and artifact checks. |
 | `GenerationEventMapperTests` | `chunk` -> `tokens`; `toolCall` -> `toolInvocation` JSON serialization (happy path + failure envelope); `info` -> `completionInfo`; cross-chunk stop-sequence cut. |
 | `StreamingReasoningHintTests` | Sentinel encode/decode round-trip; co-existence with the tool sentinel filter. |
 | `MetalGateTests` | Embedding gate happy paths. |
