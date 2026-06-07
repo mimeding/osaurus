@@ -117,6 +117,29 @@ Rows marked `failed` remain valid evidence even when they lack the positive
 fields above, but they should still carry an artifact path so the failure can be
 replayed or inspected.
 
+The live family runner also emits a machine-readable classification report:
+
+```bash
+scripts/live-proof/run-family-runtime-chat-matrix.sh FAMILY_FILTER=gemma
+```
+
+After the row summaries are collected, the runner writes
+`PROOF_CLASSIFICATION.json` next to `SUMMARY.json`. The classifier reads the
+existing `family-runtime-chat-matrix.json` manifest and each row summary, then
+records:
+
+- per-row verdicts using `proven`, `partial`, `failed`, or `unproven`
+- the claimed proof requirements for that row
+- blocker messages for missing token/s, visible output, parser-leak checks,
+  multi-turn coherency, topology-specific cache evidence, or media-path proof
+- issue-coverage notes for #1228, #1161, #1162, #1163, #903, and #1183
+
+This report is intentionally stricter than the harness pass/fail bit. A row can
+complete the tool/cache harness and still remain `partial` if, for example, a
+VL model was tested through a text/tool path without a real media payload and
+media cache salt. Those rows stay useful as evidence, but they must not close a
+runtime/media issue as proven.
+
 osaurus deliberately does not pass `GenerateParameters.maxKVSize` -- a
 global rotating cache window forced from the app layer conflicted with
 sliding-window attention layers (e.g. Gemma-4 with a fixed per-layer
