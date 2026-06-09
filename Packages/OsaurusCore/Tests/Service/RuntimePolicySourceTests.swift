@@ -554,7 +554,7 @@ struct RuntimePolicySourceTests {
         // duplicate-product collisions with the app graph while keeping yyjson
         // as one shared C dependency. Osaurus must not carry SwiftPM
         // moduleAliases for that collision.
-        let expectedRuntimeHardenedRevision = "08ed3172a55faf9751f4b148705dbf0a92749829"
+        let expectedRuntimeHardenedRevision = "65679afcb7da5ef1ae4e06cbc2ed2479a7077e7f"
         let manifestRevision = try Self.vmlxPinRevision(in: manifest)
         let workspaceRevision = try Self.vmlxPinRevision(in: workspaceResolved)
         let appRevision = try Self.vmlxPinRevision(in: appResolved)
@@ -884,7 +884,7 @@ struct RuntimePolicySourceTests {
             mlxService.contains("ModelFamilyNames.isStepFamily(modelId)")
                 && mlxService.contains("Step 3.7 currently runs through vMLX's Step text runtime")
                 && mlxService.contains("Step 3.7 tool parsing/template selection is owned by the pinned")
-                && mlxService.contains("return ModelMediaCapabilities.from(modelId: modelId)"),
+                && mlxService.contains("return ModelMediaCapabilities.descriptor(modelId: modelId)"),
             "Step 3.7 runtime policy must stay text-only/tool-capable and must not block preflight on external bundle metadata until Step VLM is wired and proven"
         )
     }
