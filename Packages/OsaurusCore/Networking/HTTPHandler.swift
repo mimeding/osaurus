@@ -991,6 +991,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     plan: memorySafetyPlan,
                     memoryStatus: memoryStatus
                 ),
+                "storage_locations": Self.storageLocationsJSONObject(),
             ]
             let data = try? JSONSerialization.data(withJSONObject: obj, options: .osaurusCanonical)
             let body = data.flatMap { String(decoding: $0, as: UTF8.self) } ?? "{}"
@@ -1351,6 +1352,13 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             return [:]
         }
         return object
+    }
+
+    /// Storage-location standards audit block for `/admin/cache-stats`.
+    /// Read-only probe + pure classification; see issue #1422 and
+    /// `docs/STORAGE.md` (Storage Location Standards).
+    private static func storageLocationsJSONObject() -> [String: Any] {
+        StorageLocationStandards.jsonObject(for: StorageLocationStandards.currentReport())
     }
 
     private static func memorySafetyJSONObject(
