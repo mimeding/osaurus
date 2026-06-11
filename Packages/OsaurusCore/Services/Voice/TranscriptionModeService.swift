@@ -36,6 +36,16 @@ public final class TranscriptionModeService: ObservableObject {
     /// Current configuration
     @Published public private(set) var configuration: TranscriptionConfiguration = .default
 
+    /// Latest testable readiness snapshot for the configured capture hotkey.
+    @Published public private(set) var hotkeyReadiness = VoiceCaptureHotkeyPolicy.readiness(
+        configuration: .default,
+        requirements: .init(
+            accessibilityPermissionGranted: false,
+            microphonePermissionGranted: false,
+            speechModelAvailable: false
+        )
+    )
+
     // MARK: - Dependencies
 
     private let speechService = SpeechService.shared
@@ -77,21 +87,21 @@ public final class TranscriptionModeService: ObservableObject {
             .store(in: &configCancellables)
     }
 
-    public func toggle() {
+    public func toggle(source: VoiceCaptureActivationSource = .explicitHotkey) {
         switch state {
         case .idle:
-            startTranscription()
+            startTranscription(source: source)
         case .transcribing:
             stopTranscription()
         case .starting, .stopping:
             break
         case .error:
             state = .idle
-            startTranscription()
+            startTranscription(source: source)
         }
     }
 
-    public func startTranscription() {
+    public func startTranscription(source: VoiceCaptureActivationSource = .explicitHotkey) {
         switch state {
         case .idle, .error: break
         default:
@@ -101,17 +111,33 @@ public final class TranscriptionModeService: ObservableObject {
 
         // Pick up the latest shared voice-input settings (stop mode / pause
         // duration) so a change made just before starting takes effect.
+        loadConfiguration()
         speechConfig = SpeechConfigurationStore.load()
 
         keyboardService.checkAccessibilityPermission()
+        updateHotkeyReadiness()
+        let decision = VoiceCaptureHotkeyPolicy.startDecision(source: source, readiness: hotkeyReadiness)
+        guard decision == .allowed else {
+            if decision.blockers.contains(.accessibilityPermission) {
+                keyboardService.requestAccessibilityPermission()
+            }
+            if decision.blockers.contains(.microphonePermission) {
+                Task {
+                    _ = await speechService.requestMicrophonePermission()
+                }
+            }
+            state = .error(decision.message ?? L("Voice capture is not available"))
+            return
+        }
+
         guard keyboardService.hasAccessibilityPermission else {
-            state = .error("Accessibility permission required")
+            state = .error(VoiceCaptureHotkeyBlocker.accessibilityPermission.message)
             keyboardService.requestAccessibilityPermission()
             return
         }
 
         guard speechService.isModelLoaded || SpeechModelManager.shared.selectedModel != nil else {
-            state = .error("No speech model available")
+            state = .error(VoiceCaptureHotkeyBlocker.speechModel.message)
             return
         }
 
@@ -166,13 +192,15 @@ public final class TranscriptionModeService: ObservableObject {
         configuration = TranscriptionConfigurationStore.load()
         isEnabled = configuration.transcriptionModeEnabled
         speechConfig = SpeechConfigurationStore.load()
+        updateHotkeyReadiness()
     }
 
     private func registerHotkeyIfNeeded() {
-        if isEnabled, let hotkey = configuration.hotkey {
+        updateHotkeyReadiness()
+        if hotkeyReadiness.canRegister, let hotkey = configuration.hotkey {
             hotkeyManager.register(hotkey: hotkey) { [weak self] in
                 Task { @MainActor in
-                    self?.toggle()
+                    self?.toggle(source: .explicitHotkey)
                 }
             }
             print("[TranscriptionMode] Hotkey registered: \(hotkey.displayString)")
@@ -180,6 +208,17 @@ public final class TranscriptionModeService: ObservableObject {
             hotkeyManager.unregister()
             print("[TranscriptionMode] Hotkey unregistered")
         }
+    }
+
+    private func updateHotkeyReadiness() {
+        hotkeyReadiness = VoiceCaptureHotkeyPolicy.readiness(
+            configuration: configuration,
+            requirements: VoiceCaptureRuntimeRequirements(
+                accessibilityPermissionGranted: keyboardService.hasAccessibilityPermission,
+                microphonePermissionGranted: speechService.microphonePermissionGranted,
+                speechModelAvailable: speechService.isModelLoaded || SpeechModelManager.shared.selectedModel != nil
+            )
+        )
     }
 
     private func setupOverlayCallbacks() {
@@ -246,9 +285,9 @@ public final class TranscriptionModeService: ObservableObject {
         let confirmedLength = speechService.confirmedTranscription.count
         let hasNewConfirmedText = confirmedLength > lastConfirmedLength
         if hasNewConfirmedText { lastConfirmedLength = confirmedLength }
-        if speechService.isSpeechDetected || hasNewConfirmedText
-            || !speechService.currentTranscription.isEmpty
-        {
+        let hasSpeechActivity = speechService.isSpeechDetected || hasNewConfirmedText
+        let hasCurrentTranscription = !speechService.currentTranscription.isEmpty
+        if hasSpeechActivity || hasCurrentTranscription {
             lastSpeechActivityTime = Date()
         }
 

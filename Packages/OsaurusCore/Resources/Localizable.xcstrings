@@ -59569,6 +59569,214 @@
         }
       }
     },
+    "Accessibility permission is required to type into other apps" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Bedienungshilfen-Berechtigung ist erforderlich, um in andere Apps zu tippen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "需要无障碍权限才能在其他应用中输入"
+          }
+        }
+      }
+    },
+    "Choose a hotkey or keep transcription disabled" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wähle eine Tastenkombination oder lasse die Transkription deaktiviert"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "选择一个快捷键，或保持转录已禁用"
+          }
+        }
+      }
+    },
+    "Escape is reserved for canceling transcription" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Escape ist zum Abbrechen der Transkription reserviert"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Escape 已保留用于取消转录"
+          }
+        }
+      }
+    },
+    "Hotkey is ready. Recording still requires an explicit press." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Die Tastenkombination ist bereit. Die Aufnahme erfordert weiterhin einen ausdrücklichen Tastendruck."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "快捷键已就绪。录音仍需要明确按下。"
+          }
+        }
+      }
+    },
+    "Letter, number, and punctuation keys need a modifier" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Buchstaben-, Zahlen- und Satzzeichentasten benötigen eine Modifikatortaste"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "字母、数字和标点键需要组合修饰键"
+          }
+        }
+      }
+    },
+    "Microphone permission is required to capture speech" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Mikrofonberechtigung ist erforderlich, um Sprache aufzunehmen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "需要麦克风权限才能捕获语音"
+          }
+        }
+      }
+    },
+    "Select a downloaded speech model before recording" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wähle vor der Aufnahme ein heruntergeladenes Sprachmodell aus"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "录音前请选择已下载的语音模型"
+          }
+        }
+      }
+    },
+    "Start" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Starten"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "开始"
+          }
+        }
+      }
+    },
+    "The hotkey label could not be read" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Die Tastenkombinationsbezeichnung konnte nicht gelesen werden"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法读取快捷键标签"
+          }
+        }
+      }
+    },
+    "Transcription Mode is disabled" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Transkriptionsmodus ist deaktiviert"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "转录模式已禁用"
+          }
+        }
+      }
+    },
+    "Voice capture is not available" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Sprachaufnahme ist nicht verfügbar"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "语音捕获不可用"
+          }
+        }
+      }
+    },
+    "Voice capture is not ready" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Sprachaufnahme ist nicht bereit"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "语音捕获尚未就绪"
+          }
+        }
+      }
+    },
+    "Voice capture requires an explicit button press or hotkey" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Sprachaufnahme erfordert einen ausdrücklichen Tastendruck oder eine Tastenkombination"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "语音捕获需要明确按下按钮或快捷键"
+          }
+        }
+      }
+    },
     "Zip Bundle" : {
       "localizations" : {
         "de" : {

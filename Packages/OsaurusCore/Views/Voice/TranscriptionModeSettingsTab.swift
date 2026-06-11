@@ -88,6 +88,38 @@ struct TranscriptionModeSettingsTab: View {
             && modelManager.selectedModel != nil
     }
 
+    private var captureRequirements: VoiceCaptureRuntimeRequirements {
+        VoiceCaptureRuntimeRequirements(
+            accessibilityPermissionGranted: keyboardService.hasAccessibilityPermission,
+            microphonePermissionGranted: speechService.microphonePermissionGranted,
+            speechModelAvailable: modelManager.downloadedModelsCount > 0 && modelManager.selectedModel != nil
+        )
+    }
+
+    private var hotkeyReadiness: VoiceCaptureHotkeyReadiness {
+        VoiceCaptureHotkeyPolicy.readiness(
+            configuration: TranscriptionConfiguration(
+                transcriptionModeEnabled: transcriptionEnabled,
+                hotkey: hotkey
+            ),
+            requirements: captureRequirements
+        )
+    }
+
+    private var captureControlState: VoiceCaptureControlState {
+        switch transcriptionService.state {
+        case .transcribing:
+            return .recording
+        case .starting, .stopping:
+            return .processing
+        case .idle, .error:
+            if hotkeyReadiness.canStartCapture && speechService.isModelLoaded {
+                return .idle
+            }
+            return .unavailable(hotkeyReadiness.firstBlockerMessage ?? L("Voice capture is not ready"))
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
@@ -354,6 +386,31 @@ struct TranscriptionModeSettingsTab: View {
                         .font(.system(size: 11))
                         .foregroundColor(theme.warningColor)
                 }
+
+                HStack(spacing: 8) {
+                    Image(systemName: hotkeyReadiness.canRegister ? "checkmark.circle.fill" : "info.circle")
+                        .font(.system(size: 12))
+                        .foregroundColor(hotkeyReadiness.canRegister ? theme.successColor : theme.warningColor)
+                    Text(
+                        hotkeyReadiness.firstBlockerMessage
+                            ?? L("Hotkey is ready. Recording still requires an explicit press.")
+                    )
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.tertiaryText)
+
+                    Spacer()
+
+                    if hotkey != VoiceCaptureHotkeyPolicy.defaultHotkey {
+                        Button {
+                            hotkey = VoiceCaptureHotkeyPolicy.defaultHotkey
+                        } label: {
+                            Text("Use F8", bundle: .module)
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(theme.accentColor)
+                        .buttonStyle(.plain)
+                    }
+                }
             }
         }
         .padding(20)
@@ -431,34 +488,13 @@ struct TranscriptionModeSettingsTab: View {
 
             // Controls
             HStack(spacing: 16) {
-                Button(action: {
-                    transcriptionService.toggle()
-                }) {
-                    HStack(spacing: 8) {
-                        Image(
-                            systemName: transcriptionService.state == .transcribing ? "stop.fill" : "mic.fill"
-                        )
-                        .font(.system(size: 14))
-                        Text(transcriptionService.state == .transcribing ? L("Stop") : L("Start Test"))
-                            .font(.system(size: 14, weight: .medium))
+                VoiceCaptureControlButton(
+                    state: captureControlState,
+                    title: transcriptionService.state == .transcribing ? L("Stop") : L("Start Test"),
+                    action: {
+                        transcriptionService.toggle(source: .button)
                     }
-                    .foregroundColor(
-                        transcriptionService.state == .transcribing
-                            ? Color.white
-                            : (theme.isDark ? theme.primaryBackground : Color.white)
-                    )
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(
-                                transcriptionService.state == .transcribing
-                                    ? theme.errorColor : theme.accentColor
-                            )
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(!speechService.isModelLoaded || transcriptionService.state == .starting)
+                )
 
                 if let hk = hotkey {
                     Text("or press \(hk.displayString)", bundle: .module)

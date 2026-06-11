@@ -122,7 +122,7 @@ struct TTSModeSettingsTab: View {
                     .foregroundColor(theme.accentColor)
 
                 Text(
-                    "Powered by FluidAudio PocketTTS. English only. Streams audio as it's synthesized.",
+                    "Powered by FluidAudio PocketTTS. English only. Conversation speech output stays opt-in per chat.",
                     bundle: .module
                 )
                 .font(.system(size: 12))
@@ -232,17 +232,20 @@ struct TTSModeSettingsTab: View {
     private var modelAction: some View {
         switch ttsService.modelState {
         case .notReady, .failed:
-            Button(action: { ttsService.ensureModelLoaded() }) {
-                Text("Download", bundle: .module)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(theme.isDark ? theme.primaryBackground : .white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(theme.accentColor)
-                    )
-            }
+            Button(
+                action: { ttsService.ensureModelLoaded() },
+                label: {
+                    Text("Download", bundle: .module)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(theme.isDark ? theme.primaryBackground : .white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(theme.accentColor)
+                        )
+                }
+            )
             .buttonStyle(PlainButtonStyle())
 
         case .downloading:
@@ -329,32 +332,35 @@ struct TTSModeSettingsTab: View {
 
             HStack {
                 Spacer()
-                Button(action: {
-                    if ttsService.playingMessageId == previewMessageId {
-                        ttsService.stop()
-                    } else {
-                        ttsService.toggleSpeak(text: previewText, messageId: previewMessageId)
-                    }
-                }) {
-                    HStack(spacing: 6) {
-                        Image(
-                            systemName: ttsService.playingMessageId == previewMessageId
-                                ? "stop.fill" : "play.fill"
+                Button(
+                    action: {
+                        if ttsService.playingMessageId == previewMessageId {
+                            ttsService.stop()
+                        } else {
+                            ttsService.toggleSpeak(text: previewText, messageId: previewMessageId)
+                        }
+                    },
+                    label: {
+                        HStack(spacing: 6) {
+                            Image(
+                                systemName: ttsService.playingMessageId == previewMessageId
+                                    ? "stop.fill" : "play.fill"
+                            )
+                            Text(
+                                ttsService.playingMessageId == previewMessageId ? "Stop" : "Play",
+                                bundle: .module
+                            )
+                        }
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(theme.isDark ? theme.primaryBackground : .white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(canPreview ? theme.accentColor : theme.tertiaryBackground)
                         )
-                        Text(
-                            ttsService.playingMessageId == previewMessageId ? "Stop" : "Play",
-                            bundle: .module
-                        )
                     }
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(theme.isDark ? theme.primaryBackground : .white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(canPreview ? theme.accentColor : theme.tertiaryBackground)
-                    )
-                }
+                )
                 .buttonStyle(PlainButtonStyle())
                 .disabled(!canPreview)
             }

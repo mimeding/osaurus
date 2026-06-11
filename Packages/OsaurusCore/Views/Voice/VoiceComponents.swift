@@ -528,6 +528,115 @@ public struct VoiceStatusIndicator: View {
     }
 }
 
+// MARK: - Voice Capture Control Button
+
+public enum VoiceCaptureControlState: Equatable {
+    case idle
+    case recording
+    case processing
+    case unavailable(String)
+
+    var iconName: String {
+        switch self {
+        case .idle: return "mic.fill"
+        case .recording: return "stop.fill"
+        case .processing: return "ellipsis"
+        case .unavailable: return "mic.slash"
+        }
+    }
+
+    var defaultTitle: String {
+        switch self {
+        case .idle: return L("Start")
+        case .recording: return L("Stop")
+        case .processing: return L("Processing")
+        case .unavailable: return L("Unavailable")
+        }
+    }
+
+    var isEnabled: Bool {
+        switch self {
+        case .idle, .recording:
+            return true
+        case .processing, .unavailable:
+            return false
+        }
+    }
+}
+
+/// Reusable explicit voice-capture affordance for text-entry surfaces.
+public struct VoiceCaptureControlButton: View {
+    let state: VoiceCaptureControlState
+    let title: String?
+    let action: () -> Void
+
+    @Environment(\.theme) private var theme
+
+    public init(
+        state: VoiceCaptureControlState,
+        title: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.state = state
+        self.title = title
+        self.action = action
+    }
+
+    public var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: state.iconName)
+                    .font(.system(size: 14, weight: .medium))
+                    .symbolEffect(.pulse, isActive: state == .processing)
+
+                Text(title ?? state.defaultTitle)
+                    .font(.system(size: 14, weight: .medium))
+            }
+            .foregroundColor(foregroundColor)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(backgroundColor)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!state.isEnabled)
+        .help(helpText)
+    }
+
+    private var foregroundColor: Color {
+        switch state {
+        case .recording:
+            return .white
+        case .idle:
+            return theme.isDark ? theme.primaryBackground : .white
+        case .processing, .unavailable:
+            return theme.secondaryText
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch state {
+        case .idle:
+            return theme.accentColor
+        case .recording:
+            return theme.errorColor
+        case .processing, .unavailable:
+            return theme.tertiaryBackground
+        }
+    }
+
+    private var helpText: String {
+        switch state {
+        case .unavailable(let message):
+            return message
+        default:
+            return title ?? state.defaultTitle
+        }
+    }
+}
+
 // MARK: - Pulse Modifier
 
 private struct PulseModifier: ViewModifier {
@@ -585,89 +694,92 @@ public struct CountdownRingButton: View {
     }
 
     public var body: some View {
-        Button(action: { onTap?() }) {
-            HStack(spacing: 14) {
-                // Circular progress
-                ZStack {
-                    // Track
-                    Circle()
-                        .stroke(theme.tertiaryBackground, lineWidth: 3)
-                        .frame(width: 36, height: 36)
+        Button(
+            action: { onTap?() },
+            label: {
+                HStack(spacing: 14) {
+                    // Circular progress
+                    ZStack {
+                        // Track
+                        Circle()
+                            .stroke(theme.tertiaryBackground, lineWidth: 3)
+                            .frame(width: 36, height: 36)
 
-                    // Progress (depletes)
-                    Circle()
-                        .trim(from: 0, to: 1.0 - progress)
-                        .stroke(
-                            theme.accentColor,
-                            style: StrokeStyle(lineWidth: 3, lineCap: .round)
-                        )
-                        .frame(width: 36, height: 36)
-                        .rotationEffect(.degrees(-90))
-                        .animation(.linear(duration: 0.1), value: progress)
+                        // Progress (depletes)
+                        Circle()
+                            .trim(from: 0, to: 1.0 - progress)
+                            .stroke(
+                                theme.accentColor,
+                                style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                            )
+                            .frame(width: 36, height: 36)
+                            .rotationEffect(.degrees(-90))
+                            .animation(.linear(duration: 0.1), value: progress)
 
-                    // Number
-                    Text("\(currentSecond)", bundle: .module)
-                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                        .foregroundColor(theme.primaryText)
-                        .contentTransition(.numericText())
-                }
+                        // Number
+                        Text("\(currentSecond)", bundle: .module)
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundColor(theme.primaryText)
+                            .contentTransition(.numericText())
+                    }
 
-                // Label
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Sending...", bundle: .module)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(theme.primaryText)
-                    Text("Tap to cancel", bundle: .module)
-                        .font(.system(size: 11))
+                    // Label
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Sending...", bundle: .module)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(theme.primaryText)
+                        Text("Tap to cancel", bundle: .module)
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.tertiaryText)
+                    }
+
+                    Spacer()
+
+                    // Cancel icon
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundColor(theme.tertiaryText)
+                        .padding(8)
+                        .background(
+                            ZStack {
+                                Circle()
+                                    .fill(theme.tertiaryBackground)
+                                Circle()
+                                    .strokeBorder(theme.primaryBorder.opacity(0.15), lineWidth: 1)
+                            }
+                        )
                 }
+                .padding(14)
+                .background(
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(theme.cardBackground.opacity(0.95))
 
-                Spacer()
-
-                // Cancel icon
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(theme.tertiaryText)
-                    .padding(8)
-                    .background(
-                        ZStack {
-                            Circle()
-                                .fill(theme.tertiaryBackground)
-                            Circle()
-                                .strokeBorder(theme.primaryBorder.opacity(0.15), lineWidth: 1)
-                        }
-                    )
-            }
-            .padding(14)
-            .background(
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(theme.cardBackground.opacity(0.95))
-
-                    LinearGradient(
-                        colors: [theme.accentColor.opacity(0.06), Color.clear],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(
                         LinearGradient(
-                            colors: [
-                                theme.accentColor.opacity(0.4),
-                                theme.accentColor.opacity(0.15),
-                            ],
+                            colors: [theme.accentColor.opacity(0.06), Color.clear],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
-            )
-            .shadow(color: theme.accentColor.opacity(0.15), radius: 8, x: 0, y: 2)
-        }
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    theme.accentColor.opacity(0.4),
+                                    theme.accentColor.opacity(0.15),
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                )
+                .shadow(color: theme.accentColor.opacity(0.15), radius: 8, x: 0, y: 2)
+            }
+        )
         .buttonStyle(.plain)
     }
 }
@@ -933,11 +1045,14 @@ public struct CountdownTimerView: View {
             Spacer()
 
             // Cancel button
-            Button(action: { onCancel?() }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 24))
-                    .foregroundColor(theme.tertiaryText)
-            }
+            Button(
+                action: { onCancel?() },
+                label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(theme.tertiaryText)
+                }
+            )
             .buttonStyle(.plain)
         }
         .padding(16)

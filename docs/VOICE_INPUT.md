@@ -81,7 +81,7 @@ Models are stored at: `~/Library/Application Support/FluidAudio/Models/`
 ### Using Voice Input
 
 1. Open the chat overlay (`⌘;`)
-2. Click the microphone button or use the keyboard shortcut
+2. Click the microphone button
 3. Speak naturally — you'll see real-time transcription
 4. Click send or wait for auto-send (if enabled)
 
@@ -111,6 +111,19 @@ When pause duration is set:
 3. If you resume speaking, the countdown resets
 4. After the countdown, message sends automatically
 5. Set pause duration to 0 to disable (manual send only)
+
+---
+
+## Speech Output in Conversations
+
+Speech output is opt-in per conversation. When text-to-speech is enabled and
+the PocketTTS model is ready, assistant turns can be read aloud through the
+speaker button or the per-chat auto-speak control. Osaurus only reads complete,
+non-empty assistant turns; user, tool, incomplete, and blank turns are skipped.
+
+Starting a new spoken turn never interrupts audio that is already playing. The
+same turn toggles to stop, while another turn waits until playback is idle.
+This keeps spoken conversations predictable and avoids hidden autoplay.
 
 ---
 
@@ -241,7 +254,7 @@ Transcription Mode allows you to dictate text directly into any application usin
 2. Navigate to the **Transcription** tab
 3. Grant **Accessibility permission** (required for keyboard simulation)
 4. Toggle "Enable Transcription Mode" on
-5. Configure your preferred hotkey
+5. Use the default `F8` hotkey or configure your preferred shortcut
 
 ### How It Works
 
@@ -275,12 +288,16 @@ Transcription Mode allows you to dictate text directly into any application usin
 
 **Parakeet Model** — A model must be downloaded and selected
 
+Voice capture only starts from an explicit button press or the configured
+hotkey. Background requests are denied even when permissions are already
+granted.
+
 ### Transcription Settings
 
 | Setting                   | Description                        | Default |
 | ------------------------- | ---------------------------------- | ------- |
 | **Transcription Enabled** | Master toggle for the feature      | Off     |
-| **Activation Hotkey**     | Global hotkey to trigger dictation | None    |
+| **Activation Hotkey**     | Global hotkey to trigger dictation | F8      |
 
 ### Using Transcription Mode
 
@@ -359,7 +376,7 @@ Transcription mode settings:
 ```swift
 struct TranscriptionConfiguration {
     var transcriptionModeEnabled: Bool // Master toggle
-    var hotkey: Hotkey?                // Global activation hotkey
+    var hotkey: Hotkey?                // Global activation hotkey, nil disables
 }
 ```
 

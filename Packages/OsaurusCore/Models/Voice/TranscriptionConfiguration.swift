@@ -44,7 +44,7 @@ public struct TranscriptionConfiguration: Codable, Equatable, Sendable {
     public static var `default`: TranscriptionConfiguration {
         TranscriptionConfiguration(
             transcriptionModeEnabled: false,
-            hotkey: nil
+            hotkey: VoiceCaptureHotkeyPolicy.defaultHotkey
         )
     }
 }

@@ -141,6 +141,69 @@ public final class TTSService: ObservableObject {
         startPlayback(text: plain, messageId: messageId, voiceOverride: voiceOverride)
     }
 
+    /// Start the next eligible assistant turn for opt-in spoken conversations.
+    /// This is policy-driven so chat surfaces can share the same skip/stop
+    /// behavior without reimplementing turn selection.
+    public func startConversationPlayback(
+        turns: [SpeechOutputConversationTurn],
+        after lastSpokenTurnId: UUID? = nil,
+        voiceOverride: String? = nil
+    ) -> SpeechOutputConversationDecision {
+        guard TTSConfigurationStore.load().enabled else {
+            return .skip(.disabled)
+        }
+        guard isModelReady else {
+            if Self.pocketTtsModelsExistOnDisk() {
+                ensureModelLoaded()
+            } else {
+                NotificationCenter.default.post(name: .openTTSSettingsRequested, object: nil)
+            }
+            return .skip(.modelNotReady)
+        }
+
+        let decision = SpeechOutputConversationPolicy.nextAssistantTurn(
+            in: turns,
+            after: lastSpokenTurnId,
+            currentPlayingTurnId: playingMessageId
+        )
+        if case .speak(let turn) = decision {
+            toggleSpeak(text: turn.text, messageId: turn.id, voiceOverride: voiceOverride)
+        }
+        return decision
+    }
+
+    /// Apply the same stop/busy semantics to an explicitly selected turn.
+    public func toggleConversationPlayback(
+        turn: SpeechOutputConversationTurn,
+        voiceOverride: String? = nil
+    ) -> SpeechOutputConversationDecision {
+        let decision = SpeechOutputConversationPolicy.explicitTurnDecision(
+            turn,
+            currentPlayingTurnId: playingMessageId
+        )
+        switch decision {
+        case .speak:
+            guard TTSConfigurationStore.load().enabled else {
+                return .skip(.disabled)
+            }
+            guard isModelReady else {
+                if Self.pocketTtsModelsExistOnDisk() {
+                    ensureModelLoaded()
+                } else {
+                    NotificationCenter.default.post(name: .openTTSSettingsRequested, object: nil)
+                }
+                return .skip(.modelNotReady)
+            }
+            toggleSpeak(text: turn.text, messageId: turn.id, voiceOverride: voiceOverride)
+            return decision
+        case .stop:
+            stop()
+            return decision
+        case .skip:
+            return decision
+        }
+    }
+
     /// Stop any in-flight synthesis and clear playback state.
     public func stop() {
         playbackTask?.cancel()

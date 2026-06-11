@@ -1066,6 +1066,7 @@ All three search services use VecturaKit (hybrid BM25 + vector search):
 - **Configurable sensitivity** — Low, Medium, High thresholds
 - **Auto-send with confirmation** — Hands-free message sending
 - **Pause duration control** — Adjust silence detection timing
+- **Reusable explicit capture control** — Shared voice button state for text-entry surfaces
 
 **Configuration:**
 
@@ -1132,6 +1133,7 @@ All three search services use VecturaKit (hybrid BM25 + vector search):
 **Components:**
 
 - `Services/Voice/TranscriptionModeService.swift` — Main orchestration service
+- `Services/Voice/VoiceCaptureHotkey.swift` — Hotkey, readiness, and explicit capture policy
 - `Services/Voice/KeyboardSimulationService.swift` — Simulates keyboard input via CGEventPost
 - `Services/Voice/TranscriptionOverlayWindowService.swift` — Floating overlay panel management
 - `Managers/TranscriptionHotKeyManager.swift` — Global hotkey registration
@@ -1142,11 +1144,13 @@ All three search services use VecturaKit (hybrid BM25 + vector search):
 **Features:**
 
 - **Global Hotkey** — Configurable hotkey to trigger transcription from anywhere
+- **Default Function Key** — New configurations start with `F8`, while clearing the hotkey disables registration
 - **Live Typing** — Transcribed text is typed directly into the focused text field
 - **Accessibility Integration** — Uses macOS accessibility APIs (requires permission)
 - **Minimal Overlay** — Sleek floating UI shows recording status with waveform
 - **Esc to Cancel** — Press Escape or click Done to stop transcription
 - **Real-time Feedback** — Audio level visualization during recording
+- **Explicit Capture Only** — Background requests are denied even if permissions are granted
 
 **Configuration:**
 
@@ -1171,6 +1175,29 @@ All three search services use VecturaKit (hybrid BM25 + vector search):
 6. Overlay disappears and transcription ends
 
 ---
+
+### Speech Output Conversations
+
+**Purpose:** Read assistant conversation turns aloud through PocketTTS without
+hidden autoplay or turn-selection drift between chat surfaces.
+
+**Components:**
+
+- `Managers/TTSService.swift` — PocketTTS model lifecycle and playback
+- `Services/Voice/SpeechOutputConversationPolicy.swift` — Assistant-turn
+  selection, stop, busy, and skip semantics
+- `Models/Voice/TTSConfiguration.swift` — Text-to-speech settings
+- `Views/Voice/TTSModeSettingsTab.swift` — TTS settings, model state, and preview
+
+**Features:**
+
+- **Opt-in per conversation** — Speaker controls and auto-speak stay user-driven
+- **Assistant-only selection** — User, tool, incomplete, and blank turns are skipped
+- **Stop semantics** — Tapping the currently spoken turn stops playback
+- **No interruption** — New speech output does not interrupt another active turn
+
+---
+
 
 ### Memory
 
