@@ -632,15 +632,34 @@ Response:
 {"status": "ok", "turns_ingested": 2}
 ```
 
-### List Agents — `GET /agents`
+### Agent Configuration — `/agents`
 
-Returns all configured agents along with their pinned-fact counts. Use this to discover agent IDs for the `X-Osaurus-Agent-Id` header.
+Returns and updates the configured agents exposed to the local API. Use this to discover agent IDs for the `X-Osaurus-Agent-Id` header, inspect default-agent settings, and create custom agents from persisted defaults.
 
 ```bash
 curl http://127.0.0.1:1337/agents
 ```
 
-Example response:
+Loopback requests and master-scoped access keys can read and manage all agents. Agent-scoped access keys can only read the custom agent addressed by the key and any teams containing that agent. `/agents/{id}/run` and `/agents/{id}/dispatch` keep their existing execution behavior and are not configuration endpoints.
+
+Common routes:
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/agents` | `GET` | List visible default/custom agents |
+| `/agents` | `POST` | Create a custom agent from default/team/request defaults |
+| `/agents/default` | `GET`, `PATCH`, `PUT` | Read or update the built-in Default agent configuration |
+| `/agents/{uuid}` | `GET`, `PATCH`, `PUT` | Read or update a custom agent configuration |
+| `/agents/teams` | `GET` | List visible named agent teams |
+| `/agents/teams/{id}` | `GET`, `PUT` | Read or upsert a named team and its creation defaults |
+
+When creating a custom agent, defaults are applied in this order:
+
+1. `config/default-agent.json` `creationDefaults`
+2. each requested team's `defaults`, in request order
+3. fields supplied directly in the create request
+
+Example list response:
 
 ```json
 {
@@ -649,9 +668,33 @@ Example response:
       "id": "00000000-0000-0000-0000-000000000001",
       "name": "Osaurus",
       "description": "Default assistant",
+      "system_prompt": "",
       "default_model": null,
+      "temperature": null,
+      "max_tokens": null,
+      "effective_model": null,
+      "supports_thinking": false,
       "supports_vision": false,
       "is_built_in": true,
+      "tools_enabled": true,
+      "memory_enabled": true,
+      "tool_selection_mode": "auto",
+      "manual_tool_names": null,
+      "manual_skill_names": null,
+      "auto_speak": null,
+      "tts_voice": null,
+      "agent_address": null,
+      "team_ids": [],
+      "creation_defaults": {
+        "default_model": null,
+        "temperature": null,
+        "max_tokens": null,
+        "tool_selection_mode": null,
+        "manual_tool_names": null,
+        "manual_skill_names": null,
+        "auto_speak": null,
+        "tts_voice": null
+      },
       "memory_entry_count": 42,
       "created_at": "2025-01-01T00:00:00Z",
       "updated_at": "2025-01-01T00:00:00Z"
@@ -661,6 +704,29 @@ Example response:
 ```
 
 `supports_vision` reflects whether the agent's effective model is a VLM, so clients can show or hide image-attach UI without round-tripping the model registry.
+
+Create a team default and then create an agent from it:
+
+```bash
+curl -X PUT http://127.0.0.1:1337/agents/teams/research \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Research",
+    "defaults": {
+      "default_model": "Qwen3-8B",
+      "tool_selection_mode": "manual",
+      "manual_tool_names": ["search_memory"]
+    }
+  }'
+
+curl -X POST http://127.0.0.1:1337/agents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Research Analyst",
+    "team_id": "research",
+    "temperature": 0.3
+  }'
+```
 
 ---
 

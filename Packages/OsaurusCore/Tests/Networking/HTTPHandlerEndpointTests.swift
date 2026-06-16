@@ -264,6 +264,219 @@ struct HTTPHandlerEndpointTests {
         }
     }
 
+    @Test func agents_get_exposesDefaultAgentConfigurationForLoopback() async throws {
+        try await withIsolatedAgentState {
+            DefaultAgentConfigurationStore.save(
+                DefaultAgentConfiguration(
+                    defaultModel: "global-chat-model",
+                    toolSelectionMode: .manual,
+                    manualToolNames: ["global_tool"],
+                    manualSkillNames: ["global_skill"],
+                    creationDefaults: AgentCreationDefaults(
+                        defaultModel: "global-create-model",
+                        temperature: 0.25,
+                        maxTokens: 128,
+                        toolSelectionMode: .manual,
+                        manualToolNames: ["global_tool"],
+                        manualSkillNames: ["global_skill"],
+                        autoSpeak: false,
+                        ttsVoice: "global-voice"
+                    )
+                )
+            )
+
+            let server = try await startServer()
+            defer { Task { await server.shutdown() } }
+
+            let (data, response) = try await jsonRequest("/agents", server: server)
+
+            #expect(response.statusCode == 200)
+            let decoded = try JSONDecoder().decode(AgentListEnvelope.self, from: data)
+            let defaultAgent = try #require(decoded.agents.first { $0.id == Agent.defaultId.uuidString })
+            #expect(defaultAgent.is_built_in == true)
+            #expect(defaultAgent.default_model == "global-chat-model")
+            #expect(defaultAgent.tool_selection_mode == "manual")
+            #expect(defaultAgent.manual_tool_names == ["global_tool"])
+            #expect(defaultAgent.manual_skill_names == ["global_skill"])
+            #expect(defaultAgent.creation_defaults?.default_model == "global-create-model")
+            #expect(defaultAgent.creation_defaults?.temperature == 0.25)
+            #expect(defaultAgent.creation_defaults?.max_tokens == 128)
+            #expect(defaultAgent.creation_defaults?.auto_speak == false)
+            #expect(defaultAgent.creation_defaults?.tts_voice == "global-voice")
+        }
+    }
+
+    @Test func agents_api_requiresAccessKeyWhenLoopbackTrustIsDisabled() async throws {
+        let server = try await startServer(trustLoopback: false)
+        defer { Task { await server.shutdown() } }
+
+        let (_, response) = try await jsonRequest("/agents", server: server)
+
+        #expect(response.statusCode == 401)
+    }
+
+    @Test func agents_post_appliesDefaultTeamAndRequestPrecedence() async throws {
+        try await withIsolatedAgentState {
+            DefaultAgentConfigurationStore.save(
+                DefaultAgentConfiguration(
+                    creationDefaults: AgentCreationDefaults(
+                        defaultModel: "global-model",
+                        temperature: 0.15,
+                        maxTokens: 128,
+                        toolSelectionMode: .manual,
+                        manualToolNames: ["global_tool"],
+                        manualSkillNames: ["global_skill"],
+                        autoSpeak: false,
+                        ttsVoice: "global-voice"
+                    )
+                )
+            )
+
+            let server = try await startServer()
+            defer { Task { await server.shutdown() } }
+
+            let (_, teamResponse) = try await jsonRequest(
+                "/agents/teams/research",
+                method: "PUT",
+                body: [
+                    "name": "Research",
+                    "description": "Research defaults",
+                    "defaults": [
+                        "default_model": "team-model",
+                        "manual_tool_names": ["search_memory"],
+                        "auto_speak": true,
+                    ],
+                ],
+                server: server
+            )
+            #expect(teamResponse.statusCode == 201)
+
+            let (data, createResponse) = try await jsonRequest(
+                "/agents",
+                method: "POST",
+                body: [
+                    "name": "API Defaults Test \(UUID().uuidString)",
+                    "team_id": "research",
+                    "temperature": 0.7,
+                    "tts_voice": "request-voice",
+                ],
+                server: server
+            )
+
+            #expect(createResponse.statusCode == 201)
+            let created = try JSONDecoder().decode(AgentItemEnvelope.self, from: data).agent
+            #expect(created.default_model == "team-model")
+            #expect(created.temperature == 0.7)
+            #expect(created.max_tokens == 128)
+            #expect(created.tool_selection_mode == "manual")
+            #expect(created.manual_tool_names == ["search_memory"])
+            #expect(created.manual_skill_names == ["global_skill"])
+            #expect(created.auto_speak == true)
+            #expect(created.tts_voice == "request-voice")
+            #expect(created.team_ids == ["research"])
+
+            let createdId = try #require(UUID(uuidString: created.id))
+            let persisted = try #require(AgentManager.shared.agent(for: createdId))
+            #expect(persisted.defaultModel == "team-model")
+            #expect(persisted.temperature == 0.7)
+            #expect(persisted.maxTokens == 128)
+            #expect(persisted.manualToolNames == ["search_memory"])
+            #expect(persisted.manualSkillNames == ["global_skill"])
+            #expect(AgentTeamConfigurationStore.teamIds(containing: createdId) == ["research"])
+        }
+    }
+
+    @Test func agents_patch_updatesCustomAgentAndTeamMembership() async throws {
+        try await withIsolatedAgentState {
+            let server = try await startServer()
+            defer { Task { await server.shutdown() } }
+
+            for teamId in ["research", "operators"] {
+                let (_, response) = try await jsonRequest(
+                    "/agents/teams/\(teamId)",
+                    method: "PUT",
+                    body: ["name": teamId.capitalized],
+                    server: server
+                )
+                #expect(response.statusCode == 201)
+            }
+
+            let (createData, createResponse) = try await jsonRequest(
+                "/agents",
+                method: "POST",
+                body: [
+                    "name": "Patch Target \(UUID().uuidString)",
+                    "team_id": "research",
+                ],
+                server: server
+            )
+            #expect(createResponse.statusCode == 201)
+            let created = try JSONDecoder().decode(AgentItemEnvelope.self, from: createData).agent
+
+            let (patchData, patchResponse) = try await jsonRequest(
+                "/agents/\(created.id)",
+                method: "PATCH",
+                body: [
+                    "name": "Renamed Agent",
+                    "default_model": "patched-model",
+                    "tools_enabled": false,
+                    "memory_enabled": false,
+                    "tool_selection_mode": "manual",
+                    "manual_skill_names": ["planner"],
+                    "team_ids": ["operators"],
+                ],
+                server: server
+            )
+
+            #expect(patchResponse.statusCode == 200)
+            let patched = try JSONDecoder().decode(AgentItemEnvelope.self, from: patchData).agent
+            #expect(patched.name == "Renamed Agent")
+            #expect(patched.default_model == "patched-model")
+            #expect(patched.tools_enabled == false)
+            #expect(patched.memory_enabled == false)
+            #expect(patched.tool_selection_mode == "manual")
+            #expect(patched.manual_skill_names == ["planner"])
+            #expect(patched.team_ids == ["operators"])
+
+            let agentId = try #require(UUID(uuidString: created.id))
+            let persisted = try #require(AgentManager.shared.agent(for: agentId))
+            #expect(persisted.name == "Renamed Agent")
+            #expect(persisted.defaultModel == "patched-model")
+            #expect(persisted.toolsEnabled == false)
+            #expect(persisted.memoryEnabled == false)
+            #expect(persisted.manualSkillNames == ["planner"])
+            #expect(AgentTeamConfigurationStore.teamIds(containing: agentId) == ["operators"])
+        }
+    }
+
+    @Test func agentDefault_patch_persistsCreationDefaults() async throws {
+        try await withIsolatedAgentState {
+            let server = try await startServer()
+            defer { Task { await server.shutdown() } }
+
+            let (data, response) = try await jsonRequest(
+                "/agents/default",
+                method: "PATCH",
+                body: [
+                    "creation_defaults": [
+                        "default_model": "patched-default-model",
+                        "manual_skill_names": ["planner"],
+                    ],
+                ],
+                server: server
+            )
+
+            #expect(response.statusCode == 200)
+            let patched = try JSONDecoder().decode(AgentItemEnvelope.self, from: data).agent
+            #expect(patched.creation_defaults?.default_model == "patched-default-model")
+            #expect(patched.creation_defaults?.manual_skill_names == ["planner"])
+
+            let saved = DefaultAgentConfigurationStore.load()
+            #expect(saved.creationDefaults.defaultModel == "patched-default-model")
+            #expect(saved.creationDefaults.manualSkillNames == ["planner"])
+        }
+    }
+
     // MARK: - Test Server Bootstrap
 
     private struct TestServer {
@@ -282,7 +495,7 @@ struct HTTPHandlerEndpointTests {
         }
     }
 
-    private func startServer() async throws -> TestServer {
+    private func startServer(trustLoopback: Bool = true) async throws -> TestServer {
         let config = ServerConfiguration.default
         let lease = await HTTPServerTestLock.shared.acquire()
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -297,7 +510,7 @@ struct HTTPHandlerEndpointTests {
                                 configuration: config,
                                 apiKeyValidator: .empty,
                                 eventLoop: channel.eventLoop,
-                                trustLoopback: true
+                                trustLoopback: trustLoopback
                             )
                         )
                     }
@@ -321,6 +534,43 @@ struct HTTPHandlerEndpointTests {
         let status: String
         let settings: VMLXServerRuntimeSettings
         let effects: RuntimeSettingsEffects?
+    }
+
+    private struct AgentListEnvelope: Decodable {
+        let agents: [AgentSummary]
+    }
+
+    private struct AgentItemEnvelope: Decodable {
+        let agent: AgentSummary
+    }
+
+    private struct AgentSummary: Decodable {
+        let id: String
+        let name: String
+        let default_model: String?
+        let temperature: Float?
+        let max_tokens: Int?
+        let is_built_in: Bool
+        let tools_enabled: Bool
+        let memory_enabled: Bool
+        let tool_selection_mode: String
+        let manual_tool_names: [String]?
+        let manual_skill_names: [String]?
+        let auto_speak: Bool?
+        let tts_voice: String?
+        let team_ids: [String]
+        let creation_defaults: AgentDefaultsSummary?
+    }
+
+    private struct AgentDefaultsSummary: Decodable {
+        let default_model: String?
+        let temperature: Float?
+        let max_tokens: Int?
+        let tool_selection_mode: String?
+        let manual_tool_names: [String]?
+        let manual_skill_names: [String]?
+        let auto_speak: Bool?
+        let tts_voice: String?
     }
 
     private struct RuntimeSettingsEffects: Decodable {
@@ -348,9 +598,29 @@ struct HTTPHandlerEndpointTests {
         return try await URLSession.shared.data(for: request)
     }
 
-    private func makeTempDirectory() throws -> URL {
+    private func jsonRequest(
+        _ path: String,
+        method: String = "GET",
+        body: [String: Any]? = nil,
+        server: TestServer
+    ) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: URL(string: "http://\(server.host):\(server.port)\(path)")!)
+        request.httpMethod = method
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        return (data, httpResponse)
+    }
+
+    private func makeTempDirectory(prefix: String = "osaurus-runtime-settings-endpoint") throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "osaurus-runtime-settings-endpoint-\(UUID().uuidString)",
+            "\(prefix)-\(UUID().uuidString)",
             isDirectory: true
         )
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -371,5 +641,47 @@ struct HTTPHandlerEndpointTests {
             try? FileManager.default.removeItem(at: dir)
         }
         try await body()
+    }
+
+    @MainActor
+    private func withIsolatedAgentState(
+        _ body: @MainActor @Sendable () async throws -> Void
+    ) async throws {
+        try await SandboxTestLock.runWithStoragePaths {
+            let root = try makeTempDirectory(prefix: "osaurus-agent-config-endpoint")
+            let configDir = root.appendingPathComponent("config", isDirectory: true)
+
+            let previousRoot = OsaurusPaths.overrideRoot
+            let previousDefaultDirectory = DefaultAgentConfigurationStore.overrideDirectory
+            let previousTeamDirectory = AgentTeamConfigurationStore.overrideDirectory
+            let previousAvailability = SandboxManager.State.shared.availability
+            let previousStatus = SandboxManager.State.shared.status
+
+            OsaurusPaths.overrideRoot = root
+            DefaultAgentConfigurationStore.overrideDirectory = configDir
+            AgentTeamConfigurationStore.overrideDirectory = configDir
+            DefaultAgentConfigurationStore.resetCacheForTests()
+            AgentTeamConfigurationStore.resetCacheForTests()
+            SandboxManager.State.shared.availability = .unavailable(
+                reason: "sandbox disabled for agent endpoint tests"
+            )
+            SandboxManager.State.shared.status = .notProvisioned
+            AgentManager.shared.refresh()
+
+            defer {
+                AgentManager.shared.refresh()
+                DefaultAgentConfigurationStore.overrideDirectory = previousDefaultDirectory
+                AgentTeamConfigurationStore.overrideDirectory = previousTeamDirectory
+                DefaultAgentConfigurationStore.resetCacheForTests()
+                AgentTeamConfigurationStore.resetCacheForTests()
+                OsaurusPaths.overrideRoot = previousRoot
+                AgentManager.shared.refresh()
+                SandboxManager.State.shared.availability = previousAvailability
+                SandboxManager.State.shared.status = previousStatus
+                try? FileManager.default.removeItem(at: root)
+            }
+
+            try await body()
+        }
     }
 }

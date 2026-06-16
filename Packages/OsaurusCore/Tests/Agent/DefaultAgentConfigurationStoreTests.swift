@@ -55,7 +55,15 @@ struct DefaultAgentConfigurationStoreTests {
                     autonomousExec: nil,
                     toolSelectionMode: .manual,
                     manualToolNames: ["osaurus_status", "osaurus_list"],
-                    manualSkillNames: ["greeting"]
+                    manualSkillNames: ["greeting"],
+                    creationDefaults: AgentCreationDefaults(
+                        defaultModel: "mlx-community/Qwen3-8B",
+                        temperature: 0.2,
+                        toolSelectionMode: .manual,
+                        manualToolNames: ["search_memory"],
+                        autoSpeak: true,
+                        ttsVoice: "alloy"
+                    )
                 )
 
                 DefaultAgentConfigurationStore.save(configured)
@@ -85,5 +93,6 @@ struct DefaultAgentConfigurationStoreTests {
         #expect(decoded.toolSelectionMode == nil)
         #expect(decoded.manualToolNames == nil)
         #expect(decoded.manualSkillNames == nil)
+        #expect(decoded.creationDefaults == .default)
     }
 }

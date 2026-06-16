@@ -662,10 +662,8 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 handlePairInviteEndpoint(head: head, context: context, startTime: startTime, userAgent: userAgent)
             } else if head.method == .POST, path == "/secure/session" {
                 handleSecureSessionEndpoint(head: head, context: context, startTime: startTime, userAgent: userAgent)
-            } else if head.method == .GET, path == "/agents" {
-                handleListAgents(head: head, context: context, startTime: startTime, userAgent: userAgent)
-            } else if head.method == .GET, path.hasPrefix("/agents/") {
-                handleGetAgentEndpoint(
+            } else if Self.isAgentConfigurationAPIRequest(method: head.method, path: path) {
+                handleAgentConfigurationAPIEndpoint(
                     head: head,
                     context: context,
                     path: path,
@@ -3114,11 +3112,91 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
     // MARK: - Agents
 
+    private static func isAgentConfigurationAPIRequest(method: HTTPMethod, path: String) -> Bool {
+        if path == "/agents" {
+            return method == .GET || method == .POST
+        }
+        if path == "/agents/teams" {
+            return method == .GET
+        }
+        if path.hasPrefix("/agents/teams/") {
+            return method == .GET || method == .PUT
+        }
+        if path == "/agents/default" {
+            return method == .GET || method == .PUT || method == .PATCH
+        }
+        guard path.hasPrefix("/agents/") else { return false }
+        guard !path.hasSuffix("/run"), !path.hasSuffix("/dispatch") else { return false }
+        return method == .GET || method == .PUT || method == .PATCH
+    }
+
+    private struct AgentDefaultsPayload: Codable {
+        let default_model: String?
+        let temperature: Float?
+        let max_tokens: Int?
+        let tool_selection_mode: ToolSelectionMode?
+        let manual_tool_names: [String]?
+        let manual_skill_names: [String]?
+        // swiftlint:disable:next discouraged_optional_boolean
+        let auto_speak: Bool?
+        let tts_voice: String?
+
+        init(
+            default_model: String? = nil,
+            temperature: Float? = nil,
+            max_tokens: Int? = nil,
+            tool_selection_mode: ToolSelectionMode? = nil,
+            manual_tool_names: [String]? = nil,
+            manual_skill_names: [String]? = nil,
+            // swiftlint:disable:next discouraged_optional_boolean
+            auto_speak: Bool? = nil,
+            tts_voice: String? = nil
+        ) {
+            self.default_model = default_model
+            self.temperature = temperature
+            self.max_tokens = max_tokens
+            self.tool_selection_mode = tool_selection_mode
+            self.manual_tool_names = manual_tool_names
+            self.manual_skill_names = manual_skill_names
+            self.auto_speak = auto_speak
+            self.tts_voice = tts_voice
+        }
+
+        init(_ defaults: AgentCreationDefaults) {
+            self.init(
+                default_model: defaults.defaultModel,
+                temperature: defaults.temperature,
+                max_tokens: defaults.maxTokens,
+                tool_selection_mode: defaults.toolSelectionMode,
+                manual_tool_names: defaults.manualToolNames,
+                manual_skill_names: defaults.manualSkillNames,
+                auto_speak: defaults.autoSpeak,
+                tts_voice: defaults.ttsVoice
+            )
+        }
+
+        var domain: AgentCreationDefaults {
+            AgentCreationDefaults(
+                defaultModel: default_model,
+                temperature: temperature,
+                maxTokens: max_tokens,
+                toolSelectionMode: tool_selection_mode,
+                manualToolNames: manual_tool_names,
+                manualSkillNames: manual_skill_names,
+                autoSpeak: auto_speak,
+                ttsVoice: tts_voice
+            )
+        }
+    }
+
     private struct AgentListItem: Codable {
         let id: String
         let name: String
         let description: String
+        let system_prompt: String?
         let default_model: String?
+        let temperature: Float?
+        let max_tokens: Int?
         /// Server-resolved model id, known before the first streamed chunk.
         let effective_model: String?
         /// True when the resolved model has a `disableThinking` ModelProfile
@@ -3126,6 +3204,17 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         let supports_thinking: Bool
         let supports_vision: Bool
         let is_built_in: Bool
+        let tools_enabled: Bool
+        let memory_enabled: Bool
+        let tool_selection_mode: ToolSelectionMode
+        let manual_tool_names: [String]?
+        let manual_skill_names: [String]?
+        // swiftlint:disable:next discouraged_optional_boolean
+        let auto_speak: Bool?
+        let tts_voice: String?
+        let agent_address: String?
+        let team_ids: [String]
+        let creation_defaults: AgentDefaultsPayload?
         let memory_entry_count: Int
         let created_at: String
         let updated_at: String
@@ -3133,6 +3222,88 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
     private struct AgentListResponse: Codable {
         let agents: [AgentListItem]
+    }
+
+    private struct AgentCreateRequest: Codable {
+        let name: String?
+        let description: String?
+        let system_prompt: String?
+        let default_model: String?
+        let temperature: Float?
+        let max_tokens: Int?
+        let tool_selection_mode: ToolSelectionMode?
+        let manual_tool_names: [String]?
+        let manual_skill_names: [String]?
+        // swiftlint:disable:next discouraged_optional_boolean
+        let auto_speak: Bool?
+        let tts_voice: String?
+        let team_id: String?
+        let team_ids: [String]?
+
+        var defaultsOverride: AgentCreationDefaults {
+            AgentCreationDefaults(
+                defaultModel: default_model,
+                temperature: temperature,
+                maxTokens: max_tokens,
+                toolSelectionMode: tool_selection_mode,
+                manualToolNames: manual_tool_names,
+                manualSkillNames: manual_skill_names,
+                autoSpeak: auto_speak,
+                ttsVoice: tts_voice
+            )
+        }
+    }
+
+    private struct AgentUpdateRequest: Codable {
+        let name: String?
+        let description: String?
+        let system_prompt: String?
+        let default_model: String?
+        let temperature: Float?
+        let max_tokens: Int?
+        // swiftlint:disable:next discouraged_optional_boolean
+        let tools_enabled: Bool?
+        // swiftlint:disable:next discouraged_optional_boolean
+        let memory_enabled: Bool?
+        let tool_selection_mode: ToolSelectionMode?
+        let manual_tool_names: [String]?
+        let manual_skill_names: [String]?
+        // swiftlint:disable:next discouraged_optional_boolean
+        let auto_speak: Bool?
+        let tts_voice: String?
+        let team_ids: [String]?
+        // swiftlint:disable:next discouraged_optional_boolean
+        let disable_tools: Bool?
+        let creation_defaults: AgentDefaultsPayload?
+    }
+
+    private struct AgentItemResponse: Codable {
+        let agent: AgentListItem
+    }
+
+    private struct AgentTeamItem: Codable {
+        let id: String
+        let name: String
+        let description: String
+        let member_agent_ids: [String]
+        let defaults: AgentDefaultsPayload
+        let created_at: String
+        let updated_at: String
+    }
+
+    private struct AgentTeamListResponse: Codable {
+        let teams: [AgentTeamItem]
+    }
+
+    private struct AgentTeamMutationRequest: Codable {
+        let name: String?
+        let description: String?
+        let member_agent_ids: [String]?
+        let defaults: AgentDefaultsPayload?
+    }
+
+    private struct AgentTeamItemResponse: Codable {
+        let team: AgentTeamItem
     }
 
     // MARK: - Pair Endpoint
@@ -4078,96 +4249,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         }
     }
 
-    private func handleListAgents(
-        head: HTTPRequestHead,
-        context: ChannelHandlerContext,
-        startTime: Date,
-        userAgent: String?
-    ) {
-        let loop = context.eventLoop
-        let ctx = NIOLoopBound(context, eventLoop: loop)
-        let cors = stateRef.value.corsHeaders
-        let hop = Self.makeHop(channel: context.channel, loop: loop)
-        let logSelf = self
-        let logStartTime = startTime
-        let logUserAgent = userAgent
-
-        runRequestTask(priority: .userInitiated) {
-            // Built-in agents (the Default agent) live only in-app; the
-            // listing endpoint must not advertise them so external clients
-            // can never even attempt to address them.
-            let agents = await MainActor.run {
-                AgentManager.shared.agents.filter { !$0.isBuiltIn }
-            }
-
-            let db = MemoryDatabase.shared
-            var memoryCounts: [String: Int] = [:]
-            if db.isOpen, let counts = try? db.agentIdsWithPinnedFacts() {
-                for (agentId, count) in counts {
-                    memoryCounts[agentId] = count
-                }
-            }
-
-            let formatter = ISO8601DateFormatter()
-            let effectiveModels = await MainActor.run {
-                Dictionary(
-                    uniqueKeysWithValues: agents.map {
-                        ($0.id, AgentManager.shared.effectiveModel(for: $0.id))
-                    }
-                )
-            }
-            let items = agents.map { agent in
-                let modelId = effectiveModels[agent.id] ?? agent.defaultModel
-                let supportsVision = modelId.map { VLMDetection.isVLM(modelId: $0) } ?? false
-                let supportsThinking =
-                    modelId.flatMap { ModelProfileRegistry.profile(for: $0)?.thinkingOption } != nil
-                return AgentListItem(
-                    id: agent.id.uuidString,
-                    name: agent.name,
-                    description: agent.description,
-                    default_model: agent.defaultModel,
-                    effective_model: modelId,
-                    supports_thinking: supportsThinking,
-                    supports_vision: supportsVision,
-                    is_built_in: agent.isBuiltIn,
-                    memory_entry_count: memoryCounts[agent.id.uuidString] ?? 0,
-                    created_at: formatter.string(from: agent.createdAt),
-                    updated_at: formatter.string(from: agent.updatedAt)
-                )
-            }
-
-            let response = AgentListResponse(agents: items)
-            let json =
-                (try? JSONEncoder.osaurusCanonical().encode(response)).map { String(decoding: $0, as: UTF8.self) }
-                ?? #"{"agents":[]}"#
-
-            hop {
-                var headers = [("Content-Type", "application/json; charset=utf-8")]
-                headers.append(contentsOf: cors)
-                self.sendResponse(
-                    context: ctx.value,
-                    version: head.version,
-                    status: .ok,
-                    headers: headers,
-                    body: json
-                )
-            }
-            logSelf.logRequest(
-                method: "GET",
-                path: "/agents",
-                userAgent: logUserAgent,
-                requestBody: nil,
-                responseBody: json,
-                responseStatus: 200,
-                startTime: logStartTime
-            )
-        }
-    }
-
-    // MARK: - Agent Info & Run Endpoints
-
-    /// GET /agents/{id} — return info for a single agent
-    private func handleGetAgentEndpoint(
+    private func handleAgentConfigurationAPIEndpoint(
         head: HTTPRequestHead,
         context: ChannelHandlerContext,
         path: String,
@@ -4181,120 +4263,320 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         let logSelf = self
         let logStartTime = startTime
         let logUserAgent = userAgent
-
-        // Extract agent ID: /agents/{id}. Resolve the path id as a UUID or a
-        // crypto address (the stable identity a paired remote peer knows),
-        // mirroring /agents/{id}/run so remote model discovery resolves the
-        // agent instead of falling back to ["default"].
-        let components = path.split(separator: "/")
-        let resolvedAgentId: UUID? =
-            components.count == 2
-            ? (UUID(uuidString: String(components[1]))
-                ?? AgentIdentityRegistry.shared.agentId(forAddress: String(components[1])))
+        let method = head.method.rawValue
+        let requestBody = (head.method == .POST || head.method == .PUT || head.method == .PATCH)
+            ? readRequestBody()
             : nil
-        guard components.count == 2, components[0] == "agents", let agentId = resolvedAgentId
-        else {
-            hop {
-                var headers = [("Content-Type", "application/json; charset=utf-8")]
-                headers.append(contentsOf: cors)
-                self.sendResponse(
-                    context: ctx.value,
-                    version: head.version,
-                    status: .badRequest,
-                    headers: headers,
-                    body: #"{"error":"invalid_agent_id","message":"Invalid agent UUID in path"}"#
-                )
-            }
-            return
-        }
-
-        // Confine agent-scoped keys to their own agent: a key minted by
-        // `/pair` / `/pair-invite` for agent A must not read another agent's
-        // metadata (name, description, effective_model). Mirrors the
-        // `/agents/{id}/run` scope gate. Loopback callers (authedAudience ==
-        // nil) and master-scoped keys are unaffected. Read `stateRef` here on
-        // the event loop, before the detached `runRequestTask`.
-        if let rejection = agentScopeRejection(forAgentId: agentId) {
-            hop {
-                var headers = [("Content-Type", "application/json; charset=utf-8")]
-                headers.append(contentsOf: cors)
-                self.sendResponse(
-                    context: ctx.value,
-                    version: head.version,
-                    status: .forbidden,
-                    headers: headers,
-                    body: #"{"error":"\#(rejection.code)","message":"\#(rejection.message)"}"#
-                )
-            }
-            return
-        }
+        let canManage = stateRef.value.authedAudience == nil || stateRef.value.authedScopeIsMaster
+        let authedAudience = stateRef.value.authedAudience
+        let hasGlobalScope = stateRef.value.authedScopeIsMaster
 
         runRequestTask(priority: .userInitiated) {
-            // Built-in agents are not exposed via HTTP — return 404 (not 403)
-            // so external clients learn the id is unreachable but cannot
-            // distinguish "no such agent" from "you are not allowed to see
-            // this one". This matches the listing endpoint's filter behavior.
-            guard let agent = await MainActor.run(body: { AgentManager.shared.agent(for: agentId) }),
-                !agent.isBuiltIn
-            else {
+            func sendJSON(status: HTTPResponseStatus, body: String) {
                 hop {
                     var headers = [("Content-Type", "application/json; charset=utf-8")]
                     headers.append(contentsOf: cors)
-                    self.sendResponse(
+                    logSelf.sendResponse(
                         context: ctx.value,
                         version: head.version,
-                        status: .notFound,
+                        status: status,
                         headers: headers,
-                        body: #"{"error":"agent_not_found","message":"No agent found for the given ID"}"#
+                        body: body
                     )
                 }
+                logSelf.logRequest(
+                    method: method,
+                    path: path,
+                    userAgent: logUserAgent,
+                    requestBody: requestBody?.text,
+                    responseBody: body,
+                    responseStatus: Int(status.code),
+                    startTime: logStartTime
+                )
+            }
+
+            func sendEncodable<T: Encodable>(status: HTTPResponseStatus, value: T) {
+                let body =
+                    (try? JSONEncoder.osaurusCanonical().encode(value))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                sendJSON(status: status, body: body)
+            }
+
+            func sendError(status: HTTPResponseStatus, code: String, message: String) {
+                let escaped = message.replacingOccurrences(of: "\"", with: "\\\"")
+                sendJSON(
+                    status: status,
+                    body: #"{"error":"\#(code)","message":"\#(escaped)"}"#
+                )
+            }
+
+            let allAgents = await MainActor.run { AgentManager.shared.agents }
+            let visibleAgents = Self.visibleAgents(
+                allAgents,
+                authedAudience: authedAudience,
+                hasGlobalScope: hasGlobalScope
+            )
+
+            if head.method == .GET, path == "/agents" {
+                let memoryCounts = Self.memoryCountsByAgentId()
+                let items = await MainActor.run {
+                    visibleAgents.map {
+                        Self.agentListItem(for: $0, memoryCounts: memoryCounts)
+                    }
+                }
+                sendEncodable(status: .ok, value: AgentListResponse(agents: items))
                 return
             }
 
-            let formatter = ISO8601DateFormatter()
-            let effectiveModelId =
-                await MainActor.run {
-                    AgentManager.shared.effectiveModel(for: agent.id)
-                } ?? agent.defaultModel
-            let supportsVision = effectiveModelId.map { VLMDetection.isVLM(modelId: $0) } ?? false
-            let supportsThinking =
-                effectiveModelId.flatMap { ModelProfileRegistry.profile(for: $0)?.thinkingOption } != nil
-            let item = AgentListItem(
-                id: agent.id.uuidString,
-                name: agent.name,
-                description: agent.description,
-                default_model: agent.defaultModel,
-                effective_model: effectiveModelId,
-                supports_thinking: supportsThinking,
-                supports_vision: supportsVision,
-                is_built_in: agent.isBuiltIn,
-                memory_entry_count: 0,
-                created_at: formatter.string(from: agent.createdAt),
-                updated_at: formatter.string(from: agent.updatedAt)
-            )
-            let json =
-                (try? JSONEncoder.osaurusCanonical().encode(item)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
-
-            hop {
-                var headers = [("Content-Type", "application/json; charset=utf-8")]
-                headers.append(contentsOf: cors)
-                self.sendResponse(
-                    context: ctx.value,
-                    version: head.version,
-                    status: .ok,
-                    headers: headers,
-                    body: json
-                )
+            if head.method == .GET, path == "/agents/teams" {
+                let scopedAgentIds = Set(visibleAgents.map(\.id))
+                let teams = await MainActor.run {
+                    AgentTeamConfigurationStore.load().filter { team in
+                        canManage || team.memberAgentIds.contains { scopedAgentIds.contains($0) }
+                    }
+                }
+                sendEncodable(status: .ok, value: AgentTeamListResponse(teams: Self.teamItems(teams)))
+                return
             }
-            logSelf.logRequest(
-                method: "GET",
-                path: path,
-                userAgent: logUserAgent,
-                requestBody: nil,
-                responseBody: json,
-                responseStatus: 200,
-                startTime: logStartTime
-            )
+
+            if path.hasPrefix("/agents/teams/") {
+                let teamId = String(path.dropFirst("/agents/teams/".count))
+                guard AgentTeamConfigurationStore.isValidTeamId(teamId) else {
+                    sendError(status: .badRequest, code: "invalid_team_id", message: "Invalid team id.")
+                    return
+                }
+                if head.method == .GET {
+                    guard let team = await MainActor.run(body: { AgentTeamConfigurationStore.team(id: teamId) })
+                    else {
+                        sendError(status: .notFound, code: "team_not_found", message: "No team found for the given id.")
+                        return
+                    }
+                    let scopedAgentIds = Set(visibleAgents.map(\.id))
+                    guard canManage || team.memberAgentIds.contains(where: { scopedAgentIds.contains($0) }) else {
+                        sendError(
+                            status: .forbidden,
+                            code: "agent_scope_denied",
+                            message: "This access key is not scoped to the requested team."
+                        )
+                        return
+                    }
+                    sendEncodable(status: .ok, value: AgentTeamItemResponse(team: Self.teamItem(team)))
+                    return
+                }
+
+                guard canManage else {
+                    sendError(
+                        status: .forbidden,
+                        code: "agent_scope_denied",
+                        message: "Only loopback or master-scoped keys can update agent teams."
+                    )
+                    return
+                }
+                guard let requestBody, !requestBody.data.isEmpty,
+                    let request = try? JSONDecoder().decode(AgentTeamMutationRequest.self, from: requestBody.data)
+                else {
+                    sendError(status: .badRequest, code: "invalid_request", message: "Team update requires JSON.")
+                    return
+                }
+                let memberIds: [UUID]
+                if let rawIds = request.member_agent_ids {
+                    memberIds = rawIds.compactMap(UUID.init(uuidString:))
+                    guard memberIds.count == rawIds.count else {
+                        sendError(status: .badRequest, code: "invalid_agent_id", message: "Invalid member agent id.")
+                        return
+                    }
+                    let customAgentIds = Set(allAgents.filter { !$0.isBuiltIn }.map(\.id))
+                    guard memberIds.allSatisfy({ customAgentIds.contains($0) }) else {
+                        sendError(
+                            status: .badRequest,
+                            code: "agent_not_found",
+                            message: "Team members must be existing custom agents."
+                        )
+                        return
+                    }
+                } else {
+                    memberIds = await MainActor.run {
+                        AgentTeamConfigurationStore.team(id: teamId)?.memberAgentIds ?? []
+                    }
+                }
+                let existing = await MainActor.run { AgentTeamConfigurationStore.team(id: teamId) }
+                let team = AgentTeamConfiguration(
+                    id: teamId,
+                    name: request.name ?? existing?.name ?? teamId,
+                    description: request.description ?? existing?.description ?? "",
+                    memberAgentIds: memberIds,
+                    defaults: request.defaults?.domain ?? existing?.defaults ?? .default,
+                    createdAt: existing?.createdAt ?? Date(),
+                    updatedAt: Date()
+                )
+                await MainActor.run { AgentTeamConfigurationStore.upsert(team) }
+                sendEncodable(status: existing == nil ? .created : .ok, value: AgentTeamItemResponse(team: Self.teamItem(team)))
+                return
+            }
+
+            if head.method == .POST, path == "/agents" {
+                guard canManage else {
+                    sendError(
+                        status: .forbidden,
+                        code: "agent_scope_denied",
+                        message: "Only loopback or master-scoped keys can create agents."
+                    )
+                    return
+                }
+                guard let requestBody, !requestBody.data.isEmpty,
+                    let request = try? JSONDecoder().decode(AgentCreateRequest.self, from: requestBody.data)
+                else {
+                    sendError(status: .badRequest, code: "invalid_request", message: "Agent create requires JSON.")
+                    return
+                }
+                let name = request.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard !name.isEmpty else {
+                    sendError(status: .badRequest, code: "invalid_name", message: "Agent name is required.")
+                    return
+                }
+                let requestedTeamIds = request.team_ids ?? request.team_id.map { [$0] } ?? []
+                guard await Self.teamIdsAreValidAndKnown(requestedTeamIds) else {
+                    sendError(status: .badRequest, code: "invalid_team_id", message: "Unknown or invalid team id.")
+                    return
+                }
+                let defaults = await MainActor.run {
+                    Self.creationDefaults(forTeamIds: requestedTeamIds, requestOverrides: request.defaultsOverride)
+                }
+                let sandboxDefault = await MainActor.run {
+                    AgentManager.sandboxDefaultAutonomousExec
+                }
+                let agent = Agent(
+                    name: name,
+                    description: request.description ?? "",
+                    systemPrompt: request.system_prompt ?? "",
+                    defaultModel: defaults.defaultModel,
+                    temperature: defaults.temperature,
+                    maxTokens: defaults.maxTokens,
+                    createdAt: Date(),
+                    updatedAt: Date(),
+                    autonomousExec: sandboxDefault,
+                    toolSelectionMode: defaults.toolSelectionMode,
+                    manualToolNames: defaults.manualToolNames,
+                    manualSkillNames: defaults.manualSkillNames,
+                    autoSpeak: defaults.autoSpeak,
+                    ttsVoice: defaults.ttsVoice
+                )
+                await MainActor.run {
+                    AgentManager.shared.add(agent)
+                    for teamId in requestedTeamIds {
+                        AgentTeamConfigurationStore.assign(agentId: agent.id, toTeamId: teamId)
+                    }
+                }
+                let item = await MainActor.run {
+                    Self.agentListItem(for: AgentManager.shared.agent(for: agent.id) ?? agent, memoryCounts: [:])
+                }
+                sendEncodable(status: .created, value: AgentItemResponse(agent: item))
+                return
+            }
+
+            let identifier = String(path.dropFirst("/agents/".count))
+            let targetId = identifier.lowercased() == "default"
+                ? Agent.defaultId
+                : (UUID(uuidString: identifier) ?? AgentIdentityRegistry.shared.agentId(forAddress: identifier))
+            guard let targetId else {
+                sendError(status: .badRequest, code: "invalid_agent_id", message: "Invalid agent UUID or address in path.")
+                return
+            }
+            guard var agent = allAgents.first(where: { $0.id == targetId }) else {
+                sendError(status: .notFound, code: "agent_not_found", message: "No agent found for the given ID.")
+                return
+            }
+            if let rejection = Self.agentScopeRejection(
+                forAgentId: targetId,
+                authedAudience: authedAudience,
+                authedScopeIsMaster: hasGlobalScope
+            ) {
+                sendError(status: .forbidden, code: rejection.code, message: rejection.message)
+                return
+            }
+
+            if head.method == .GET {
+                let item = await MainActor.run {
+                    Self.agentListItem(for: agent, memoryCounts: Self.memoryCountsByAgentId())
+                }
+                sendEncodable(status: .ok, value: AgentItemResponse(agent: item))
+                return
+            }
+
+            guard canManage else {
+                sendError(
+                    status: .forbidden,
+                    code: "agent_scope_denied",
+                    message: "Only loopback or master-scoped keys can update agent configuration."
+                )
+                return
+            }
+            guard let requestBody, !requestBody.data.isEmpty,
+                let request = try? JSONDecoder().decode(AgentUpdateRequest.self, from: requestBody.data)
+            else {
+                sendError(status: .badRequest, code: "invalid_request", message: "Agent update requires JSON.")
+                return
+            }
+
+            if targetId == Agent.defaultId {
+                let item = await MainActor.run { () -> AgentListItem in
+                    var config = DefaultAgentConfigurationStore.load()
+                    if let value = request.system_prompt { config.systemPrompt = value }
+                    if let value = request.default_model { config.defaultModel = value }
+                    if let value = request.temperature { config.temperature = value }
+                    if let value = request.max_tokens { config.maxTokens = value }
+                    if let value = request.disable_tools {
+                        config.disableTools = value
+                    } else if let value = request.tools_enabled {
+                        config.disableTools = !value
+                    }
+                    if let value = request.tool_selection_mode { config.toolSelectionMode = value }
+                    if let value = request.manual_tool_names { config.manualToolNames = value }
+                    if let value = request.manual_skill_names { config.manualSkillNames = value }
+                    if let value = request.creation_defaults { config.creationDefaults = value.domain }
+                    DefaultAgentConfigurationStore.save(config)
+                    NotificationCenter.default.post(name: .agentUpdated, object: Agent.defaultId)
+                    return Self.agentListItem(for: Agent.default, memoryCounts: [:])
+                }
+                sendEncodable(status: .ok, value: AgentItemResponse(agent: item))
+                return
+            }
+
+            guard !agent.isBuiltIn else {
+                sendError(status: .forbidden, code: "built_in_agent", message: "Built-in agents cannot be updated here.")
+                return
+            }
+            if let value = request.name?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                agent.name = value
+            }
+            if let value = request.description { agent.description = value }
+            if let value = request.system_prompt { agent.systemPrompt = value }
+            if let value = request.default_model { agent.defaultModel = value }
+            if let value = request.temperature { agent.temperature = value }
+            if let value = request.max_tokens { agent.maxTokens = value }
+            if let value = request.disable_tools {
+                agent.toolsEnabled = !value
+            } else if let value = request.tools_enabled {
+                agent.toolsEnabled = value
+            }
+            if let value = request.memory_enabled { agent.memoryEnabled = value }
+            if let value = request.tool_selection_mode { agent.toolSelectionMode = value }
+            if let value = request.manual_tool_names { agent.manualToolNames = value }
+            if let value = request.manual_skill_names { agent.manualSkillNames = value }
+            if let value = request.auto_speak { agent.autoSpeak = value }
+            if let value = request.tts_voice { agent.ttsVoice = value }
+            if let teamIds = request.team_ids {
+                guard await Self.teamIdsAreValidAndKnown(teamIds) else {
+                    sendError(status: .badRequest, code: "invalid_team_id", message: "Unknown or invalid team id.")
+                    return
+                }
+                await MainActor.run { AgentTeamConfigurationStore.setTeamIds(teamIds, for: agent.id) }
+            }
+            let item = await MainActor.run { () -> AgentListItem in
+                AgentManager.shared.update(agent)
+                return Self.agentListItem(for: AgentManager.shared.agent(for: agent.id) ?? agent, memoryCounts: [:])
+            }
+            sendEncodable(status: .ok, value: AgentItemResponse(agent: item))
         }
     }
 
@@ -4318,6 +4600,113 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         let context = await FolderContextService.shared.buildContext(from: url)
         return (url, context)
     }
+
+    @MainActor
+    private static func creationDefaults(
+        forTeamIds teamIds: [String],
+        requestOverrides: AgentCreationDefaults
+    ) -> AgentCreationDefaults {
+        var defaults = DefaultAgentConfigurationStore.load().creationDefaults
+        for teamId in teamIds {
+            if let team = AgentTeamConfigurationStore.team(id: teamId) {
+                defaults = defaults.merging(team.defaults)
+            }
+        }
+        return defaults.merging(requestOverrides)
+    }
+
+    @MainActor
+    private static func teamIdsAreValidAndKnown(_ teamIds: [String]) -> Bool {
+        for teamId in teamIds {
+            guard AgentTeamConfigurationStore.isValidTeamId(teamId),
+                AgentTeamConfigurationStore.team(id: teamId) != nil
+            else { return false }
+        }
+        return true
+    }
+
+    private static func visibleAgents(
+        _ agents: [Agent],
+        authedAudience: String?,
+        hasGlobalScope: Bool
+    ) -> [Agent] {
+        guard let audience = authedAudience, !hasGlobalScope else { return agents }
+        return agents.filter { agent in
+            guard !agent.isBuiltIn else { return false }
+            return agent.agentAddress?.lowercased() == audience
+        }
+    }
+
+    private static func memoryCountsByAgentId() -> [String: Int] {
+        let db = MemoryDatabase.shared
+        guard db.isOpen, let counts = try? db.agentIdsWithPinnedFacts() else { return [:] }
+        var result: [String: Int] = [:]
+        for (agentId, count) in counts {
+            result[agentId] = count
+        }
+        return result
+    }
+
+    @MainActor
+    private static func agentListItem(
+        for agent: Agent,
+        memoryCounts: [String: Int]
+    ) -> AgentListItem {
+        let formatter = ISO8601DateFormatter()
+        let manager = AgentManager.shared
+        let effectiveModelId = manager.effectiveModel(for: agent.id) ?? agent.defaultModel
+        let supportsVision = effectiveModelId.map { VLMDetection.isVLM(modelId: $0) } ?? false
+        let supportsThinking = effectiveModelId.flatMap {
+            ModelProfileRegistry.profile(for: $0)?.thinkingOption
+        } != nil
+        let capabilities = manager.effectiveCapabilities(for: agent.id)
+        let defaultConfig = agent.id == Agent.defaultId ? DefaultAgentConfigurationStore.load() : nil
+        return AgentListItem(
+            id: agent.id.uuidString,
+            name: agent.name,
+            description: agent.description,
+            system_prompt: manager.effectiveSystemPrompt(for: agent.id),
+            default_model: agent.id == Agent.defaultId ? defaultConfig?.defaultModel : agent.defaultModel,
+            temperature: agent.id == Agent.defaultId ? defaultConfig?.temperature : agent.temperature,
+            max_tokens: agent.id == Agent.defaultId ? defaultConfig?.maxTokens : agent.maxTokens,
+            effective_model: effectiveModelId,
+            supports_thinking: supportsThinking,
+            supports_vision: supportsVision,
+            is_built_in: agent.isBuiltIn,
+            tools_enabled: capabilities.toolsEnabled,
+            memory_enabled: capabilities.memoryEnabled,
+            tool_selection_mode: manager.effectiveToolSelectionMode(for: agent.id),
+            manual_tool_names: manager.effectiveEnabledToolNames(for: agent.id),
+            manual_skill_names: manager.effectiveEnabledSkillNames(for: agent.id),
+            auto_speak: agent.autoSpeak,
+            tts_voice: agent.ttsVoice,
+            agent_address: agent.agentAddress,
+            team_ids: AgentTeamConfigurationStore.teamIds(containing: agent.id),
+            creation_defaults: defaultConfig.map { AgentDefaultsPayload($0.creationDefaults) },
+            memory_entry_count: memoryCounts[agent.id.uuidString] ?? 0,
+            created_at: formatter.string(from: agent.createdAt),
+            updated_at: formatter.string(from: agent.updatedAt)
+        )
+    }
+
+    private static func teamItems(_ teams: [AgentTeamConfiguration]) -> [AgentTeamItem] {
+        teams.map(teamItem)
+    }
+
+    private static func teamItem(_ team: AgentTeamConfiguration) -> AgentTeamItem {
+        let formatter = ISO8601DateFormatter()
+        return AgentTeamItem(
+            id: team.id,
+            name: team.name,
+            description: team.description,
+            member_agent_ids: team.memberAgentIds.map(\.uuidString),
+            defaults: AgentDefaultsPayload(team.defaults),
+            created_at: formatter.string(from: team.createdAt),
+            updated_at: formatter.string(from: team.updatedAt)
+        )
+    }
+
+    // MARK: - Agent Run Endpoints
 
     /// POST /agents/{id}/run — run the full agent chat loop server-side.
     ///

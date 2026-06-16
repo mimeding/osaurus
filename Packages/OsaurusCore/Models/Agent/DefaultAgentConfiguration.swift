@@ -69,6 +69,12 @@ public struct DefaultAgentConfiguration: Codable, Equatable, Sendable {
     /// `manualToolNames` for skills.
     public var manualSkillNames: [String]?
 
+    /// Defaults used when creating new custom agents from API-driven
+    /// create-from-defaults flows. These do not clone the Default agent's
+    /// privileged persona; they only seed model/generation, tool grants, and
+    /// voice fields that custom agents already persist.
+    public var creationDefaults: AgentCreationDefaults
+
     public init(
         systemPrompt: String = "",
         defaultModel: String? = nil,
@@ -78,7 +84,8 @@ public struct DefaultAgentConfiguration: Codable, Equatable, Sendable {
         autonomousExec: AutonomousExecConfig? = nil,
         toolSelectionMode: ToolSelectionMode? = nil,
         manualToolNames: [String]? = nil,
-        manualSkillNames: [String]? = nil
+        manualSkillNames: [String]? = nil,
+        creationDefaults: AgentCreationDefaults = .default
     ) {
         self.systemPrompt = systemPrompt
         self.defaultModel = defaultModel
@@ -89,6 +96,7 @@ public struct DefaultAgentConfiguration: Codable, Equatable, Sendable {
         self.toolSelectionMode = toolSelectionMode
         self.manualToolNames = manualToolNames
         self.manualSkillNames = manualSkillNames
+        self.creationDefaults = creationDefaults
     }
 
     public init(from decoder: Decoder) throws {
@@ -102,6 +110,7 @@ public struct DefaultAgentConfiguration: Codable, Equatable, Sendable {
         toolSelectionMode = try c.decodeIfPresent(ToolSelectionMode.self, forKey: .toolSelectionMode)
         manualToolNames = try c.decodeIfPresent([String].self, forKey: .manualToolNames)
         manualSkillNames = try c.decodeIfPresent([String].self, forKey: .manualSkillNames)
+        creationDefaults = try c.decodeIfPresent(AgentCreationDefaults.self, forKey: .creationDefaults) ?? .default
     }
 
     public static var `default`: DefaultAgentConfiguration {

@@ -4946,6 +4946,22 @@
         }
       }
     },
+    "Agent teams unreadable" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Agententeams nicht lesbar"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法读取智能体团队"
+          }
+        }
+      }
+    },
     "Agent traffic is protected by the Osaurus Secure Channel: forward-secret, mutually authenticated end-to-end encryption." : {
       "localizations" : {
         "de" : {
@@ -15338,6 +15354,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法打开数据库"
+          }
+        }
+      }
+    },
+    "Couldn't save agent teams" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Agententeams konnten nicht gespeichert werden"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法保存智能体团队"
           }
         }
       }
@@ -63152,6 +63184,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在使用默认值；你保存的文件未被更改。"
+          }
+        }
+      }
+    },
+    "Using no saved agent teams; your saved file was left untouched." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Es werden keine gespeicherten Agententeams verwendet; deine gespeicherte Datei bleibt unverändert."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未使用已保存的智能体团队；你保存的文件未被更改。"
           }
         }
       }
