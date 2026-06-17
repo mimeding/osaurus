@@ -568,6 +568,7 @@ struct PlanDispatchTests {
 /// Sweeps every plugin's per-agent entry by `"{agentId}."` prefix.
 /// Uses synthetic agent UUIDs and a synthetic plugin id so the test
 /// only touches keychain entries it created and cleaned up itself.
+@Suite(.serialized)
 struct ToolSecretsKeychainAgentSweepTests {
 
     @Test func deletesOnlyEntriesForTargetAgent() {
@@ -610,6 +611,7 @@ struct ToolSecretsKeychainAgentSweepTests {
 /// "Tavily key saved but agent silently routes to DDG" bug. Uses synthetic
 /// UUIDs (not `Agent.defaultId`) to avoid pre-populated production keychain
 /// entries on CI runners.
+@Suite(.serialized)
 struct ResolvedSecretsMergingTests {
 
     @Test func defaultsFlowToPrimary() {

@@ -664,6 +664,14 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 handleSecureSessionEndpoint(head: head, context: context, startTime: startTime, userAgent: userAgent)
             } else if head.method == .GET, path == "/agents" {
                 handleListAgents(head: head, context: context, startTime: startTime, userAgent: userAgent)
+            } else if path.hasPrefix("/agents/"), path.split(separator: "/").contains("workspaces") {
+                handleAgentWorkspaceEndpoint(
+                    head: head,
+                    context: context,
+                    path: path,
+                    startTime: startTime,
+                    userAgent: userAgent
+                )
             } else if head.method == .GET, path.hasPrefix("/agents/") {
                 handleGetAgentEndpoint(
                     head: head,
@@ -3135,6 +3143,57 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         let agents: [AgentListItem]
     }
 
+    private struct AgentWorkspaceListResponse: Codable {
+        let workspaces: [AgentWorkspaceItem]
+    }
+
+    private struct AgentWorkspaceMutationResponse: Codable {
+        let workspace: AgentWorkspaceItem
+    }
+
+    private struct AgentWorkspaceDeleteResponse: Codable {
+        let status: String
+        let workspace_id: String
+    }
+
+    private struct AgentWorkspaceItem: Codable {
+        let id: String
+        let agent_id: String
+        let name: String
+        let description: String
+        let sources: [AgentWorkspaceSourceItem]
+        let created_at: String
+        let updated_at: String
+    }
+
+    private struct AgentWorkspaceSourceItem: Codable {
+        let id: String
+        let kind: String
+        let path: String
+        let display_name: String
+        let status: String
+        let byte_count: Int64?
+        let item_count: Int?
+        let summary: String?
+        let error: String?
+        let indexed_at: String?
+    }
+
+    private struct AgentWorkspaceCreateRequest: Codable {
+        let name: String
+        let description: String?
+        let paths: [String]?
+    }
+
+    private struct AgentWorkspaceSourcesRequest: Codable {
+        let paths: [String]
+    }
+
+    private struct AgentWorkspaceErrorResponse: Codable {
+        let error: String
+        let message: String
+    }
+
     // MARK: - Pair Endpoint
 
     private struct PairRequest: Codable {
@@ -4317,6 +4376,335 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         else { return nil }
         let context = await FolderContextService.shared.buildContext(from: url)
         return (url, context)
+    }
+
+    /// GET/POST/DELETE /agents/{id}/workspaces and
+    /// POST /agents/{id}/workspaces/{workspaceId}/sources.
+    private func handleAgentWorkspaceEndpoint(
+        head: HTTPRequestHead,
+        context: ChannelHandlerContext,
+        path: String,
+        startTime: Date,
+        userAgent: String?
+    ) {
+        let loop = context.eventLoop
+        let ctx = NIOLoopBound(context, eventLoop: loop)
+        let cors = stateRef.value.corsHeaders
+        let hop = Self.makeHop(channel: context.channel, loop: loop)
+        let logSelf = self
+        let logStartTime = startTime
+        let logUserAgent = userAgent
+
+        let data: Data
+        let requestBodyString: String?
+        if let body = stateRef.value.requestBodyBuffer {
+            var bodyCopy = body
+            let bytes = bodyCopy.readBytes(length: bodyCopy.readableBytes) ?? []
+            data = Data(bytes)
+            requestBodyString = String(decoding: data, as: UTF8.self)
+        } else {
+            data = Data()
+            requestBodyString = nil
+        }
+
+        func reply(
+            status: HTTPResponseStatus,
+            body: String,
+            code: Int,
+            errorMessage: String? = nil
+        ) {
+            hop {
+                var headers = [("Content-Type", "application/json; charset=utf-8")]
+                headers.append(contentsOf: cors)
+                self.sendResponse(
+                    context: ctx.value,
+                    version: head.version,
+                    status: status,
+                    headers: headers,
+                    body: body
+                )
+            }
+            logSelf.logRequest(
+                method: head.method.rawValue,
+                path: path,
+                userAgent: logUserAgent,
+                requestBody: requestBodyString,
+                responseBody: body,
+                responseStatus: code,
+                startTime: logStartTime,
+                errorMessage: errorMessage
+            )
+        }
+
+        let components = path.split(separator: "/").map(String.init)
+        guard components.count == 3 || components.count == 4 || components.count == 5,
+            components.first == "agents",
+            components.count > 2,
+            components[2] == "workspaces",
+            let agentId = UUID(uuidString: components[1])
+        else {
+            reply(
+                status: .badRequest,
+                body: agentWorkspaceErrorJSON(
+                    code: "invalid_agent_workspace_path",
+                    message: "Expected /agents/{id}/workspaces."
+                ),
+                code: 400,
+                errorMessage: "Invalid agent workspace path"
+            )
+            return
+        }
+
+        let workspaceId = components.count >= 4 ? UUID(uuidString: components[3]) : nil
+        if components.count >= 4, workspaceId == nil {
+            reply(
+                status: .badRequest,
+                body: agentWorkspaceErrorJSON(
+                    code: "invalid_workspace_id",
+                    message: "Invalid workspace UUID in path."
+                ),
+                code: 400,
+                errorMessage: "Invalid workspace UUID"
+            )
+            return
+        }
+        if components.count == 5, components[4] != "sources" {
+            reply(
+                status: .badRequest,
+                body: agentWorkspaceErrorJSON(
+                    code: "invalid_agent_workspace_path",
+                    message: "Expected /agents/{id}/workspaces/{workspaceId}/sources."
+                ),
+                code: 400,
+                errorMessage: "Invalid workspace source path"
+            )
+            return
+        }
+
+        if let rejection = agentScopeRejection(forAgentId: agentId) {
+            reply(
+                status: .forbidden,
+                body: agentWorkspaceErrorJSON(code: rejection.code, message: rejection.message),
+                code: 403,
+                errorMessage: rejection.message
+            )
+            return
+        }
+
+        runRequestTask(priority: .userInitiated) { [self] in
+            guard let agent = await MainActor.run(body: { AgentManager.shared.agent(for: agentId) }),
+                !agent.isBuiltIn
+            else {
+                reply(
+                    status: .notFound,
+                    body: agentWorkspaceErrorJSON(
+                        code: "agent_not_found",
+                        message: "No agent found for the given ID."
+                    ),
+                    code: 404,
+                    errorMessage: "Agent not found"
+                )
+                return
+            }
+
+            let formatter = ISO8601DateFormatter()
+            switch (head.method, components.count) {
+            case (.GET, 3):
+                let items = AgentWorkspaceStore.loadAll(agentId: agentId)
+                    .map { agentWorkspaceItem($0, formatter: formatter) }
+                let body = agentWorkspaceJSON(
+                    AgentWorkspaceListResponse(workspaces: items),
+                    fallback: #"{"workspaces":[]}"#
+                )
+                reply(status: .ok, body: body, code: 200)
+
+            case (.POST, 3):
+                guard let request = try? JSONDecoder().decode(AgentWorkspaceCreateRequest.self, from: data) else {
+                    reply(
+                        status: .badRequest,
+                        body: agentWorkspaceErrorJSON(
+                            code: "invalid_workspace_request",
+                            message: "Request body must include a non-empty name and optional paths."
+                        ),
+                        code: 400,
+                        errorMessage: "Invalid workspace create request"
+                    )
+                    return
+                }
+                do {
+                    let workspace = try AgentWorkspaceStore.create(
+                        agentId: agentId,
+                        name: request.name,
+                        description: request.description ?? "",
+                        paths: request.paths ?? []
+                    )
+                    let body = agentWorkspaceJSON(
+                        AgentWorkspaceMutationResponse(
+                            workspace: agentWorkspaceItem(workspace, formatter: formatter)
+                        ),
+                        fallback: #"{"workspace":{}}"#
+                    )
+                    reply(status: .created, body: body, code: 201)
+                } catch {
+                    reply(
+                        status: .badRequest,
+                        body: agentWorkspaceErrorJSON(
+                            code: "workspace_create_failed",
+                            message: error.localizedDescription
+                        ),
+                        code: 400,
+                        errorMessage: error.localizedDescription
+                    )
+                }
+
+            case (.DELETE, 4):
+                guard let workspaceId else {
+                    reply(
+                        status: .badRequest,
+                        body: agentWorkspaceErrorJSON(
+                            code: "invalid_workspace_id",
+                            message: "Invalid workspace UUID in path."
+                        ),
+                        code: 400,
+                        errorMessage: "Invalid workspace UUID"
+                    )
+                    return
+                }
+                guard AgentWorkspaceStore.delete(agentId: agentId, workspaceId: workspaceId) else {
+                    reply(
+                        status: .notFound,
+                        body: agentWorkspaceErrorJSON(
+                            code: "workspace_not_found",
+                            message: "No workspace found for the given ID."
+                        ),
+                        code: 404,
+                        errorMessage: "Workspace not found"
+                    )
+                    return
+                }
+                let body = agentWorkspaceJSON(
+                    AgentWorkspaceDeleteResponse(status: "deleted", workspace_id: workspaceId.uuidString),
+                    fallback: #"{"status":"deleted"}"#
+                )
+                reply(status: .ok, body: body, code: 200)
+
+            case (.POST, 5):
+                guard let workspaceId else {
+                    reply(
+                        status: .badRequest,
+                        body: agentWorkspaceErrorJSON(
+                            code: "invalid_workspace_id",
+                            message: "Invalid workspace UUID in path."
+                        ),
+                        code: 400,
+                        errorMessage: "Invalid workspace UUID"
+                    )
+                    return
+                }
+                guard let request = try? JSONDecoder().decode(AgentWorkspaceSourcesRequest.self, from: data),
+                    !request.paths.isEmpty
+                else {
+                    reply(
+                        status: .badRequest,
+                        body: agentWorkspaceErrorJSON(
+                            code: "invalid_workspace_sources_request",
+                            message: "Request body must include at least one path."
+                        ),
+                        code: 400,
+                        errorMessage: "Invalid workspace sources request"
+                    )
+                    return
+                }
+                do {
+                    let workspace = try AgentWorkspaceStore.attachPaths(
+                        agentId: agentId,
+                        workspaceId: workspaceId,
+                        paths: request.paths
+                    )
+                    let body = agentWorkspaceJSON(
+                        AgentWorkspaceMutationResponse(
+                            workspace: agentWorkspaceItem(workspace, formatter: formatter)
+                        ),
+                        fallback: #"{"workspace":{}}"#
+                    )
+                    reply(status: .ok, body: body, code: 200)
+                } catch AgentWorkspaceStoreError.workspaceNotFound {
+                    reply(
+                        status: .notFound,
+                        body: agentWorkspaceErrorJSON(
+                            code: "workspace_not_found",
+                            message: "No workspace found for the given ID."
+                        ),
+                        code: 404,
+                        errorMessage: "Workspace not found"
+                    )
+                } catch {
+                    reply(
+                        status: .badRequest,
+                        body: agentWorkspaceErrorJSON(
+                            code: "workspace_sources_failed",
+                            message: error.localizedDescription
+                        ),
+                        code: 400,
+                        errorMessage: error.localizedDescription
+                    )
+                }
+
+            default:
+                reply(
+                    status: .methodNotAllowed,
+                    body: agentWorkspaceErrorJSON(
+                        code: "method_not_allowed",
+                        message: "Unsupported method for agent workspace endpoint."
+                    ),
+                    code: 405,
+                    errorMessage: "Unsupported workspace endpoint method"
+                )
+            }
+        }
+    }
+
+    private func agentWorkspaceItem(
+        _ workspace: AgentWorkspace,
+        formatter: ISO8601DateFormatter
+    ) -> AgentWorkspaceItem {
+        AgentWorkspaceItem(
+            id: workspace.id.uuidString,
+            agent_id: workspace.agentId.uuidString,
+            name: workspace.name,
+            description: workspace.description,
+            sources: workspace.sources.map { source in
+                AgentWorkspaceSourceItem(
+                    id: source.id.uuidString,
+                    kind: source.kind.rawValue,
+                    path: source.path,
+                    display_name: source.displayName,
+                    status: source.status.rawValue,
+                    byte_count: source.byteCount,
+                    item_count: source.itemCount,
+                    summary: source.summary,
+                    error: source.error,
+                    indexed_at: source.indexedAt.map { formatter.string(from: $0) }
+                )
+            },
+            created_at: formatter.string(from: workspace.createdAt),
+            updated_at: formatter.string(from: workspace.updatedAt)
+        )
+    }
+
+    private func agentWorkspaceJSON<T: Encodable>(
+        _ value: T,
+        fallback: String
+    ) -> String {
+        (try? JSONEncoder.osaurusCanonical().encode(value)).map { String(decoding: $0, as: UTF8.self) }
+            ?? fallback
+    }
+
+    private func agentWorkspaceErrorJSON(code: String, message: String) -> String {
+        agentWorkspaceJSON(
+            AgentWorkspaceErrorResponse(error: code, message: message),
+            fallback: #"{"error":"internal_error","message":"Encoding failed"}"#
+        )
     }
 
     /// POST /agents/{id}/run — run the full agent chat loop server-side.

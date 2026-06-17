@@ -328,6 +328,17 @@ public enum OsaurusPaths {
         agentRunsDirectory(for: agentId).appendingPathComponent("\(runId.uuidString).json")
     }
 
+    /// Per-agent workspace metadata directory:
+    /// `~/.osaurus/agents/<uuid>/workspaces/`.
+    public static func agentWorkspacesDirectory(for id: UUID) -> URL {
+        agentDirectory(for: id).appendingPathComponent("workspaces", isDirectory: true)
+    }
+
+    /// Per-workspace JSON file under the agent workspace directory.
+    public static func agentWorkspaceFile(agentId: UUID, workspaceId: UUID) -> URL {
+        agentWorkspacesDirectory(for: agentId).appendingPathComponent("\(workspaceId.uuidString).json")
+    }
+
     /// Host-side record of which sandbox packages have been installed for
     /// an agent: `~/.osaurus/agents/<uuid>/installed-packages.json`. Seeded
     /// by `SandboxAgentProvisioner` (lazy reconcile) and appended to by

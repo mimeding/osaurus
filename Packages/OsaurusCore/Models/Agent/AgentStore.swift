@@ -122,6 +122,7 @@ public enum AgentStore {
         // block agent deletion.
         try? SchedulerDatabase.shared.deleteAllForAgent(id)
         try? AgentDatabaseStore.shared.deleteOnDisk(for: id)
+        try? AgentWorkspaceStore.deleteAll(for: id)
         // The serial queue + open DB handle inside LocalAgentBridge
         // outlives `deleteOnDisk` (those live in a separate registry
         // keyed by agentId). Drop them here so a later create-with-

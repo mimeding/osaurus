@@ -4930,6 +4930,22 @@
         }
       }
     },
+    "Agent Workspaces" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Agenten-Arbeitsbereiche"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "代理工作区"
+          }
+        }
+      }
+    },
     "Agent off" : {
       "localizations" : {
         "de" : {

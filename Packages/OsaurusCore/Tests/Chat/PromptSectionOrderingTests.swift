@@ -32,9 +32,10 @@
 //                                  plugin skills + standalone skills)
 //   15. skillsGovern              static (paired with enabledManifest)
 //   16. pluginCreator             static (session-constant gate)
-//   17. agentDBSchema             dynamic, live schema snapshot
-//   18. sandboxState              dynamic, installed packages + secrets
-//   19. sandboxUnavailable        dynamic
+//   17. agentWorkspaces           dynamic, durable per-agent workspace summaries
+//   18. agentDBSchema             dynamic, live schema snapshot
+//   19. sandboxState              dynamic, installed packages + secrets
+//   20. sandboxUnavailable        dynamic
 //
 //  Sections 4/9 carry only session-constant framing; their mutable state
 //  (13/14) rides in the dynamic block so a schema change, package install,

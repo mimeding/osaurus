@@ -135,6 +135,59 @@ public enum SystemPromptTemplates {
         return compact ? groundingDirectiveFullCompact : groundingDirectiveFull
     }
 
+    // MARK: - Agent Workspaces
+
+    /// Durable per-agent workspace summaries. These are dynamic because
+    /// workspace source metadata can change between turns, and the model
+    /// should see current state without invalidating the static prompt prefix.
+    public static func agentWorkspaces(_ summary: AgentWorkspacePromptSummary) -> String {
+        guard !summary.workspaces.isEmpty else { return "" }
+
+        var lines: [String] = [
+            "## Agent workspaces",
+            "",
+            "These workspaces are durable background context for this agent.",
+        ]
+        if summary.canReadSources {
+            lines.append("Use the summaries for orientation, and inspect the source path before quoting details.")
+        } else {
+            lines.append("Use the summaries for orientation only; do not quote them as exact source text.")
+        }
+
+        for workspace in summary.workspaces {
+            var header = "- \(workspace.name)"
+            if !workspace.description.isEmpty {
+                header += ": \(workspace.description)"
+            }
+            lines.append(header)
+
+            if workspace.sources.isEmpty {
+                lines.append("  - No sources attached.")
+                continue
+            }
+
+            for source in workspace.sources {
+                lines.append(
+                    "  - [\(source.status.rawValue) \(source.kind.rawValue)] \(source.path)"
+                )
+                if let summary = source.summary, !summary.isEmpty {
+                    lines.append("    Summary: \(summary)")
+                }
+                if let error = source.error, !error.isEmpty {
+                    lines.append("    Note: \(error)")
+                }
+            }
+        }
+
+        if summary.omittedSources > 0 {
+            lines.append("- \(summary.omittedSources) additional workspace sources omitted from this prompt.")
+        }
+        if summary.omittedWorkspaces > 0 {
+            lines.append("- \(summary.omittedWorkspaces) additional workspaces omitted from this prompt.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - Capability Discovery Nudge
 
     /// Static guidance appended to the system prompt when `capabilities_discover`

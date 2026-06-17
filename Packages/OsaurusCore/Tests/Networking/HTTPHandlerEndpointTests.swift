@@ -75,6 +75,71 @@ struct HTTPHandlerEndpointTests {
         #expect((resp as? HTTPURLResponse)?.statusCode == 404)
     }
 
+    @Test func agentWorkspaces_createListAndAttachSources() async throws {
+        try await SandboxTestLock.runWithStoragePaths {
+            let root = try makeTempDirectory(prefix: "osaurus-agent-workspace-http")
+            let previousRoot = OsaurusPaths.overrideRoot
+            OsaurusPaths.overrideRoot = root
+            let agent = Agent(
+                name: "WorkspaceHTTP-\(UUID().uuidString.prefix(6))",
+                systemPrompt: "HTTP workspace test",
+                agentAddress: "workspace-http-\(UUID().uuidString)"
+            )
+
+            do {
+                AgentManager.shared.add(agent)
+                let initialSource = root.appendingPathComponent("initial.md")
+                try "Initial workspace facts.".write(to: initialSource, atomically: true, encoding: .utf8)
+                let attachedSource = root.appendingPathComponent("attached.md")
+                try "Attached workspace facts.".write(to: attachedSource, atomically: true, encoding: .utf8)
+
+                let server = try await startServer()
+                defer { Task { await server.shutdown() } }
+
+                let create = AgentWorkspaceCreateBody(
+                    name: "HTTP Workspace",
+                    description: "Workspace created through HTTP.",
+                    paths: [initialSource.path]
+                )
+                let (createData, createResp) = try await postJSON(
+                    create,
+                    path: "/agents/\(agent.id.uuidString)/workspaces",
+                    server: server
+                )
+                #expect((createResp as? HTTPURLResponse)?.statusCode == 201)
+                let created = try JSONDecoder().decode(AgentWorkspaceMutationBody.self, from: createData)
+                #expect(created.workspace.name == "HTTP Workspace")
+                #expect(created.workspace.sources.count == 1)
+
+                let (listData, listResp) = try await URLSession.shared.data(
+                    from: URL(string: "http://\(server.host):\(server.port)/agents/\(agent.id.uuidString)/workspaces")!
+                )
+                #expect((listResp as? HTTPURLResponse)?.statusCode == 200)
+                let listed = try JSONDecoder().decode(AgentWorkspaceListBody.self, from: listData)
+                #expect(listed.workspaces.map(\.id).contains(created.workspace.id))
+
+                let attach = AgentWorkspaceSourcesBody(paths: [attachedSource.path])
+                let (attachData, attachResp) = try await postJSON(
+                    attach,
+                    path: "/agents/\(agent.id.uuidString)/workspaces/\(created.workspace.id)/sources",
+                    server: server
+                )
+                #expect((attachResp as? HTTPURLResponse)?.statusCode == 200)
+                let attached = try JSONDecoder().decode(AgentWorkspaceMutationBody.self, from: attachData)
+                #expect(attached.workspace.sources.count == 2)
+
+                _ = await AgentManager.shared.delete(id: agent.id)
+                OsaurusPaths.overrideRoot = previousRoot
+                try? FileManager.default.removeItem(at: root)
+            } catch {
+                _ = await AgentManager.shared.delete(id: agent.id)
+                OsaurusPaths.overrideRoot = previousRoot
+                try? FileManager.default.removeItem(at: root)
+                throw error
+            }
+        }
+    }
+
     @Test func runtimeSettings_get_returnsPersistedSnapshot() async throws {
         let dir = try makeTempDirectory()
         try await withOverriddenRuntimeSettingsDirectory(dir) {
@@ -348,9 +413,54 @@ struct HTTPHandlerEndpointTests {
         return try await URLSession.shared.data(for: request)
     }
 
+    private struct AgentWorkspaceCreateBody: Encodable {
+        let name: String
+        let description: String
+        let paths: [String]
+    }
+
+    private struct AgentWorkspaceSourcesBody: Encodable {
+        let paths: [String]
+    }
+
+    private struct AgentWorkspaceListBody: Decodable {
+        let workspaces: [AgentWorkspaceItemBody]
+    }
+
+    private struct AgentWorkspaceMutationBody: Decodable {
+        let workspace: AgentWorkspaceItemBody
+    }
+
+    private struct AgentWorkspaceItemBody: Decodable {
+        let id: String
+        let name: String
+        let sources: [AgentWorkspaceSourceBody]
+    }
+
+    private struct AgentWorkspaceSourceBody: Decodable {
+        let path: String
+        let status: String
+    }
+
+    private func postJSON<T: Encodable>(
+        _ value: T,
+        path: String,
+        server: TestServer
+    ) async throws -> (Data, URLResponse) {
+        var request = URLRequest(url: URL(string: "http://\(server.host):\(server.port)\(path)")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(value)
+        return try await URLSession.shared.data(for: request)
+    }
+
     private func makeTempDirectory() throws -> URL {
+        try makeTempDirectory(prefix: "osaurus-runtime-settings-endpoint")
+    }
+
+    private func makeTempDirectory(prefix: String) throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "osaurus-runtime-settings-endpoint-\(UUID().uuidString)",
+            "\(prefix)-\(UUID().uuidString)",
             isDirectory: true
         )
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

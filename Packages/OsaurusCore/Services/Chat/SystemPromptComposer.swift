@@ -667,9 +667,10 @@ public struct SystemPromptComposer: Sendable {
     ///  16. skillsGovern              static body, paired with enabledManifest
     ///  17. pluginCreator             static, injected when plugin creation is enabled
     ///                                (session-constant gate — joins the cached prefix)
-    ///  18. agentDBSchema             dynamic, live schema snapshot (mutates mid-session)
-    ///  19. sandboxState              dynamic, installed packages + secrets (mutate mid-session)
-    ///  20. sandboxUnavailable        dynamic, gated on registrar failure
+    ///  18. agentWorkspaces           dynamic, durable per-agent workspace summaries
+    ///  19. agentDBSchema             dynamic, live schema snapshot (mutates mid-session)
+    ///  20. sandboxState              dynamic, installed packages + secrets (mutate mid-session)
+    ///  21. sandboxUnavailable        dynamic, gated on registrar failure
     ///
     /// Statics come before dynamics so the cached prefix
     /// (`PromptManifest.staticPrefixContent`) reaches as far as possible —
@@ -712,8 +713,16 @@ public struct SystemPromptComposer: Sendable {
         // framing, but emitted LATER as dynamic sections (after the static
         // prefix break) so a schema change, package install, or new secret
         // mid-session stays fresh without rewriting the cached KV prefix.
+        var agentWorkspacesSection: String?
         var agentDBSchemaSection: String?
         var sandboxStateSection: String?
+
+        if let workspaceSummary = AgentWorkspaceStore.promptSummary(
+            agentId: agentId,
+            canReadSources: !effectiveToolsOff && resolvedNames.contains("file_read")
+        ) {
+            agentWorkspacesSection = SystemPromptTemplates.agentWorkspaces(workspaceSummary)
+        }
 
         // ── Statics ──────────────────────────────────────────────────
 
@@ -1107,12 +1116,22 @@ public struct SystemPromptComposer: Sendable {
 
         // ── Dynamics ─────────────────────────────────────────────────
 
-        // Agent DB schema snapshot + live sandbox state (installed packages
+        // Agent workspaces, Agent DB schema snapshot, and live sandbox state
+        // (installed packages
         // / configured secrets). Both derive from mid-session-mutable state,
         // so they sit AFTER the static prefix break: they update freely turn
         // to turn (the model always sees current state) without invalidating
         // the cached KV prefix. The framing for each lives in its static
         // counterpart above (`agentDB` / `sandbox`).
+        if let agentWorkspacesSection {
+            composer.append(
+                .dynamic(
+                    id: "agentWorkspaces",
+                    label: L("Agent Workspaces"),
+                    content: agentWorkspacesSection
+                )
+            )
+        }
         if let agentDBSchemaSection {
             composer.append(
                 .dynamic(
