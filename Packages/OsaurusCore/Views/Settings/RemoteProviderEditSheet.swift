@@ -1366,7 +1366,8 @@ private struct AddProviderFlow: View {
                         authType: .apiKey,
                         providerType: config.providerType,
                         apiKey: key,
-                        headers: HeaderEntry.buildHeaders(from: customHeaders)
+                        headers: HeaderEntry.buildHeaders(from: customHeaders),
+                        manualModelIds: parseManualModelIds(manualModelIdsText)
                     )
                 } else if selectedOAuthKind == .xai {
                     // Grok sign-in returns access/refresh tokens; stash them so
@@ -1388,7 +1389,8 @@ private struct AddProviderFlow: View {
                         authType: .apiKey,
                         providerType: config.providerType,
                         apiKey: apiKey,
-                        headers: HeaderEntry.buildHeaders(from: customHeaders)
+                        headers: HeaderEntry.buildHeaders(from: customHeaders),
+                        manualModelIds: parseManualModelIds(manualModelIdsText)
                     )
                 }
                 await MainActor.run {
@@ -1481,7 +1483,8 @@ private struct AddProviderFlow: View {
                     authType: customAuthType,
                     providerType: .openaiLegacy,
                     apiKey: testApiKey,
-                    headers: HeaderEntry.buildHeaders(from: customHeaders)
+                    headers: HeaderEntry.buildHeaders(from: customHeaders),
+                    manualModelIds: parseManualModelIds(manualModelIdsText)
                 )
                 await MainActor.run {
                     withAnimation {
@@ -2470,7 +2473,8 @@ private struct EditProviderFlow: View {
                     authType: authType,
                     providerType: providerType,
                     apiKey: testApiKey,
-                    headers: HeaderEntry.buildHeaders(from: customHeaders)
+                    headers: HeaderEntry.buildHeaders(from: customHeaders),
+                    manualModelIds: parseManualModelIds(manualModelIdsText)
                 )
                 await MainActor.run {
                     testResult = .success(models)
