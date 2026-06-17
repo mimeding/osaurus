@@ -6,17 +6,43 @@
 //
 
 import Foundation
+import os
 
 enum MCPOAuthHTTPTransport {
-    static let noRedirectSession: URLSession = {
+    private struct TransportSessionState {
+        let proxyKey: String
+        let session: URLSession
+    }
+
+    private static let noRedirectSessionBox = OSAllocatedUnfairLock<TransportSessionState?>(initialState: nil)
+
+    static func noRedirectSession() -> URLSession {
+        let proxyKey = currentTransportProxyKey()
+        return noRedirectSessionBox.withLock { state in
+            if let state, state.proxyKey == proxyKey {
+                return state.session
+            }
+
+            state?.session.finishTasksAndInvalidate()
+            let session = makeNoRedirectSession()
+            state = TransportSessionState(proxyKey: proxyKey, session: session)
+            return session
+        }
+    }
+
+    private static func currentTransportProxyKey() -> String {
+        GlobalProxySettings.currentConfiguration()?.redactedDescription ?? ""
+    }
+
+    private static func makeNoRedirectSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = true
-        return URLSession(
-            configuration: configuration,
+        return GlobalProxySettings.makeSession(
+            base: configuration,
             delegate: MCPOAuthNoRedirectDelegate.shared,
             delegateQueue: nil
         )
-    }()
+    }
 
     /// OAuth endpoints carry code/token material, so redirects must be visible to the
     /// caller instead of followed by Foundation with the original request context.
@@ -72,7 +98,7 @@ enum MCPOAuthURLPolicy {
     static func isAbsoluteHTTPURL(_ url: URL) -> Bool {
         guard
             let scheme = url.scheme?.lowercased(),
-            (scheme == "http" || scheme == "https"),
+            scheme == "http" || scheme == "https",
             url.host != nil
         else {
             return false
@@ -107,10 +133,11 @@ enum MCPOAuthURLPolicy {
             .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
 
         guard !normalized.isEmpty else { return true }
-        if normalized == "localhost"
+        let isLocalNamedHost =
+            normalized == "localhost"
             || normalized.hasSuffix(".localhost")
             || normalized.hasSuffix(".local")
-        {
+        if isLocalNamedHost {
             return true
         }
 

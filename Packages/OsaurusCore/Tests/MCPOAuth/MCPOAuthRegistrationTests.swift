@@ -6,11 +6,41 @@
 //
 
 import Foundation
+import CFNetwork
 import XCTest
 
 @testable import OsaurusCore
 
 final class MCPOAuthRegistrationTests: XCTestCase {
+    func testOAuthTransportUsesGlobalProxySetting() async throws {
+        try await StoragePathsTestLock.shared.run {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "osaurus-mcp-oauth-proxy-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let previousRoot = OsaurusPaths.overrideRoot
+            OsaurusPaths.overrideRoot = root
+            defer {
+                OsaurusPaths.overrideRoot = previousRoot
+                _ = MCPOAuthHTTPTransport.noRedirectSession()
+                try? FileManager.default.removeItem(at: root)
+            }
+
+            try OsaurusPaths.ensureExists(OsaurusPaths.config())
+            var configuration = ServerConfiguration.default
+            configuration.globalProxyURL = "https://proxy.example.com:8443"
+            try JSONEncoder().encode(configuration).write(to: OsaurusPaths.serverConfigFile(), options: .atomic)
+
+            let session = MCPOAuthHTTPTransport.noRedirectSession()
+            let dictionary = session.configuration.connectionProxyDictionary
+
+            XCTAssertEqual(dictionary?[proxyKey(kCFNetworkProxiesHTTPSEnable)] as? Int, 1)
+            XCTAssertEqual(dictionary?[proxyKey(kCFNetworkProxiesHTTPSProxy)] as? String, "proxy.example.com")
+            XCTAssertEqual(dictionary?[proxyKey(kCFNetworkProxiesHTTPSPort)] as? Int, 8443)
+        }
+    }
+
     func testOAuthTransportDoesNotFollowRedirects() {
         let response = HTTPURLResponse(
             url: URL(string: "https://auth.example.com/register")!,
@@ -76,6 +106,10 @@ final class MCPOAuthRegistrationTests: XCTestCase {
             XCTAssertTrue(error is MCPOAuthRegistrationError)
         }
     }
+}
+
+private func proxyKey(_ value: CFString) -> AnyHashable {
+    AnyHashable(value as String)
 }
 
 private final class OAuthRegistrationCapture: @unchecked Sendable {
