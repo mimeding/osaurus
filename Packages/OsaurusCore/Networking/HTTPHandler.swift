@@ -7781,6 +7781,12 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
             let memoryConfig = MemoryConfigurationStore.load()
             let localModelScan: Any = ModelManager.localModelsScanDiagnosticJSONObject() as Any? ?? NSNull()
+            let loadedAccessKeys = APIKeyManager.shared.listKeysIfLoaded()
+            let authSummary: [String: Any] = Self.authStatusJSONObject(
+                configuration: logSelf.configuration,
+                loopbackTrusted: logSelf.trustLoopback,
+                loadedAccessKeys: loadedAccessKeys
+            )
             let obj: [String: Any] = [
                 "status": "healthy",
                 "timestamp": Date().ISO8601Format(),
@@ -7800,6 +7806,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 "local_model_scan": localModelScan,
                 "ram_feasibility": ramFeasibility,
                 "persistence": PersistenceHealth.shared.snapshot(),
+                "auth": authSummary,
             ]
 
             // A served /health means the process is alive and responsive —
@@ -7830,6 +7837,33 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 startTime: logStartTime
             )
         }
+    }
+
+    static func authStatusJSONObject(
+        configuration: ServerConfiguration,
+        loopbackTrusted: Bool,
+        loadedAccessKeys: [AccessKeyInfo]?
+    ) -> [String: Any] {
+        var auth: [String: Any] = [
+            "local_auth_policy": configuration.localAuthPolicy.rawValue,
+            "loopback_trusted": loopbackTrusted,
+            "network_exposure": configuration.exposeToNetwork,
+            "access_keys_loaded": loadedAccessKeys != nil,
+        ]
+
+        guard let keys = loadedAccessKeys else {
+            auth["access_key_count"] = NSNull()
+            auth["active_access_key_count"] = NSNull()
+            auth["revoked_access_key_count"] = NSNull()
+            auth["expired_access_key_count"] = NSNull()
+            return auth
+        }
+
+        auth["access_key_count"] = keys.count
+        auth["active_access_key_count"] = keys.filter { $0.status() == .active }.count
+        auth["revoked_access_key_count"] = keys.filter { $0.status() == .revoked }.count
+        auth["expired_access_key_count"] = keys.filter { $0.status() == .expired }.count
+        return auth
     }
 
     // MARK: - Models Endpoints

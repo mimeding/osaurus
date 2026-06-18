@@ -126,7 +126,13 @@ final class ServerController: ObservableObject {
 
             let server = OsaurusServer()
             try await server.start(
-                .init(host: bindHost, port: configuration.port, trustLoopback: !configuration.exposeToNetwork),
+                .init(
+                    host: bindHost,
+                    port: configuration.port,
+                    trustLoopback: configuration.localAuthPolicy.trustsLoopback(
+                        exposeToNetwork: configuration.exposeToNetwork
+                    )
+                ),
                 serverConfiguration: self.configuration
             )
             self.serverActor = server

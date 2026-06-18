@@ -12,10 +12,19 @@
 
 import SwiftUI
 
+struct AccessKeyGeneratorScopeOption: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let agentIndex: UInt32?
+}
+
 struct AccessKeyGeneratorSheet: View {
     let theme: ThemeProtocol
     let title: LocalizedStringKey
     let scopeCaption: LocalizedStringKey?
+    let scopeOptions: [AccessKeyGeneratorScopeOption]
+    @Binding var selectedScopeID: String?
     @Binding var label: String
     @Binding var expiration: AccessKeyExpiration
     @Binding var isGenerating: Bool
@@ -27,6 +36,8 @@ struct AccessKeyGeneratorSheet: View {
         theme: ThemeProtocol,
         title: LocalizedStringKey = "Generate Access Key",
         scopeCaption: LocalizedStringKey? = nil,
+        scopeOptions: [AccessKeyGeneratorScopeOption] = [],
+        selectedScopeID: Binding<String?> = .constant(nil),
         label: Binding<String>,
         expiration: Binding<AccessKeyExpiration>,
         isGenerating: Binding<Bool>,
@@ -37,6 +48,8 @@ struct AccessKeyGeneratorSheet: View {
         self.theme = theme
         self.title = title
         self.scopeCaption = scopeCaption
+        self.scopeOptions = scopeOptions
+        self._selectedScopeID = selectedScopeID
         self._label = label
         self._expiration = expiration
         self._isGenerating = isGenerating
@@ -78,6 +91,31 @@ struct AccessKeyGeneratorSheet: View {
                 )
             }
 
+            if !scopeOptions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Scope", bundle: .module)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(theme.secondaryText)
+
+                    Picker("", selection: $selectedScopeID) {
+                        ForEach(scopeOptions) { option in
+                            Text(verbatim: option.title)
+                                .tag(option.id as String?)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if let selected = scopeOptions.first(where: { $0.id == selectedScopeID }) {
+                        Text(verbatim: selected.subtitle)
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.tertiaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("Label", bundle: .module)
                     .font(.system(size: 12, weight: .medium))
@@ -104,17 +142,20 @@ struct AccessKeyGeneratorSheet: View {
                     .foregroundColor(theme.secondaryText)
                 HStack(spacing: 8) {
                     ForEach(AccessKeyExpiration.allCases, id: \.rawValue) { option in
-                        Button(action: { expiration = option }) {
-                            Text(option.displayName)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(expiration == option ? .white : theme.primaryText)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(expiration == option ? theme.accentColor : theme.tertiaryBackground)
-                                )
-                        }
+                        Button(
+                            action: { expiration = option },
+                            label: {
+                                Text(option.displayName)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(expiration == option ? .white : theme.primaryText)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(expiration == option ? theme.accentColor : theme.tertiaryBackground)
+                                    )
+                            }
+                        )
                         .buttonStyle(PlainButtonStyle())
                     }
                 }
@@ -184,5 +225,10 @@ struct AccessKeyGeneratorSheet: View {
         .padding(24)
         .frame(width: 420)
         .background(theme.primaryBackground)
+        .onAppear {
+            if selectedScopeID == nil, let first = scopeOptions.first {
+                selectedScopeID = first.id
+            }
+        }
     }
 }

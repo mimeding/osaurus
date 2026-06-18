@@ -12,6 +12,7 @@ import SwiftUI
 
 struct AuthenticationSection: View {
     @Binding var draft: VMLXServerRuntimeSettings
+    @Binding var draftLegacy: ServerConfiguration
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -21,6 +22,33 @@ struct AuthenticationSection: View {
             blurb: "Who can call your API and how aggressively."
         ) {
             accessKeyCallout
+
+            SettingsDivider()
+
+            SettingsSubsection(label: "Local Access") {
+                VStack(alignment: .leading, spacing: 10) {
+                    SettingsField(
+                        label: "Localhost Authentication",
+                        hint: "Changing this setting restarts the server so the request gate and CORS policy stay aligned."
+                    ) {
+                        Picker("", selection: $draftLegacy.localAuthPolicy) {
+                            ForEach(ServerLocalAuthPolicy.allCases, id: \.self) { policy in
+                                Text(LocalizedStringKey(policyTitle(policy)), bundle: .module).tag(policy)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+
+                    Text(
+                        LocalizedStringKey(localPolicyDescription(draftLegacy.localAuthPolicy)),
+                        bundle: .module
+                    )
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             SettingsDivider()
 
@@ -59,6 +87,28 @@ struct AuthenticationSection: View {
                     }
                 }
             }
+        }
+    }
+
+    private func policyTitle(_ policy: ServerLocalAuthPolicy) -> String {
+        switch policy {
+        case .localOnly:
+            return "Local Only"
+        case .requireAccessKey:
+            return "Require Key"
+        case .alwaysAllow:
+            return "Always Allow"
+        }
+    }
+
+    private func localPolicyDescription(_ policy: ServerLocalAuthPolicy) -> String {
+        switch policy {
+        case .localOnly:
+            return "Default: localhost can skip Bearer auth only while network exposure is off."
+        case .requireAccessKey:
+            return "Every API client must send a valid access key, including clients on this Mac."
+        case .alwaysAllow:
+            return "Localhost can skip Bearer auth even when the server is exposed to the network."
         }
     }
 

@@ -22,6 +22,23 @@ public enum AppearanceMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum ServerLocalAuthPolicy: String, Codable, CaseIterable, Sendable, Equatable {
+    case localOnly = "local_only"
+    case requireAccessKey = "require_access_key"
+    case alwaysAllow = "always_allow"
+
+    public func trustsLoopback(exposeToNetwork: Bool) -> Bool {
+        switch self {
+        case .localOnly:
+            return !exposeToNetwork
+        case .requireAccessKey:
+            return false
+        case .alwaysAllow:
+            return true
+        }
+    }
+}
+
 /// Configuration settings for the server
 public struct ServerConfiguration: Codable, Equatable, Sendable {
     public static let defaultModelLoadRAMSoftThreshold = 0.70
@@ -32,6 +49,9 @@ public struct ServerConfiguration: Codable, Equatable, Sendable {
 
     /// Expose the server to the local network (0.0.0.0) or keep it on localhost (127.0.0.1)
     public var exposeToNetwork: Bool
+
+    /// Whether loopback callers may skip Bearer authentication.
+    public var localAuthPolicy: ServerLocalAuthPolicy
 
     /// Start Osaurus automatically at login
     public var startAtLogin: Bool
@@ -88,6 +108,7 @@ public struct ServerConfiguration: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case port
         case exposeToNetwork
+        case localAuthPolicy
         case startAtLogin
         case hideDockIcon
         case appearanceMode
@@ -110,6 +131,9 @@ public struct ServerConfiguration: Codable, Equatable, Sendable {
         self.port = try container.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
         self.exposeToNetwork =
             try container.decodeIfPresent(Bool.self, forKey: .exposeToNetwork) ?? defaults.exposeToNetwork
+        self.localAuthPolicy =
+            try container.decodeIfPresent(ServerLocalAuthPolicy.self, forKey: .localAuthPolicy)
+            ?? defaults.localAuthPolicy
         self.startAtLogin =
             try container.decodeIfPresent(Bool.self, forKey: .startAtLogin) ?? defaults.startAtLogin
         self.hideDockIcon =
@@ -154,6 +178,7 @@ public struct ServerConfiguration: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(port, forKey: .port)
         try container.encode(exposeToNetwork, forKey: .exposeToNetwork)
+        try container.encode(localAuthPolicy, forKey: .localAuthPolicy)
         try container.encode(startAtLogin, forKey: .startAtLogin)
         try container.encode(hideDockIcon, forKey: .hideDockIcon)
         try container.encode(appearanceMode, forKey: .appearanceMode)
@@ -173,6 +198,7 @@ public struct ServerConfiguration: Codable, Equatable, Sendable {
     public init(
         port: Int,
         exposeToNetwork: Bool,
+        localAuthPolicy: ServerLocalAuthPolicy = .localOnly,
         startAtLogin: Bool,
         hideDockIcon: Bool = false,
         appearanceMode: AppearanceMode = .system,
@@ -190,6 +216,7 @@ public struct ServerConfiguration: Codable, Equatable, Sendable {
     ) {
         self.port = port
         self.exposeToNetwork = exposeToNetwork
+        self.localAuthPolicy = localAuthPolicy
         self.startAtLogin = startAtLogin
         self.hideDockIcon = hideDockIcon
         self.appearanceMode = appearanceMode
@@ -215,6 +242,7 @@ public struct ServerConfiguration: Codable, Equatable, Sendable {
         ServerConfiguration(
             port: 1337,
             exposeToNetwork: false,
+            localAuthPolicy: .localOnly,
             startAtLogin: false,
             hideDockIcon: false,
             appearanceMode: .system,

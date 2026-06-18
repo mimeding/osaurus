@@ -21,6 +21,7 @@ struct ServerConfigurationStoreTests {
         #expect(decoded.port == 1234)
         #expect(decoded.exposeToNetwork == true)
         let defaults = ServerConfiguration.default
+        #expect(decoded.localAuthPolicy == defaults.localAuthPolicy)
         #expect(decoded.numberOfThreads == defaults.numberOfThreads)
         #expect(decoded.backlog == defaults.backlog)
         #expect(decoded.genTopP == defaults.genTopP)
@@ -105,6 +106,16 @@ struct ServerConfigurationStoreTests {
         #expect(ServerConfiguration.default.modelIdleResidencyPolicy == .afterSeconds(900))
         #expect(ModelIdleResidencyPolicy.presets.first == .afterSeconds(300))
         #expect(ModelIdleResidencyPolicy.presets.contains(.immediately))
+    }
+
+    @Test func localAuthPolicy_preservesDefaultBehaviorAndExplicitOverrides() {
+        #expect(ServerConfiguration.default.localAuthPolicy == .localOnly)
+        #expect(ServerLocalAuthPolicy.localOnly.trustsLoopback(exposeToNetwork: false))
+        #expect(!ServerLocalAuthPolicy.localOnly.trustsLoopback(exposeToNetwork: true))
+        #expect(!ServerLocalAuthPolicy.requireAccessKey.trustsLoopback(exposeToNetwork: false))
+        #expect(!ServerLocalAuthPolicy.requireAccessKey.trustsLoopback(exposeToNetwork: true))
+        #expect(ServerLocalAuthPolicy.alwaysAllow.trustsLoopback(exposeToNetwork: false))
+        #expect(ServerLocalAuthPolicy.alwaysAllow.trustsLoopback(exposeToNetwork: true))
     }
 
     @Test @MainActor func modelIdleResidencyPolicy_migratesLegacyImmediateOnce() async throws {

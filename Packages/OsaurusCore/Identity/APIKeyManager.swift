@@ -131,10 +131,11 @@ public final class APIKeyManager: @unchecked Sendable {
 
         queue.sync(flags: .barrier) {
             let currentCounter = CounterStore.shared.current
+            let revokedAt = Date()
             RevocationStore.shared.revokeAllBefore(address: address, counter: currentCounter)
             keys = keys.map { key in
                 guard key.iss.lowercased() == address.lowercased(), !key.revoked else { return key }
-                return key.withRevoked()
+                return key.withRevoked(at: revokedAt)
             }
             Self.saveToKeychain(keys)
         }
@@ -160,6 +161,12 @@ public final class APIKeyManager: @unchecked Sendable {
 
     public func listKeys() -> [AccessKeyInfo] {
         queue.sync { keys }
+    }
+
+    public func listKeysIfLoaded() -> [AccessKeyInfo]? {
+        queue.sync {
+            didLoadFromKeychain ? keys : nil
+        }
     }
 
     /// Return all access keys whose audience matches `audience` (case-insensitive).

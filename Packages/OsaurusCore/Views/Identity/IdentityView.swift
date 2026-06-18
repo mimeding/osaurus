@@ -301,7 +301,7 @@ struct IdentityView: View {
 
         for key in drift.staleAccessKeys where !key.revoked {
             do {
-                try AccessKeyLifecycleService.shared.revokeAndRemove(id: key.id)
+                try AccessKeyLifecycleService.shared.revoke(id: key.id)
             } catch {
                 failures.append("\(key.label): \(error.localizedDescription)")
             }
@@ -1062,7 +1062,7 @@ private struct AgentAddressesSection: View {
 
     private func revokeAccessKey(_ id: UUID) {
         do {
-            try AccessKeyLifecycleService.shared.revokeAndRemove(id: id)
+            try AccessKeyLifecycleService.shared.revoke(id: id)
             restartServerIfRunning()
             onChange()
         } catch {

@@ -158,8 +158,10 @@ struct IdentityModelsTests {
     @Test func info_withRevoked_setsFlag() {
         let info = makeInfo(revoked: false)
         #expect(info.revoked == false)
-        let revoked = info.withRevoked()
+        let revokedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let revoked = info.withRevoked(at: revokedAt)
         #expect(revoked.revoked == true)
+        #expect(revoked.revokedAt == revokedAt)
         #expect(revoked.id == info.id)
         #expect(revoked.nonce == info.nonce)
         #expect(revoked.label == info.label)
@@ -180,6 +182,30 @@ struct IdentityModelsTests {
         #expect(decoded.iss == info.iss)
         #expect(decoded.aud == info.aud)
         #expect(decoded.revoked == info.revoked)
+        #expect(decoded.revokedAt == info.revokedAt)
+    }
+
+    @Test func info_decodesLegacyMetadataWithoutRevocationFields() throws {
+        let json = """
+            {
+              "id": "00000000-0000-0000-0000-000000000001",
+              "label": "legacy",
+              "prefix": "osk-v1.legacy",
+              "nonce": "abcdef",
+              "cnt": 1,
+              "iss": "0xABC",
+              "aud": "0xABC",
+              "createdAt": "2025-01-01T00:00:00Z",
+              "expiration": "90d",
+              "expiresAt": "2025-04-01T00:00:00Z"
+            }
+            """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(AccessKeyInfo.self, from: Data(json.utf8))
+
+        #expect(decoded.revoked == false)
+        #expect(decoded.revokedAt == nil)
     }
 
     // MARK: - RevocationSnapshot

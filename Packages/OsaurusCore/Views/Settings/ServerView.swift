@@ -217,16 +217,16 @@ private struct ServerStatusCard: View {
 private struct AccessKeysSection: View {
     @Environment(\.theme) private var theme
     @EnvironmentObject var server: ServerController
+    @ObservedObject private var agentManager = AgentManager.shared
 
-    @State private var accessKeys: [AccessKeyInfo] = []
-    /// Ids of access keys that look like pre-#950 pair-issued credentials —
-    /// master-scoped + never-expiring + labelled by the old pair flow.
-    /// These grant access to every agent and never expire; we surface a
-    /// "Legacy" pill so users can choose to revoke and re-pair.
-    @State private var legacyKeyIds: Set<UUID> = []
+    private static let allAgentsScopeID = "all-agents"
+
+    @State private var snapshot = AccessKeyManagementSnapshot(records: [])
+    @State private var showInactiveKeys = false
     @State private var showingKeyGenerator = false
     @State private var newKeyLabel = ""
     @State private var newKeyExpiration: AccessKeyExpiration = .days90
+    @State private var selectedScopeID: String? = Self.allAgentsScopeID
     @State private var generatedKey: String?
     @State private var isGeneratingKey = false
     @State private var keyGenError: String?
@@ -237,7 +237,7 @@ private struct AccessKeysSection: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Label {
-                    Text("Access Keys", bundle: .module)
+                    Text("Access Key Console", bundle: .module)
                 } icon: {
                     Image(systemName: "key.horizontal")
                 }
@@ -246,34 +246,40 @@ private struct AccessKeysSection: View {
 
                 Spacer()
 
-                Button(action: { reloadAccessKeys(readKeychain: true) }) {
-                    Text("Refresh", bundle: .module)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(theme.secondaryText)
-                        .padding(.horizontal, 10)
+                Button(
+                    action: { reloadAccessKeys(readKeychain: true) },
+                    label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(theme.secondaryText)
+                            .padding(7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(theme.primaryBorder.opacity(0.6), lineWidth: 1)
+                            )
+                    }
+                )
+                .buttonStyle(PlainButtonStyle())
+                .localizedHelp("Refresh access keys")
+
+                Button(
+                    action: openGenerator,
+                    label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Generate Key", bundle: .module)
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
-                                .stroke(theme.primaryBorder.opacity(0.6), lineWidth: 1)
+                                .fill(theme.accentColor)
                         )
-                }
-                .buttonStyle(PlainButtonStyle())
-
-                Button(action: { showingKeyGenerator = true }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("Generate Key", bundle: .module)
-                            .font(.system(size: 12, weight: .semibold))
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(theme.accentColor)
-                    )
-                }
+                )
                 .buttonStyle(PlainButtonStyle())
             }
 
@@ -281,6 +287,8 @@ private struct AccessKeysSection: View {
                 .font(.system(size: 11))
                 .foregroundColor(theme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+
+            summaryRow
 
             if let generatedKey {
                 generatedKeyBanner(key: generatedKey)
@@ -292,7 +300,9 @@ private struct AccessKeysSection: View {
                     .foregroundColor(theme.errorColor)
             }
 
-            if accessKeys.isEmpty {
+            controlsRow
+
+            if visibleRecords.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "lock.shield.fill")
@@ -326,8 +336,8 @@ private struct AccessKeysSection: View {
                 )
             } else {
                 VStack(spacing: 2) {
-                    ForEach(accessKeys) { key in
-                        accessKeyRow(key)
+                    ForEach(visibleRecords) { record in
+                        accessKeyRow(record)
                     }
                 }
             }
@@ -340,6 +350,8 @@ private struct AccessKeysSection: View {
         .sheet(isPresented: $showingKeyGenerator) {
             AccessKeyGeneratorSheet(
                 theme: theme,
+                scopeOptions: scopeOptions,
+                selectedScopeID: $selectedScopeID,
                 label: $newKeyLabel,
                 expiration: $newKeyExpiration,
                 isGenerating: $isGeneratingKey,
@@ -352,6 +364,100 @@ private struct AccessKeysSection: View {
                 }
             )
         }
+        .task {
+            guard !didLoadAccessKeys else { return }
+            reloadAccessKeys(readKeychain: true)
+        }
+    }
+
+    private var visibleRecords: [AccessKeyManagementRecord] {
+        snapshot.records.filter { showInactiveKeys || $0.status == .active }
+    }
+
+    private var knownAgentScopes: [AccessKeyAgentScopeDescriptor] {
+        agentManager.agents.compactMap { agent in
+            guard let address = agent.agentAddress else { return nil }
+            return AccessKeyAgentScopeDescriptor(
+                address: address,
+                name: agent.name,
+                agentIndex: agent.agentIndex
+            )
+        }
+    }
+
+    private var scopeOptions: [AccessKeyGeneratorScopeOption] {
+        var options = [
+            AccessKeyGeneratorScopeOption(
+                id: Self.allAgentsScopeID,
+                title: L("All agents"),
+                subtitle: L("Works with every local agent and API route."),
+                agentIndex: nil
+            ),
+        ]
+        let agentOptions = knownAgentScopes.compactMap { scope -> AccessKeyGeneratorScopeOption? in
+            guard let agentIndex = scope.agentIndex else { return nil }
+            return AccessKeyGeneratorScopeOption(
+                id: "agent-\(agentIndex)",
+                title: scope.name,
+                subtitle: "\(L("Scoped to")) \(redactedAddress(scope.address))",
+                agentIndex: agentIndex
+            )
+        }
+        options.append(contentsOf: agentOptions)
+        return options
+    }
+
+    private var selectedAgentIndex: UInt32? {
+        scopeOptions.first(where: { $0.id == selectedScopeID })?.agentIndex
+    }
+
+    private var summaryRow: some View {
+        HStack(spacing: 8) {
+            summaryPill(title: "Active", value: snapshot.activeCount, color: theme.successColor)
+            summaryPill(title: "Revoked", value: snapshot.revokedCount, color: theme.errorColor)
+            summaryPill(title: "Expired", value: snapshot.expiredCount, color: theme.warningColor)
+            Spacer(minLength: 0)
+            Text(verbatim: localAuthCaption)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(theme.tertiaryText)
+        }
+    }
+
+    private var controlsRow: some View {
+        HStack(spacing: 8) {
+            Toggle(
+                "",
+                isOn: $showInactiveKeys
+            )
+            .toggleStyle(SwitchToggleStyle(tint: theme.accentColor))
+            .labelsHidden()
+            Text("Show inactive keys", bundle: .module)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(theme.secondaryText)
+            Spacer(minLength: 0)
+            if snapshot.inactiveCount > 0, !showInactiveKeys {
+                Text(verbatim: "\(snapshot.inactiveCount) hidden")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(theme.tertiaryText)
+            }
+        }
+    }
+
+    private func summaryPill(title: String, value: Int, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(verbatim: "\(title): \(value)")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(theme.secondaryText)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(theme.tertiaryBackground.opacity(0.5))
+        )
     }
 
     private func generatedKeyBanner(key: String) -> some View {
@@ -430,26 +536,50 @@ private struct AccessKeysSection: View {
     }
 
     private var accessKeySummaryText: String {
-        if server.configuration.exposeToNetwork {
+        switch server.configuration.localAuthPolicy {
+        case .requireAccessKey:
+            return L("Every API client must present an access key, including localhost clients on this Mac.")
+        case .alwaysAllow:
+            return L(
+                "Localhost clients can call the API without a key even while network exposure is enabled. Network and relay callers still require an access key."
+            )
+        case .localOnly where server.configuration.exposeToNetwork:
             return L(
                 "Network and relay callers must present an access key. Local loopback bypass is disabled while network exposure is on."
             )
+        case .localOnly:
+            return L(
+                "Localhost clients can call the API without a real key. Create access keys for LAN, relay, or clients that require a Bearer value."
+            )
         }
-        return L(
-            "Localhost clients can call the API without a real key. Create access keys for LAN, relay, or clients that require a Bearer value."
-        )
     }
 
     private var emptyAccessKeyMessage: String {
+        if server.configuration.localAuthPolicy == .requireAccessKey {
+            return L("Clients are restricted until you create an access key.")
+        }
         if server.configuration.exposeToNetwork {
             return L("Network and relay callers are restricted until you create an access key.")
         }
         return L("No keys are stored. Localhost still works without a real token while network exposure is off.")
     }
 
-    private func accessKeyRow(_ key: AccessKeyInfo) -> some View {
-        let inactive = !key.isActive
-        let isLegacy = legacyKeyIds.contains(key.id)
+    private var localAuthCaption: String {
+        switch server.configuration.localAuthPolicy {
+        case .localOnly:
+            return server.configuration.exposeToNetwork
+                ? L("Localhost: key required")
+                : L("Localhost: keyless")
+        case .requireAccessKey:
+            return L("Localhost: key required")
+        case .alwaysAllow:
+            return L("Localhost: keyless")
+        }
+    }
+
+    private func accessKeyRow(_ record: AccessKeyManagementRecord) -> some View {
+        let key = record.info
+        let inactive = record.status != .active
         return HStack(spacing: 12) {
             Image(systemName: "key.fill")
                 .font(.system(size: 11))
@@ -464,7 +594,7 @@ private struct AccessKeysSection: View {
 
                     if key.revoked {
                         keyBadge("Revoked", color: theme.errorColor)
-                    } else if key.isExpired {
+                    } else if record.status == .expired {
                         keyBadge("Expired", color: theme.warningColor)
                     } else {
                         keyBadge("Active", color: theme.successColor)
@@ -474,36 +604,58 @@ private struct AccessKeysSection: View {
                         keyBadge("Temporary", color: theme.warningColor)
                     }
 
-                    if isLegacy {
+                    if record.isLegacyPairing {
                         keyBadge("Legacy", color: theme.warningColor)
-                    } else if key.aud == key.iss {
-                        keyBadge("All Agents", color: theme.accentColor)
                     }
+
+                    keyBadge(scopeBadge(record.scope), color: theme.accentColor)
                 }
 
                 HStack(spacing: 8) {
-                    Text(key.prefix + "...")
+                    Text(record.redactedDisplay)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(theme.tertiaryText)
 
+                    Button(
+                        action: {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(record.redactedDisplay, forType: .string)
+                        },
+                        label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundColor(theme.tertiaryText)
+                        }
+                    )
+                    .buttonStyle(PlainButtonStyle())
+                    .localizedHelp("Copy redacted key identifier")
+                }
+
+                HStack(spacing: 8) {
                     Text("Created \(sharedMediumDateFormatter.string(from: key.createdAt))", bundle: .module)
                         .font(.system(size: 10))
                         .foregroundColor(theme.tertiaryText)
 
-                    if let expiresAt = key.expiresAt {
-                        Text(
-                            key.isExpired
-                                ? "Expired \(sharedMediumDateFormatter.string(from: expiresAt))"
-                                : "Expires \(sharedMediumDateFormatter.string(from: expiresAt))"
-                        )
-                        .font(.system(size: 10))
-                        .foregroundColor(key.isExpired ? theme.warningColor : theme.tertiaryText)
+                    if let revokedAt = key.revokedAt {
+                        Text("Revoked \(sharedMediumDateFormatter.string(from: revokedAt))", bundle: .module)
+                            .font(.system(size: 10))
+                            .foregroundColor(theme.errorColor)
+                    } else if let expiresAt = key.expiresAt {
+                        Text(expirationText(for: record.status, expiresAt: expiresAt))
+                            .font(.system(size: 10))
+                            .foregroundColor(record.status == .expired ? theme.warningColor : theme.tertiaryText)
                     }
                 }
 
-                if isLegacy {
+                if let scopeDescription = scopeDescription(record.scope) {
+                    Text(verbatim: scopeDescription)
+                        .font(.system(size: 10))
+                        .foregroundColor(theme.tertiaryText)
+                }
+
+                if record.isLegacyPairing {
                     Text(
-                        "Pre-upgrade pairing — grants access to all agents and never expires. Revoke and re-pair to scope it to a single agent.",
+                        "Pre-upgrade pairing grants access to all agents and never expires. Revoke and re-pair to scope it to a single agent.",
                         bundle: .module
                     )
                     .font(.system(size: 10))
@@ -515,10 +667,22 @@ private struct AccessKeysSection: View {
 
             Spacer()
 
-            if !key.revoked {
-                Button(action: {
-                    revokeAccessKey(key.id)
-                }) {
+            keyActions(record)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(inactive ? theme.tertiaryBackground.opacity(0.25) : theme.tertiaryBackground.opacity(0.5))
+        )
+    }
+
+    @ViewBuilder
+    private func keyActions(_ record: AccessKeyManagementRecord) -> some View {
+        if record.canRevoke {
+            Button(
+                action: { revokeAccessKey(record.id) },
+                label: {
                     Text("Revoke", bundle: .module)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(theme.errorColor)
@@ -529,15 +693,26 @@ private struct AccessKeysSection: View {
                                 .fill(theme.errorColor.opacity(0.1))
                         )
                 }
-                .buttonStyle(PlainButtonStyle())
-            }
+            )
+            .buttonStyle(PlainButtonStyle())
+        } else if record.canForget {
+            Button(
+                action: { forgetAccessKey(record.id) },
+                label: {
+                    Text("Forget", bundle: .module)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(theme.secondaryText)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(theme.tertiaryBackground)
+                        )
+                }
+            )
+            .buttonStyle(PlainButtonStyle())
+            .localizedHelp("Remove inactive key metadata from this console")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(inactive ? theme.tertiaryBackground.opacity(0.25) : theme.tertiaryBackground.opacity(0.5))
-        )
     }
 
     private func keyBadge(_ text: String, color: Color) -> some View {
@@ -549,23 +724,48 @@ private struct AccessKeysSection: View {
             .background(Capsule().fill(color.opacity(0.12)))
     }
 
-    private func reloadAccessKeys(readKeychain: Bool = false) {
-        if readKeychain {
-            APIKeyManager.shared.reload()
-            didLoadAccessKeys = true
+    private func scopeBadge(_ scope: AccessKeyManagementScope) -> String {
+        switch scope {
+        case .allAgents:
+            return L("All Agents")
+        case .agent:
+            return L("Agent")
         }
-        accessKeys = APIKeyManager.shared.listKeys().sorted { $0.createdAt > $1.createdAt }
-        let knownAgentAddrs = Set(
-            AgentManager.shared.agents.compactMap { $0.agentAddress }
+    }
+
+    private func scopeDescription(_ scope: AccessKeyManagementScope) -> String? {
+        switch scope {
+        case .allAgents:
+            return nil
+        case .agent(let name, let address, _):
+            return "\(L("Scoped to")) \(name) (\(redactedAddress(address)))"
+        }
+    }
+
+    private func expirationText(for status: AccessKeyStatus, expiresAt: Date) -> String {
+        let date = sharedMediumDateFormatter.string(from: expiresAt)
+        return status == .expired ? "\(L("Expired")) \(date)" : "\(L("Expires")) \(date)"
+    }
+
+    private func redactedAddress(_ address: OsaurusID) -> String {
+        guard address.count > 14 else { return address }
+        return "\(address.prefix(8))...\(address.suffix(4))"
+    }
+
+    private func reloadAccessKeys(readKeychain: Bool = false) {
+        snapshot = AccessKeyLifecycleService.shared.snapshot(
+            knownAgents: knownAgentScopes,
+            includeInactive: true,
+            reload: readKeychain
         )
-        // Restrict to pair-issued keys (the old pair flow's label was
-        // "Paired – <host>") so a deliberately-generated all-agents key is
-        // not mislabelled. Combined with master-scoped + never-expiring,
-        // this is the exact pre-#950 pair-issued shape.
-        let legacy = APIKeyManager.shared
-            .legacyMasterScopedKeys(knownAgentAddresses: knownAgentAddrs)
-            .filter { $0.label.hasPrefix("Paired") }
-        legacyKeyIds = Set(legacy.map(\.id))
+        if readKeychain { didLoadAccessKeys = true }
+    }
+
+    private func openGenerator() {
+        if selectedScopeID == nil || !scopeOptions.contains(where: { $0.id == (selectedScopeID ?? "") }) {
+            selectedScopeID = Self.allAgentsScopeID
+        }
+        showingKeyGenerator = true
     }
 
     private func generateAccessKey() {
@@ -577,6 +777,7 @@ private struct AccessKeysSection: View {
         accessKeyError = nil
 
         let expiration = newKeyExpiration
+        let agentIndex = selectedAgentIndex
         Task {
             do {
                 // Generation reads the master key and writes metadata to the
@@ -585,14 +786,14 @@ private struct AccessKeysSection: View {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try AccessKeyLifecycleService.shared.create(
                         label: label,
-                        expiration: expiration
+                        expiration: expiration,
+                        agentIndex: agentIndex
                     )
                 }.value
                 generatedKey = result.fullKey
                 showingKeyGenerator = false
                 newKeyLabel = ""
-                reloadAccessKeys()
-                restartServerForKeyChange()
+                reloadAccessKeys(readKeychain: true)
             } catch {
                 keyGenError = error.localizedDescription
             }
@@ -604,18 +805,23 @@ private struct AccessKeysSection: View {
     private func revokeAccessKey(_ id: UUID) {
         accessKeyError = nil
         do {
-            try AccessKeyLifecycleService.shared.revokeAndRemove(id: id)
+            try AccessKeyLifecycleService.shared.revoke(id: id)
             reloadAccessKeys(readKeychain: true)
-            restartServerForKeyChange()
         } catch {
             accessKeyError = error.localizedDescription
             reloadAccessKeys(readKeychain: true)
         }
     }
 
-    private func restartServerForKeyChange() {
-        guard server.isRunning else { return }
-        Task { await server.restartServer() }
+    private func forgetAccessKey(_ id: UUID) {
+        accessKeyError = nil
+        do {
+            try AccessKeyLifecycleService.shared.forget(id: id)
+            reloadAccessKeys(readKeychain: true)
+        } catch {
+            accessKeyError = error.localizedDescription
+            reloadAccessKeys(readKeychain: true)
+        }
     }
 }
 

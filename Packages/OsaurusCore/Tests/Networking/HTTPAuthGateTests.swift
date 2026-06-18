@@ -16,6 +16,31 @@ import Testing
 @testable import OsaurusCore
 
 struct HTTPAuthGateTests {
+    @Test func authStatusJSONObject_reportsPolicyAndLoadedKeyCounts() {
+        var config = ServerConfiguration.default
+        config.exposeToNetwork = true
+        config.localAuthPolicy = .alwaysAllow
+        let active = AccessKeyInfo.authGateFixture(label: "Active")
+        let revoked = AccessKeyInfo.authGateFixture(label: "Revoked", revoked: true)
+        let expired = AccessKeyInfo.authGateFixture(
+            label: "Expired",
+            expiresAt: Date(timeIntervalSince1970: 1)
+        )
+
+        let object = HTTPHandler.authStatusJSONObject(
+            configuration: config,
+            loopbackTrusted: true,
+            loadedAccessKeys: [active, revoked, expired]
+        )
+
+        #expect(object["local_auth_policy"] as? String == "always_allow")
+        #expect(object["loopback_trusted"] as? Bool == true)
+        #expect(object["network_exposure"] as? Bool == true)
+        #expect(object["access_keys_loaded"] as? Bool == true)
+        #expect(object["active_access_key_count"] as? Int == 1)
+        #expect(object["revoked_access_key_count"] as? Int == 1)
+        #expect(object["expired_access_key_count"] as? Int == 1)
+    }
 
     // MARK: - Public Paths Bypass Auth
 
@@ -278,5 +303,29 @@ private func startAuthTestServer(
         }
         await lease.release()
         throw error
+    }
+}
+
+private extension AccessKeyInfo {
+    static func authGateFixture(
+        label: String,
+        expiresAt: Date? = Date().addingTimeInterval(3_600),
+        revoked: Bool = false
+    ) -> AccessKeyInfo {
+        let id = UUID()
+        return AccessKeyInfo(
+            id: id,
+            label: label,
+            prefix: "osk-v1.auth",
+            nonce: id.uuidString.lowercased(),
+            cnt: 1,
+            iss: TestKeys.aliceAddress,
+            aud: TestKeys.aliceAddress,
+            createdAt: Date(),
+            expiration: .days90,
+            expiresAt: expiresAt,
+            revoked: revoked,
+            revokedAt: revoked ? Date() : nil
+        )
     }
 }

@@ -104,6 +104,12 @@ public enum AccessKeyExpiration: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum AccessKeyStatus: String, Codable, Sendable, Equatable {
+    case active
+    case expired
+    case revoked
+}
+
 /// The signed payload embedded inside an osk-v1 access key.
 /// Keys are sorted alphabetically for canonical JSON encoding.
 public struct AccessKeyPayload: Codable, Sendable {
@@ -148,17 +154,75 @@ public struct AccessKeyInfo: Codable, Identifiable, Sendable {
     public let expiration: AccessKeyExpiration
     public let expiresAt: Date?
     public let revoked: Bool
+    public let revokedAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case label
+        case prefix
+        case nonce
+        case cnt
+        case iss
+        case aud
+        case createdAt
+        case expiration
+        case expiresAt
+        case revoked
+        case revokedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.label = try container.decode(String.self, forKey: .label)
+        self.prefix = try container.decode(String.self, forKey: .prefix)
+        self.nonce = try container.decode(String.self, forKey: .nonce)
+        self.cnt = try container.decode(UInt64.self, forKey: .cnt)
+        self.iss = try container.decode(OsaurusID.self, forKey: .iss)
+        self.aud = try container.decode(OsaurusID.self, forKey: .aud)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.expiration = try container.decode(AccessKeyExpiration.self, forKey: .expiration)
+        self.expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
+        self.revoked = try container.decodeIfPresent(Bool.self, forKey: .revoked) ?? false
+        self.revokedAt = try container.decodeIfPresent(Date.self, forKey: .revokedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(label, forKey: .label)
+        try container.encode(prefix, forKey: .prefix)
+        try container.encode(nonce, forKey: .nonce)
+        try container.encode(cnt, forKey: .cnt)
+        try container.encode(iss, forKey: .iss)
+        try container.encode(aud, forKey: .aud)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(expiration, forKey: .expiration)
+        try container.encodeIfPresent(expiresAt, forKey: .expiresAt)
+        try container.encode(revoked, forKey: .revoked)
+        try container.encodeIfPresent(revokedAt, forKey: .revokedAt)
+    }
+
+    public func status(at date: Date = Date()) -> AccessKeyStatus {
+        if revoked { return .revoked }
+        if let expiresAt, date > expiresAt { return .expired }
+        return .active
+    }
 
     public var isExpired: Bool {
-        guard let expiresAt else { return false }
-        return Date() > expiresAt
+        status() == .expired
     }
 
     public var isActive: Bool {
-        !revoked && !isExpired
+        status() == .active
     }
 
-    public func withRevoked() -> AccessKeyInfo {
+    public var redactedDisplay: String {
+        let nonceTail = nonce.suffix(6)
+        return "\(prefix)...\(nonceTail)"
+    }
+
+    public func withRevoked(at revokedAt: Date = Date()) -> AccessKeyInfo {
         AccessKeyInfo(
             id: id,
             label: label,
@@ -170,7 +234,8 @@ public struct AccessKeyInfo: Codable, Identifiable, Sendable {
             createdAt: createdAt,
             expiration: expiration,
             expiresAt: expiresAt,
-            revoked: true
+            revoked: true,
+            revokedAt: revokedAt
         )
     }
 
@@ -185,7 +250,8 @@ public struct AccessKeyInfo: Codable, Identifiable, Sendable {
         createdAt: Date,
         expiration: AccessKeyExpiration,
         expiresAt: Date?,
-        revoked: Bool = false
+        revoked: Bool = false,
+        revokedAt: Date? = nil
     ) {
         self.id = id
         self.label = label
@@ -198,6 +264,7 @@ public struct AccessKeyInfo: Codable, Identifiable, Sendable {
         self.expiration = expiration
         self.expiresAt = expiresAt
         self.revoked = revoked
+        self.revokedAt = revokedAt
     }
 }
 

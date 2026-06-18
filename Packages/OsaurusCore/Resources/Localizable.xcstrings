@@ -5211,11 +5211,27 @@
         }
       }
     },
+    "All Agents" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alle Agenten"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有智能体"
+          }
+        }
+      }
+    },
     "All agents" : {
       "localizations" : {
         "de" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "Alle Agenten"
           }
         },
@@ -12198,6 +12214,22 @@
         }
       }
     },
+    "Clients are restricted until you create an access key." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clients sind eingeschränkt, bis du einen Zugriffsschlüssel erstellst."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "客户端会受限，直到你创建访问密钥。"
+          }
+        }
+      }
+    },
     "Clipboard" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -14658,6 +14690,22 @@
         }
       }
     },
+    "Copy redacted key identifier" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geschwärzte Schlüsselkennung kopieren"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制已遮蔽的密钥标识符"
+          }
+        }
+      }
+    },
     "Copy Probe Result" : {
       "shouldTranslate" : false
     },
@@ -16915,6 +16963,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "默认"
+          }
+        }
+      }
+    },
+    "Default: localhost can skip Bearer auth only while network exposure is off." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Standard: localhost kann die Bearer-Authentifizierung nur überspringen, wenn die Netzwerkfreigabe deaktiviert ist."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认：仅在网络暴露关闭时，localhost 可以跳过 Bearer 身份验证。"
           }
         }
       }
@@ -21719,6 +21783,38 @@
         }
       }
     },
+    "Every API client must present an access key, including localhost clients on this Mac." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jeder API-Client muss einen Zugriffsschlüssel senden, einschließlich localhost-Clients auf diesem Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每个 API 客户端都必须提供访问密钥，包括此 Mac 上的 localhost 客户端。"
+          }
+        }
+      }
+    },
+    "Every API client must send a valid access key, including clients on this Mac." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jeder API-Client muss einen gültigen Zugriffsschlüssel senden, einschließlich Clients auf diesem Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每个 API 客户端都必须发送有效的访问密钥，包括此 Mac 上的客户端。"
+          }
+        }
+      }
+    },
     "Eviction Policy" : {
       "localizations" : {
         "de" : {
@@ -21918,6 +22014,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已于 %@ 过期"
+          }
+        }
+      }
+    },
+    "Expires" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Läuft ab"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "到期"
           }
         }
       }
@@ -30524,6 +30636,22 @@
         }
       }
     },
+    "Local Only" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nur lokal"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅本地"
+          }
+        }
+      }
+    },
     "Local brains live on your Mac. They use a chunk of memory while running, and they keep working offline." : {
       "localizations" : {
         "de" : {
@@ -30687,6 +30815,54 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "本地主机客户端可以无需真实密钥调用API。为局域网、中继或需要Bearer值的客户端创建访问密钥。"
+          }
+        }
+      }
+    },
+    "Localhost: key required" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Localhost: Schlüssel erforderlich"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Localhost：需要密钥"
+          }
+        }
+      }
+    },
+    "Localhost: keyless" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Localhost: ohne Schlüssel"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Localhost：无需密钥"
+          }
+        }
+      }
+    },
+    "Localhost can skip Bearer auth even when the server is exposed to the network." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Localhost kann die Bearer-Authentifizierung auch überspringen, wenn der Server im Netzwerk freigegeben ist."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "即使服务器暴露到网络，localhost 也可以跳过 Bearer 身份验证。"
           }
         }
       }
@@ -46369,6 +46545,22 @@
         }
       }
     },
+    "Refresh access keys" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zugriffsschlüssel aktualisieren"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新访问密钥"
+          }
+        }
+      }
+    },
     "Refresh agents" : {
       "localizations" : {
         "de" : {
@@ -47114,6 +47306,22 @@
         }
       }
     },
+    "Remove inactive key metadata from this console" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inaktive Schlüsselmetadaten aus dieser Konsole entfernen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从此控制台移除非活动密钥元数据"
+          }
+        }
+      }
+    },
     "Remove old" : {
       "localizations" : {
         "de" : {
@@ -47778,6 +47986,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "请求将在无时间限制下运行。启用前请注意："
+          }
+        }
+      }
+    },
+    "Require Key" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schlüssel erforderlich"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要密钥"
           }
         }
       }
@@ -51432,6 +51656,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "限定于 %1$@（%2$@）"
+          }
+        }
+      }
+    },
+    "Scoped to" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beschränkt auf"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "限定于"
           }
         }
       }
@@ -65108,6 +65348,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "在沙盒模式下工作文件夹为只读——代码在沙盒中运行"
+          }
+        }
+      }
+    },
+    "Works with every local agent and API route." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Funktioniert mit jedem lokalen Agenten und jeder API-Route."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "适用于每个本地智能体和 API 路由。"
           }
         }
       }
