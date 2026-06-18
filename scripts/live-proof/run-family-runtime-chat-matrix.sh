@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MANIFEST="$ROOT/scripts/live-proof/family-runtime-chat-matrix.json"
 HARNESS="$ROOT/scripts/live-proof/run-local-family-multiturn-tool-cache-proof.py"
 CLASSIFIER="$ROOT/scripts/live-proof/classify-runtime-proof-summary.py"
+RENDERER="$ROOT/scripts/live-proof/render-runtime-proof-matrix.py"
 
 BASE_URL="${OSAURUS_BASE_URL:-http://127.0.0.1:1337}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-/tmp/osaurus-family-runtime-chat-matrix-$(date +%Y%m%d-%H%M%S)}"
@@ -78,6 +79,16 @@ if [[ ! -x "$HARNESS" ]]; then
   exit 66
 fi
 
+if [[ ! -x "$CLASSIFIER" ]]; then
+  echo "missing executable classifier: $CLASSIFIER" >&2
+  exit 66
+fi
+
+if [[ ! -x "$RENDERER" ]]; then
+  echo "missing executable renderer: $RENDERER" >&2
+  exit 66
+fi
+
 mkdir -p "$ARTIFACT_ROOT"
 
 python3 - "$MANIFEST" "$FAMILY_FILTER" "$MODEL_FILTER" >"$ARTIFACT_ROOT/selected.tsv" <<'PY'
@@ -112,6 +123,38 @@ echo "selected_rows:"
 cat "$ARTIFACT_ROOT/selected.tsv"
 
 if [[ "$DRY_RUN" == "1" ]]; then
+  python3 - "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/selected.tsv" >"$ARTIFACT_ROOT/SUMMARY.json" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+selected = pathlib.Path(sys.argv[2])
+rows = []
+for line in selected.read_text(encoding="utf-8").splitlines():
+    row_id, *_ = line.rstrip("\n").split("\t")
+    rows.append(
+        {
+            "id": row_id,
+            "status": "DRY_RUN",
+            "passed": None,
+            "summary_files": [],
+        }
+    )
+print(json.dumps({"artifact_root": str(root), "passed": False, "rows": rows}, indent=2, sort_keys=True))
+PY
+  "$CLASSIFIER" "$ARTIFACT_ROOT/SUMMARY.json" \
+    --manifest "$MANIFEST" \
+    --output "$ARTIFACT_ROOT/PROOF_CLASSIFICATION.json" >/dev/null
+  "$RENDERER" "$ARTIFACT_ROOT/PROOF_CLASSIFICATION.json" \
+    --output "$ARTIFACT_ROOT/runtime-proof-matrix.md" \
+    --json-surface "$ARTIFACT_ROOT/runtime-proof-surface.json" \
+    --dashboard-output "$ARTIFACT_ROOT/runtime-resilience-dashboard.md" \
+    --dashboard-json-surface "$ARTIFACT_ROOT/runtime-resilience-dashboard.json"
+  echo "summary=$ARTIFACT_ROOT/SUMMARY.json"
+  echo "proof_classification=$ARTIFACT_ROOT/PROOF_CLASSIFICATION.json"
+  echo "runtime_resilience_dashboard=$ARTIFACT_ROOT/runtime-resilience-dashboard.md"
+  echo "runtime_resilience_dashboard_json=$ARTIFACT_ROOT/runtime-resilience-dashboard.json"
   exit 0
 fi
 
@@ -185,5 +228,12 @@ cat "$ARTIFACT_ROOT/SUMMARY.json"
 "$CLASSIFIER" "$ARTIFACT_ROOT/SUMMARY.json" \
   --manifest "$MANIFEST" \
   --output "$ARTIFACT_ROOT/PROOF_CLASSIFICATION.json"
+"$RENDERER" "$ARTIFACT_ROOT/PROOF_CLASSIFICATION.json" \
+  --output "$ARTIFACT_ROOT/runtime-proof-matrix.md" \
+  --json-surface "$ARTIFACT_ROOT/runtime-proof-surface.json" \
+  --dashboard-output "$ARTIFACT_ROOT/runtime-resilience-dashboard.md" \
+  --dashboard-json-surface "$ARTIFACT_ROOT/runtime-resilience-dashboard.json"
 echo "proof_classification=$ARTIFACT_ROOT/PROOF_CLASSIFICATION.json"
+echo "runtime_resilience_dashboard=$ARTIFACT_ROOT/runtime-resilience-dashboard.md"
+echo "runtime_resilience_dashboard_json=$ARTIFACT_ROOT/runtime-resilience-dashboard.json"
 exit "$fail"

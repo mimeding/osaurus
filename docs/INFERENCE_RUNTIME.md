@@ -137,6 +137,9 @@ records:
 - the claimed proof requirements for that row
 - blocker messages for missing token/s, visible output, parser-leak checks,
   multi-turn coherency, topology-specific cache evidence, or media-path proof
+- dashboard evidence for token/s, cache, marker-leak, cancellation, and
+  crash/health signals, with artifact paths copied from live summaries instead
+  of inferred from source
 - issue-coverage notes for #1228, #1161, #1162, #1163, #903, and #1183
 
 This report is intentionally stricter than the harness pass/fail bit. A row can
@@ -145,12 +148,43 @@ VL model was tested through a text/tool path without a real media payload and
 media cache salt. Those rows stay useful as evidence, but they must not close a
 runtime/media issue as proven.
 
+The same classification report feeds the runtime resilience dashboard. Live
+matrix runs and `--dry-run` now write these files under the artifact root:
+
+- `runtime-resilience-dashboard.md` -- a maintainer-readable table with one
+  cell each for token/s, cache, marker-leak, cancellation, and crash proof.
+- `runtime-resilience-dashboard.json` -- the same rows plus `signal_counts`,
+  intended for inspection tools and release checklists.
+- `runtime-proof-matrix.md` and `runtime-proof-surface.json` -- the existing
+  verdict matrix and read-only row surface.
+
+Dashboard cells are per-signal, not row promotion. A partial row can show
+`proven` token/s and `partial` cache evidence, while the row verdict remains
+`partial`. Cancellation stays `unproven` unless a live artifact records explicit
+cleanup checks such as cancelled-load unload or no-zombie-load evidence. Crash
+proof is tied to recorded post-run health/error artifacts; a failed row links
+the error artifact instead of hiding the failure. The #903 system-prompt and
+#1163 Hy3/harmony schema rows are still injected as `unproven` until matching
+live artifacts exist.
+
 Use `scripts/live-proof/render-runtime-proof-matrix.py` to render the latest
 `PROOF_CLASSIFICATION.json` into the matrix appendix in
 [`RUNTIME_VALIDATION_STANDARD.md`](RUNTIME_VALIDATION_STANDARD.md). The renderer
 also writes a read-only JSON surface for inspection workflows, and it keeps the
 #903 system-prompt-injection and #1163 Hy3/harmony schema rows `unproven` until
 real live artifacts exist.
+
+For a no-model smoke of the reporting path:
+
+```bash
+ARTIFACT_ROOT=/tmp/osaurus-runtime-dashboard-dry-run \
+scripts/live-proof/run-family-runtime-chat-matrix.sh \
+  --dry-run MODEL_FILTER=minimax-m27-small-jangtq
+```
+
+The dry run writes selected rows and dashboard files with every live-only signal
+left unproven. It is useful for validating report generation, not for promoting
+runtime health.
 
 osaurus deliberately does not pass `GenerateParameters.maxKVSize` -- a
 global rotating cache window forced from the app layer conflicted with
@@ -296,6 +330,7 @@ sentinels.
 | `RuntimeConfig.swift` | Server-side default `topP`. |
 | `InferenceFeatureFlags.swift` | Single user-tunable: `mlxBatchEngineMaxBatchSize`. |
 | `RuntimeProofValidation.swift` | Source-level validation for runtime proof rows and issue-closure evidence. |
+| `RuntimeProofMatrixReporter.swift` | Read-only proof matrix and runtime resilience dashboard surfaces backed by classifier output. |
 | `MetalGate.swift` | Embedding-only counter (kept as the canonical hook for any future MLX-vs-CoreML interlock). |
 | `ModelLease.swift` | Per-model refcount; `unload(name)` waits for `count == 0` before freeing buffers. |
 | `ModelResidencyManager.swift` | Per-model idle timers and health snapshots for the Settings residency policy. |
@@ -310,6 +345,7 @@ sentinels.
 | `TaskCoalescerTests` | Single-flight engine-creation discipline and teardown-during-creation races. |
 | `RuntimePolicySourceTests` | Source-level guardrails for DSV4 cache ownership, vmlx pin, SSM re-derive opt-out, idle residency wiring, and max-batch docs. |
 | `RuntimeProofValidationTests` | Proven/partial/failed/unproven proof-row validation; token/s, parser leak, cache, media, and artifact checks. |
+| `RuntimeResilienceDashboardTests` | Swift dashboard surface and Markdown rendering for token/s, cache, marker-leak, cancellation, crash-proof, and schema-only rows. |
 | `GenerationEventMapperTests` | `chunk` -> `tokens`; `toolCall` -> `toolInvocation` JSON serialization (happy path + failure envelope); `info` -> `completionInfo`; cross-chunk stop-sequence cut. |
 | `StreamingReasoningHintTests` | Sentinel encode/decode round-trip; co-existence with the tool sentinel filter. |
 | `MetalGateTests` | Embedding gate happy paths. |
