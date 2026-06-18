@@ -1778,6 +1778,7 @@ struct RuntimePolicySourceTests {
     @Test("live proof keychain-disabled mode keeps app startup off user Keychain")
     func liveProofKeychainDisabledModeKeepsStartupOffUserKeychain() throws {
         let paths = try Self.source("Utils/OsaurusPaths.swift")
+        let appDataResolver = try Self.source("../OsaurusRepository/AppDataLocationResolver.swift")
         let storage = try Self.source("Identity/StorageKeyManager.swift")
         let appDelegate = try Self.source("AppDelegate.swift")
         let keychainHelper = try Self.source("Services/Keychain/KeychainQueryHelpers.swift")
@@ -1786,7 +1787,8 @@ struct RuntimePolicySourceTests {
         let remoteProvider = try Self.source("Services/Provider/RemoteProviderKeychain.swift")
         let mcpProvider = try Self.source("Services/MCP/MCPProviderKeychain.swift")
 
-        #expect(paths.contains("OSAURUS_TEST_ROOT"))
+        #expect(paths.contains("AppDataLocationResolver.testRootEnvironmentVariable"))
+        #expect(appDataResolver.contains("OSAURUS_TEST_ROOT"))
         #expect(storage.contains("OSAURUS_DISABLE_KEYCHAIN_FOR_TESTS"))
         #expect(storage.contains("generateInMemoryKey()"))
         #expect(storage.contains("if Self.disablesKeychainForProcess"))
