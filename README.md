@@ -320,6 +320,7 @@ osaurus/
 ```
 
 See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for the architecture guide and layer definitions.
+Benchmark report generation is documented in [Benchmark Reports](docs/BENCHMARK_REPORTS.md).
 
 ## Contributing
 

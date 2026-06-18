@@ -13,15 +13,18 @@ set -euo pipefail
 #   CONC (default 1)
 #   MAXTOK (default 512)
 #   OUT_PREFIX (default ./results/osaurus-vs-ollama-lmstudio-batch)
+#   REPORT_JSON (default ${OUT_PREFIX}.benchmark.json)
+#   REPORT_MD (default ${OUT_PREFIX}.benchmark.md)
 #   PROMPTS_FILE (optional) or PROMPTS (comma-separated)
 #   NOSTREAM (set to 1 to disable streaming)
 #   WARMUP (default 1) warm-up iterations per prompt per server
+#   OSA_PID / OLLAMA_PID / LMSTUDIO_PID (optional RSS evidence)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 PY="${ROOT_DIR}/.bench-venv/bin/python"
-BENCH="${ROOT_DIR}/scripts/benchmark_models.py"
+BENCH="${ROOT_DIR}/scripts/benchmark/benchmark_models.py"
 
 OSA_BASE=${OSA_BASE:-"http://127.0.0.1:1337"}
 OSA_MODEL=${OSA_MODEL:-"llama-3.2-3b-instruct-4bit"}
@@ -33,11 +36,16 @@ ITER=${ITER:-10}
 CONC=${CONC:-1}
 MAXTOK=${MAXTOK:-512}
 OUT_PREFIX=${OUT_PREFIX:-"${ROOT_DIR}/results/osaurus-vs-ollama-lmstudio-batch"}
+REPORT_JSON=${REPORT_JSON:-"${OUT_PREFIX}.benchmark.json"}
+REPORT_MD=${REPORT_MD:-"${OUT_PREFIX}.benchmark.md"}
 PROMPTS_FILE=${PROMPTS_FILE:-""}
 PROMPTS=${PROMPTS:-"Write a one-sentence summary of the theory of evolution.,List three uses of fossil records in paleontology."}
 SYSTEM_PROMPT=${SYSTEM_PROMPT:-"You are a helpful assistant."}
 NOSTREAM=${NOSTREAM:-0}
 WARMUP=${WARMUP:-1}
+OSA_PID=${OSA_PID:-""}
+OLLAMA_PID=${OLLAMA_PID:-""}
+LMSTUDIO_PID=${LMSTUDIO_PID:-""}
 
 ARGS=(
   --server "osaurus|${OSA_BASE}|${OSA_MODEL}"
@@ -48,12 +56,24 @@ ARGS=(
   --max-tokens "${MAXTOK}"
   --warmup-iterations "${WARMUP}"
   --output-prefix "${OUT_PREFIX}"
+  --report-json "${REPORT_JSON}"
+  --report-markdown "${REPORT_MD}"
   --system-prompt "${SYSTEM_PROMPT}"
   --export json csv
 )
 
 if [[ "${NOSTREAM}" == "1" ]]; then
   ARGS+=(--no-stream)
+fi
+
+if [[ -n "${OSA_PID}" ]]; then
+  ARGS+=(--memory-pid "osaurus|${OSA_PID}")
+fi
+if [[ -n "${OLLAMA_PID}" ]]; then
+  ARGS+=(--memory-pid "ollama|${OLLAMA_PID}")
+fi
+if [[ -n "${LMSTUDIO_PID}" ]]; then
+  ARGS+=(--memory-pid "lmstudio|${LMSTUDIO_PID}")
 fi
 
 if [[ -n "${PROMPTS_FILE}" ]]; then
@@ -66,5 +86,3 @@ else
 fi
 
 exec "${PY}" "${BENCH}" "${ARGS[@]}"
-
-
