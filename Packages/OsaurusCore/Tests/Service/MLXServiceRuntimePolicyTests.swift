@@ -142,6 +142,30 @@ struct MLXServiceRuntimePolicyTests {
         }
     }
 
+    @Test func modelCapabilityAllowsGemma4AudioWhenBundleFactsProveIt() throws {
+        let bundle = try Self.makeGemma4AudioBundle()
+        defer { try? FileManager.default.removeItem(at: bundle) }
+
+        let message = ChatMessage(
+            role: "user",
+            content: "hear this",
+            contentParts: [
+                .text("hear this"),
+                .audioInput(data: "AAAA", format: "wav"),
+            ]
+        )
+
+        try MLXService.validateRuntimePolicy(
+            modelName: "gemma-4-12b-it-mxfp4",
+            modelId: "OsaurusAI/Gemma-4-12B-it-MXFP4",
+            messages: [message],
+            parameters: GenerationParameters(temperature: nil, maxTokens: 16),
+            tools: [],
+            runtime: VMLXServerRuntimeSettings(),
+            modelDirectory: bundle
+        )
+    }
+
     @Test func policyRejectsKnownBadZayaVLJANGTQKDiagnosticArtifact() {
         #expect(throws: MLXService.RuntimePolicyError.self) {
             try MLXService.validateRuntimePolicy(
@@ -360,6 +384,29 @@ struct MLXServiceRuntimePolicyTests {
         }
         let data = try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
         try data.write(to: directory.appendingPathComponent("config.json"))
+        return directory
+    }
+
+    private static func makeGemma4AudioBundle() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("osaurus-gemma4-audio-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let config: [String: Any] = [
+            "model_type": "gemma4",
+            "vision_config": ["image_size": 896],
+        ]
+        let configData = try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
+        try configData.write(to: directory.appendingPathComponent("config.json"))
+
+        let index: [String: Any] = [
+            "weight_map": [
+                "embed_audio.embedding_projection.weight": "model-00001-of-00001.safetensors"
+            ]
+        ]
+        let indexData = try JSONSerialization.data(withJSONObject: index, options: [.sortedKeys])
+        try indexData.write(to: directory.appendingPathComponent("model.safetensors.index.json"))
+
         return directory
     }
 }

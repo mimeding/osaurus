@@ -16,8 +16,8 @@
 //   - Per-family video support is config-parametric. Mistral 3 / 3.5
 //     have a vision_config but no video preprocessor. Qwen 3 VL hardcodes
 //     `targetFPS=2` in the model class.
-//   - Audio support today is exclusively Nemotron-3-Nano-Omni — gated by
-//     the `config_omni.json` sidecar.
+//   - Audio support is bundle-fact-driven: Nemotron-3-Nano-Omni is gated by
+//     `config_omni.json`, and Gemma4 is gated by installed audio tensors.
 //
 //  The matrix here mirrors `vmlx-swift/Libraries/MLXLMCommon/
 //  BatchEngine/MEDIA-MODEL-MATRIX.md`. Keep them in sync — when vmlx
@@ -159,8 +159,8 @@ public enum ModelMediaCapabilities {
     public static func from(modelId: String) -> Capabilities {
         let lower = modelId.lowercased()
 
-        // Nemotron-3-Nano-Omni / Nemotron-Omni-Nano — only family with
-        // native audio today.
+        // Nemotron-3-Nano-Omni / Nemotron-Omni-Nano — native audio +
+        // image + video via the omni runtime.
         // Matches:
         //   OsaurusAI/Nemotron-3-Nano-Omni-30B-A3B-MXFP4 / -JANGTQ4 / -JANGTQ
         //   nemotron-3-nano-omni-* (case-folded picker form)
@@ -261,12 +261,20 @@ public enum ModelMediaCapabilities {
     /// granting audio or video.
     public static func composerCapabilities(
         modelId: String?,
-        fallbackSupportsImages: Bool
+        fallbackSupportsImages: Bool,
+        localDirectory: URL? = nil
     ) -> Capabilities {
         guard let modelId,
             !modelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             return fallbackSupportsImages ? .imageOnly : .textOnly
+        }
+
+        if let inspected = inspectedBundleCapabilities(
+            modelId: modelId,
+            localDirectory: localDirectory
+        ) {
+            return inspected
         }
 
         let detected = from(modelId: modelId)
@@ -296,10 +304,21 @@ public enum ModelMediaCapabilities {
 
     public static func composerDescriptor(
         modelId: String?,
-        fallbackSupportsImages: Bool
+        fallbackSupportsImages: Bool,
+        localDirectory: URL? = nil
     ) -> Descriptor {
         let normalized = modelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let displayId = normalized.isEmpty ? "unspecified model" : normalized
+        if let inspected = inspectedBundleCapabilities(
+            modelId: normalized,
+            localDirectory: localDirectory
+        ) {
+            return buildDescriptor(
+                modelId: displayId,
+                capabilities: inspected,
+                source: "bundle config"
+            )
+        }
         let capabilities = composerCapabilities(
             modelId: modelId,
             fallbackSupportsImages: fallbackSupportsImages
@@ -314,6 +333,20 @@ public enum ModelMediaCapabilities {
             capabilities: capabilities,
             source: source
         )
+    }
+
+    private static func inspectedBundleCapabilities(
+        modelId: String,
+        localDirectory: URL?
+    ) -> Capabilities? {
+        let normalized = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, let localDirectory else { return nil }
+        guard FileManager.default.fileExists(
+            atPath: localDirectory.appendingPathComponent("config.json").path
+        ) else {
+            return nil
+        }
+        return from(directory: localDirectory, modelId: normalized)
     }
 
     /// Resolve capabilities by inspecting the locally-installed bundle.

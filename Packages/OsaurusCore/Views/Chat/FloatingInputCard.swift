@@ -3228,12 +3228,21 @@ extension FloatingInputCard {
     private var mediaCapabilityDescriptor: ModelMediaCapabilities.Descriptor {
         ModelMediaCapabilities.composerDescriptor(
             modelId: selectedModel,
-            fallbackSupportsImages: supportsImages
+            fallbackSupportsImages: supportsImages,
+            localDirectory: selectedLocalModelDirectory
         )
     }
 
     private var mediaCapabilities: ModelMediaCapabilities.Capabilities {
         mediaCapabilityDescriptor.capabilities
+    }
+
+    private var selectedLocalModelDirectory: URL? {
+        guard let selectedModel else { return nil }
+        if let option = pickerItems.first(where: { $0.id == selectedModel }) {
+            guard case .local = option.source else { return nil }
+        }
+        return ModelManager.findInstalledMLXModel(named: selectedModel)?.localDirectory
     }
 
     /// UTTypes the drop zone advertises. `fileURL` stays enabled for
@@ -3246,12 +3255,7 @@ extension FloatingInputCard {
             types.append(.image)
         }
         if cap.supportsAudio {
-            types.append(.audio)
-            // explicit common audio formats so HEIF-style "any audio"
-            // type negotiation doesn't miss specific containers
-            types.append(.mp3)
-            types.append(.wav)
-            types.append(.mpeg4Audio)
+            types.append(contentsOf: DocumentParser.supportedAudioTypes)
         }
         if cap.supportsVideo {
             types.append(.movie)
@@ -3274,10 +3278,7 @@ extension FloatingInputCard {
         }
         types.append(contentsOf: DocumentParser.supportedDocumentTypes)
         if cap.supportsAudio {
-            types.append(.audio)
-            types.append(.mp3)
-            types.append(.wav)
-            types.append(.mpeg4Audio)
+            types.append(contentsOf: DocumentParser.supportedAudioTypes)
         }
         if cap.supportsVideo {
             types.append(.movie)
@@ -3344,8 +3345,9 @@ extension FloatingInputCard {
             return
         }
 
-        // Audio path — only for omni models.
-        if audioExtensions.contains(ext) {
+        // Audio path — only for models whose installed/runtime capability
+        // descriptor proves native audio input.
+        if let audioFormat = DocumentParser.audioFormat(for: url) {
             guard cap.supportsAudio else {
                 ToastManager.shared.error(
                     L("Cannot attach \(url.lastPathComponent)"),
@@ -3353,7 +3355,7 @@ extension FloatingInputCard {
                 )
                 return
             }
-            attachAudio(url: url, ext: ext)
+            attachAudio(url: url, format: audioFormat)
             return
         }
 
@@ -3386,15 +3388,10 @@ extension FloatingInputCard {
         )
     }
 
-    private static let audioExtensions: Set<String> = [
-        "wav", "mp3", "m4a", "flac", "ogg", "opus", "aac", "wma",
-    ]
-
     private static let videoExtensions: Set<String> = [
         "mp4", "mov", "m4v", "qt", "webm", "mkv", "avi",
     ]
 
-    private var audioExtensions: Set<String> { Self.audioExtensions }
     private var videoExtensions: Set<String> { Self.videoExtensions }
 
     /// Attach audio bytes from a file URL. Reads inline; spillover to
@@ -3403,7 +3400,7 @@ extension FloatingInputCard {
     /// the turn is committed. Format string is the lowercased file
     /// extension and flows directly into
     /// `MessageContentPart.audioInput.format`.
-    private func attachAudio(url: URL, ext: String) {
+    private func attachAudio(url: URL, format: String) {
         guard let data = try? Data(contentsOf: url) else {
             ToastManager.shared.error(
                 L("Could not read \(url.lastPathComponent)"),
@@ -3413,14 +3410,14 @@ extension FloatingInputCard {
         }
         // Cap inline audio at 50 MB — beyond that the user is sending
         // multi-minute clips that should go through a streaming API.
-        guard data.count <= 50 * 1024 * 1024 else {
+        guard data.count <= DocumentParser.maxAudioFileSize else {
             ToastManager.shared.errorLocalized(
                 "Audio file too large",
                 message: "Files larger than 50 MB are not supported in chat attachments."
             )
             return
         }
-        appendAttachment(.audio(data, format: ext, filename: url.lastPathComponent))
+        appendAttachment(.audio(data, format: format, filename: url.lastPathComponent))
     }
 
     /// Attach video bytes from a file URL. Same lifecycle as audio,

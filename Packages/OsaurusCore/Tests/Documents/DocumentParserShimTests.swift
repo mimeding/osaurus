@@ -141,6 +141,35 @@ struct DocumentParserShimTests {
         #expect(supported.contains(potx))
     }
 
+    @Test func audioFormat_normalizesNativeAudioExtensions() {
+        let cases: [(String, String)] = [
+            ("voice.wav", "wav"),
+            ("voice.wave", "wav"),
+            ("song.MP3", "mp3"),
+            ("podcast.mpeg", "mp3"),
+            ("clip.m4a", "m4a"),
+            ("lossless.flac", "flac"),
+            ("sample.aif", "aiff"),
+        ]
+
+        for (filename, expectedFormat) in cases {
+            let url = URL(fileURLWithPath: "/tmp/\(filename)")
+            #expect(DocumentParser.isAudioFile(url: url), "\(filename) should classify as audio")
+            #expect(DocumentParser.audioFormat(for: url) == expectedFormat)
+        }
+
+        #expect(!DocumentParser.isAudioFile(url: URL(fileURLWithPath: "/tmp/readme.md")))
+        #expect(DocumentParser.audioFormat(for: URL(fileURLWithPath: "/tmp/readme.md")) == nil)
+    }
+
+    @Test func supportedAudioTypes_includePickerBuckets() throws {
+        let supported = Set(DocumentParser.supportedAudioTypes)
+        #expect(supported.contains(.audio))
+        #expect(supported.contains(.mp3))
+        #expect(supported.contains(.wav))
+        #expect(supported.contains(.mpeg4Audio))
+    }
+
     // MARK: - Fixtures
 
     private func writeFile(content: String, ext: String) throws -> URL {

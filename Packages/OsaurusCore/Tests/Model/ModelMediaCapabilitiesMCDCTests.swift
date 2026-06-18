@@ -380,4 +380,63 @@ struct ModelMediaCapabilitiesMCDCTests {
             ) == .omni
         )
     }
+
+    @Test("Composer descriptor upgrades Gemma4 audio from installed bundle facts")
+    func composerDescriptor_usesInstalledGemma4AudioFacts() throws {
+        let bundle = try makeGemma4Bundle(supportsAudio: true)
+        defer { try? FileManager.default.removeItem(at: bundle) }
+
+        let descriptor = ModelMediaCapabilities.composerDescriptor(
+            modelId: "OsaurusAI/Gemma-4-12B-it-MXFP4",
+            fallbackSupportsImages: false,
+            localDirectory: bundle
+        )
+
+        #expect(descriptor.capabilities.supportsImage)
+        #expect(descriptor.capabilities.supportsAudio)
+        #expect(descriptor.audio.status == .supported)
+        #expect(descriptor.audio.reason.contains("bundle config"))
+    }
+
+    @Test("Composer descriptor reports installed Gemma4 bundles without audio tensors as unsupported")
+    func composerDescriptor_rejectsGemma4BundleWithoutAudioFacts() throws {
+        let bundle = try makeGemma4Bundle(supportsAudio: false)
+        defer { try? FileManager.default.removeItem(at: bundle) }
+
+        let descriptor = ModelMediaCapabilities.composerDescriptor(
+            modelId: "OsaurusAI/Gemma-4-26B-A4B-it-MXFP4",
+            fallbackSupportsImages: false,
+            localDirectory: bundle
+        )
+
+        #expect(descriptor.capabilities.supportsImage)
+        #expect(!descriptor.capabilities.supportsAudio)
+        #expect(descriptor.audio.status == .unsupported)
+        #expect(descriptor.audio.reason.contains("no audio input tensors"))
+    }
+
+    private func makeGemma4Bundle(supportsAudio: Bool) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("osaurus-media-cap-gemma4-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let config: [String: Any] = [
+            "model_type": "gemma4",
+            "vision_config": ["image_size": 896],
+        ]
+        let configData = try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
+        try configData.write(to: directory.appendingPathComponent("config.json"))
+
+        if supportsAudio {
+            let index: [String: Any] = [
+                "weight_map": [
+                    "embed_audio.embedding_projection.weight": "model-00001-of-00001.safetensors"
+                ]
+            ]
+            let indexData = try JSONSerialization.data(withJSONObject: index, options: [.sortedKeys])
+            try indexData.write(to: directory.appendingPathComponent("model.safetensors.index.json"))
+        }
+
+        return directory
+    }
 }

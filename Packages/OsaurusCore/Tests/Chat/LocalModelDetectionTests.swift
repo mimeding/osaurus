@@ -154,4 +154,82 @@ struct LocalModelDetectionTests {
             }
         }
     }
+
+    @Test
+    func selectedModelMediaCapabilitiesUseInstalledGemma4BundleFacts() async throws {
+        try await ChatHistoryTestStorage.run {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("osaurus-gemma4-media-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let audioBundle = try Self.makeGemma4Bundle(
+                under: root,
+                name: "audio",
+                supportsAudio: true
+            )
+            let noAudioBundle = try Self.makeGemma4Bundle(
+                under: root,
+                name: "no-audio",
+                supportsAudio: false
+            )
+            let models = [
+                MLXModel(
+                    id: "OsaurusAI/Gemma-4-12B-it-MXFP4",
+                    name: "Gemma 4 12B",
+                    description: "fixture-audio",
+                    downloadURL: "https://example.invalid/gemma4-audio",
+                    bundleDirectory: audioBundle
+                ),
+                MLXModel(
+                    id: "OsaurusAI/Gemma-4-26B-A4B-it-MXFP4",
+                    name: "Gemma 4 26B",
+                    description: "fixture-no-audio",
+                    downloadURL: "https://example.invalid/gemma4-no-audio",
+                    bundleDirectory: noAudioBundle
+                ),
+            ]
+
+            try withCatalog(models) {
+                let session = ChatSession()
+
+                session.selectedModel = "Gemma-4-12B-it-MXFP4"
+                #expect(session.selectedModelSupportsImages)
+                #expect(session.selectedModelSupportsAudio)
+                #expect(session.selectedModelMediaDescriptor.audio.status == .supported)
+
+                session.selectedModel = "Gemma-4-26B-A4B-it-MXFP4"
+                #expect(session.selectedModelSupportsImages)
+                #expect(!session.selectedModelSupportsAudio)
+                #expect(session.selectedModelMediaDescriptor.audio.status == .unsupported)
+            }
+        }
+    }
+
+    private static func makeGemma4Bundle(
+        under root: URL,
+        name: String,
+        supportsAudio: Bool
+    ) throws -> URL {
+        let bundle = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let config: [String: Any] = [
+            "model_type": "gemma4",
+            "vision_config": ["image_size": 896],
+        ]
+        let configData = try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
+        try configData.write(to: bundle.appendingPathComponent("config.json"))
+
+        if supportsAudio {
+            let index: [String: Any] = [
+                "weight_map": [
+                    "embed_audio.embedding_projection.weight": "model-00001-of-00001.safetensors"
+                ]
+            ]
+            let indexData = try JSONSerialization.data(withJSONObject: index, options: [.sortedKeys])
+            try indexData.write(to: bundle.appendingPathComponent("model.safetensors.index.json"))
+        }
+
+        return bundle
+    }
 }

@@ -14,6 +14,7 @@ import UniformTypeIdentifiers
 enum DocumentParser {
 
     static let maxParsedTextLength = 500_000  // ~500KB of text
+    static let maxAudioFileSize = 50 * 1024 * 1024
 
     /// Hard byte cap applied before the file is read into memory. The post-read
     /// `maxParsedTextLength` trim only bounds the *decoded* text, so a crafted
@@ -125,6 +126,25 @@ enum DocumentParser {
         return utType.conforms(to: .image)
     }
 
+    static func isAudioFile(url: URL) -> Bool {
+        audioFormat(for: url) != nil
+    }
+
+    static func audioFormat(for url: URL) -> String? {
+        let ext = url.pathExtension
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+        guard !ext.isEmpty else { return nil }
+        if let normalized = audioFormatByExtension[ext] {
+            return normalized
+        }
+        guard let utType = UTType(filenameExtension: ext), utType.conforms(to: .audio) else {
+            return nil
+        }
+        return ext
+    }
+
     static var supportedDocumentTypes: [UTType] {
         [
             .plainText, .utf8PlainText,
@@ -140,6 +160,21 @@ enum DocumentParser {
             UTType("com.netscape.javascript-source") ?? .data,
             UTType("public.shell-script") ?? .data,
         ].compactMap { $0 } + structuredDocumentTypes
+    }
+
+    static var supportedAudioTypes: [UTType] {
+        [
+            .audio,
+            .mp3,
+            .wav,
+            .mpeg4Audio,
+            UTType(filenameExtension: "flac"),
+            UTType(filenameExtension: "ogg"),
+            UTType(filenameExtension: "opus"),
+            UTType(filenameExtension: "aac"),
+            UTType(filenameExtension: "aiff"),
+            UTType(filenameExtension: "caf"),
+        ].compactMap { $0 }
     }
 
     private static let structuredDocumentTypes: [UTType] = [
@@ -166,6 +201,27 @@ enum DocumentParser {
 
     private static let richDocumentExtensions: Set<String> = [
         "pdf", "docx", "doc", "rtf", "rtfd", "html", "htm",
+    ]
+
+    private static let audioFormatByExtension: [String: String] = [
+        "wav": "wav",
+        "wave": "wav",
+        "mp3": "mp3",
+        "mpeg": "mp3",
+        "mpga": "mp3",
+        "m4a": "m4a",
+        "x-m4a": "m4a",
+        "m4b": "m4b",
+        "flac": "flac",
+        "ogg": "ogg",
+        "oga": "ogg",
+        "opus": "opus",
+        "aac": "aac",
+        "wma": "wma",
+        "aif": "aiff",
+        "aiff": "aiff",
+        "caf": "caf",
+        "amr": "amr",
     ]
 
     private static func isPlainText(ext: String) -> Bool {

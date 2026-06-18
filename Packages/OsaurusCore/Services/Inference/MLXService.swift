@@ -13,6 +13,7 @@ import Foundation
 private struct LocalModelRef {
     let name: String
     let modelId: String
+    let directory: URL?
 }
 
 actor MLXService: ToolCapableService {
@@ -50,9 +51,12 @@ actor MLXService: ToolCapableService {
         return ModelManager.installedModelNames()
     }
 
-    fileprivate nonisolated static func findModel(named name: String) -> LocalModelRef? {
-        if let found = ModelManager.findInstalledModel(named: name) {
-            return LocalModelRef(name: found.name, modelId: found.id)
+    nonisolated fileprivate static func findModel(named name: String) -> LocalModelRef? {
+        if let found = ModelManager.findInstalledMLXModel(named: name) {
+            let repo =
+                found.id.split(separator: "/").last.map(String.init)?.lowercased()
+                ?? name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return LocalModelRef(name: repo, modelId: found.id, directory: found.localDirectory)
         }
         return nil
     }
@@ -72,7 +76,8 @@ actor MLXService: ToolCapableService {
             messages: messages,
             parameters: parameters,
             tools: [],
-            runtime: ServerRuntimeSettingsStore.snapshot()
+            runtime: ServerRuntimeSettingsStore.snapshot(),
+            modelDirectory: model.directory
         )
         return try await ModelRuntime.shared.streamWithTools(
             messages: messages,
@@ -132,7 +137,8 @@ actor MLXService: ToolCapableService {
             messages: [],
             parameters: parameters,
             tools: [],
-            runtime: ServerRuntimeSettingsStore.snapshot()
+            runtime: ServerRuntimeSettingsStore.snapshot(),
+            modelDirectory: model.directory
         )
         return try await ModelRuntime.shared.streamRawText(
             prompt: prompt,
@@ -160,7 +166,8 @@ actor MLXService: ToolCapableService {
             messages: messages,
             parameters: parameters,
             tools: tools,
-            runtime: ServerRuntimeSettingsStore.snapshot()
+            runtime: ServerRuntimeSettingsStore.snapshot(),
+            modelDirectory: model.directory
         )
         return try await ModelRuntime.shared.respondWithTools(
             messages: messages,
@@ -188,7 +195,8 @@ actor MLXService: ToolCapableService {
             messages: messages,
             parameters: parameters,
             tools: tools,
-            runtime: ServerRuntimeSettingsStore.snapshot()
+            runtime: ServerRuntimeSettingsStore.snapshot(),
+            modelDirectory: model.directory
         )
         return try await ModelRuntime.shared.streamWithTools(
             messages: messages,
@@ -519,15 +527,11 @@ actor MLXService: ToolCapableService {
             // external-bundle metadata reads.
             return ModelMediaCapabilities.descriptor(modelId: modelId)
         }
-        let localDirectory =
-            modelDirectory
-            ?? modelId.split(separator: "/").map(String.init).reduce(
-                DirectoryPickerService.effectiveModelsDirectory()
-            ) {
-                $0.appendingPathComponent($1, isDirectory: true)
-            }
-        if FileManager.default.fileExists(atPath: localDirectory.path) {
-            return ModelMediaCapabilities.descriptor(directory: localDirectory, modelId: modelId)
+        if let localDirectory = modelDirectory ?? localModelDirectory(modelId: modelId) {
+            return ModelMediaCapabilities.descriptor(
+                directory: localDirectory,
+                modelId: modelId
+            )
         }
         return ModelMediaCapabilities.descriptor(modelId: modelId)
     }

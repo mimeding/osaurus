@@ -551,11 +551,13 @@ final class ChatSession: ObservableObject {
 
                 self.loadActiveModelOptions(for: model)
 
-                // Clear pending image attachments when switching to a non-VLM
-                // model. Computed against the NEW model id, since `@Published`
-                // emits before `selectedModel` updates.
-                if !Self.modelSupportsImages(modelId: model, pickerItems: self.pickerItems) {
-                    self.pendingAttachments = []
+                // Clear media attachments the new model cannot consume.
+                // Document attachments stay usable for text-only models.
+                let newCapabilities = self.mediaDescriptor(for: model).capabilities
+                self.pendingAttachments.removeAll { attachment in
+                    (attachment.isImage && !newCapabilities.supportsImage)
+                        || (attachment.isAudio && !newCapabilities.supportsAudio)
+                        || (attachment.isVideo && !newCapabilities.supportsVideo)
                 }
 
                 Task { @MainActor in
@@ -764,31 +766,43 @@ final class ChatSession: ObservableObject {
 
     /// Check if the currently selected model supports images (VLM)
     var selectedModelSupportsImages: Bool {
-        guard let model = selectedModel else { return false }
-        return Self.modelSupportsImages(modelId: model, pickerItems: pickerItems)
-    }
-
-    /// Whether `modelId` can accept image input. Remote models are NOT assumed
-    /// vision-capable: a plain remote provider (incl. a Mode 1 `.osaurus`
-    /// device) exposes a flat model list with no capability metadata, so a
-    /// remote item's `isVLM` is false unless the id-based heuristic matched or
-    /// router metadata set it — sending images to a non-VLM remote model just
-    /// gets rejected upstream.
-    static func modelSupportsImages(modelId: String, pickerItems: [ModelPickerItem]) -> Bool {
-        if modelId.lowercased() == "foundation" { return false }
-        if ModelMediaCapabilities.from(modelId: modelId).supportsImage { return true }
-        guard let option = pickerItems.first(where: { $0.id == modelId }) else { return false }
-        return option.isVLM
+        selectedModelMediaDescriptor.capabilities.supportsImage
     }
 
     var selectedModelSupportsAudio: Bool {
-        guard let model = selectedModel else { return false }
-        return ModelMediaCapabilities.from(modelId: model).supportsAudio
+        selectedModelMediaDescriptor.capabilities.supportsAudio
     }
 
     var selectedModelSupportsVideo: Bool {
-        guard let model = selectedModel else { return false }
-        return ModelMediaCapabilities.from(modelId: model).supportsVideo
+        selectedModelMediaDescriptor.capabilities.supportsVideo
+    }
+
+    var selectedModelMediaDescriptor: ModelMediaCapabilities.Descriptor {
+        mediaDescriptor(for: selectedModel)
+    }
+
+    private func mediaDescriptor(for model: String?) -> ModelMediaCapabilities.Descriptor {
+        ModelMediaCapabilities.composerDescriptor(
+            modelId: model,
+            fallbackSupportsImages: imageFallbackSupport(for: model),
+            localDirectory: localModelDirectory(for: model)
+        )
+    }
+
+    private func imageFallbackSupport(for model: String?) -> Bool {
+        guard let model else { return false }
+        if model.lowercased() == "foundation" { return false }
+        if ModelMediaCapabilities.from(modelId: model).supportsImage { return true }
+        guard let option = pickerItems.first(where: { $0.id == model }) else { return false }
+        return option.isVLM
+    }
+
+    private func localModelDirectory(for model: String?) -> URL? {
+        guard let model else { return nil }
+        if let option = pickerItems.first(where: { $0.id == model }) {
+            guard case .local = option.source else { return nil }
+        }
+        return ModelManager.findInstalledMLXModel(named: model)?.localDirectory
     }
 
     /// Get the currently selected ModelPickerItem
