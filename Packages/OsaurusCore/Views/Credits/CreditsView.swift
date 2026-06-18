@@ -22,6 +22,7 @@ struct CreditsView: View {
     @State private var diagnosticsMessage: String?
     @State private var showTopUpSheet = false
     @State private var showDisableRouterConfirm = false
+    @State private var showRouterUsageCenter = false
 
     /// User master switch state. When off, the Credits screen hides the
     /// balance/activity cards (the router is no longer polled) and shows the
@@ -82,6 +83,11 @@ struct CreditsView: View {
             CreditsTopUpSheet()
                 .environment(\.theme, themeManager.currentTheme)
         }
+        .sheet(isPresented: $showRouterUsageCenter) {
+            RouterAccountUsageCenterView()
+                .environment(\.theme, themeManager.currentTheme)
+                .frame(width: 980, height: 760)
+        }
         .confirmationDialog(
             Text("Turn off Osaurus Router?", bundle: .module),
             isPresented: $showDisableRouterConfirm,
@@ -115,6 +121,14 @@ struct CreditsView: View {
                 help: "Refresh"
             ) {
                 Task { await refreshCredits(resetPages: true) }
+            }
+            .disabled(!routerEnabled)
+            .opacity(routerEnabled ? 1 : 0.55)
+            HeaderIconButton(
+                "chart.bar.xaxis",
+                help: "Account details"
+            ) {
+                showRouterUsageCenter = true
             }
             .disabled(!routerEnabled)
             .opacity(routerEnabled ? 1 : 0.55)

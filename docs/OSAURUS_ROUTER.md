@@ -115,6 +115,31 @@ Outcomes are classified as `rendered`, `toolOnly`, `reasoningOnly`, `empty`,
 distinguish a truly empty billed response from a tool-only or reasoning-only
 turn.
 
+## Account Usage Center
+
+The Router account usage center composes the hosted account endpoints with the
+local billing ledger:
+
+- Account status comes from the Router master switch, local identity presence,
+  `/credits/balance`, and the account hold flag.
+- Credits activity is based on `/credits/usage`, with local ledger rows matched
+  by Router request id when available.
+- Transaction summaries come from `/credits/transactions` and separate credits,
+  debits, and net movement in micro-USD.
+- Ledger summaries are local-only aggregates over recent encrypted
+  `RouterBillingEntry` rows, including outcome counts and model totals.
+- Signed request diagnostics are generated locally by signing representative
+  Router requests without sending them. The UI shows method, path, body hash,
+  signed header names, timestamp, public wallet address, and a signature
+  fingerprint.
+
+Support export is metadata-only. It may include public wallet address,
+redacted signed-request diagnostics, usage rows, transaction rows, and local
+ledger metadata. It must not include prompts, assistant replies, tool arguments,
+tool results, private keys, bearer tokens, cookies, or raw wallet signatures.
+Wallet signatures are replaced with `<redacted>` and only a SHA-256 fingerprint
+of the signature is retained for local/server correlation.
+
 ## Empty Stream Diagnostics
 
 Router has a low-volume diagnostic path for terminal streams that produce no
@@ -152,6 +177,9 @@ Keep tests close to the contract:
 - `OpenAICompatibleStreamParserTests` covers shared SSE framing, raw JSON
   fallback, split-data repair, streaming tool-call accumulation, and
   `finish_reason=length` handling.
+- `RouterAccountUsageCenterTests` covers account status summaries, credits and
+  transaction totals, ledger aggregates, signed-request redaction, and support
+  export safety.
 - `OsaurusRouterProviderTests` covers Router adapter behavior such as billing
   summary frames and empty-stream diagnostics.
 - `RouterBillingDatabaseTests`, `RouterBillingLedgerTests`, and
