@@ -10,6 +10,7 @@
 //
 //  Usage:
 //    osaurus-evals run --suite Suites/CapabilitySearch [--model foundation] [--filter browser] [--out report.json]
+//    osaurus-evals report [--local-model foundation] [--frontier-model openai/gpt-4o-mini]
 //
 //  Exit codes:
 //    0  every non-skipped case passed (or no cases ran)
@@ -56,6 +57,13 @@ struct OsaurusEvalsCLI {
         case "compat":
             // Pure file aggregation over reports/community/* — no model load.
             exit(runCompat(Array(args.dropFirst())))
+        case "report":
+            let reportArgs = Array(args.dropFirst())
+            let reportExitCode = await runEvalReviewReport(reportArgs)
+            if reportArgs.contains("--from-reports") {
+                exit(reportExitCode)
+            }
+            await shutdownAndExit(reportExitCode)
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -669,6 +677,8 @@ struct OsaurusEvalsCLI {
                                               [--fail-on-regression]
                 osaurus-evals matrix <reports-dir> [--out <p>] [--markdown <p>]
                 osaurus-evals compat <community-dir> [--out <p>] [--markdown <p>] [--validate]
+                osaurus-evals report [--suite <dir> ...] [--local-model <id>] [--frontier-model <id>]
+                                      [--baseline <dir>] [--out-dir <dir>]
 
             FLAGS:
                 --suite <dir>         Required. Directory of *.json eval cases
@@ -752,6 +762,7 @@ struct OsaurusEvalsCLI {
                 osaurus-evals run --suite Suites/CapabilitySearch --threshold 0.25 --report-forensics
                 osaurus-evals run --suite Suites/CapabilitySearch --fail-on-floor
                 osaurus-evals agent-loop-lab --baseline reports/main-agentloop
+                osaurus-evals report --local-model foundation --frontier-model openai/gpt-4o-mini
             """
         print(usage)
     }

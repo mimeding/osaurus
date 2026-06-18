@@ -6,7 +6,7 @@ import Testing
 
 @Suite(.serialized)
 struct EvalBootstrapPlanTests {
-    @Test func pluginRequiredCapabilitySearchSkipsBootstrapByDefault() {
+    @Test func pluginRequiredCapabilitySearchLoadsInstalledPluginsByDefault() {
         let suite = makeSuite(
             cases: [
                 makeCase(
@@ -23,7 +23,8 @@ struct EvalBootstrapPlanTests {
             preference: .automatic
         )
 
-        #expect(plan == EvalBootstrapPlan(loadInstalledPlugins: false, initializeSearchIndices: false))
+        #expect(plan == EvalBootstrapPlan(loadInstalledPlugins: true, initializeSearchIndices: false))
+        #expect(plan.usesIsolatedSearchStorage)
     }
 
     @Test func capabilitySearchInitializesIndicesWithoutPluginLoadingByDefault() {
@@ -170,7 +171,7 @@ struct EvalBootstrapPlanTests {
     }
 
     @MainActor
-    @Test func nonIsolatedBootstrapDoesNotReplaceExistingRootOverride() {
+    @Test func noWorkBootstrapDoesNotReplaceExistingRootOverride() {
         let previousRoot = OsaurusPaths.overrideRoot
         let existingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("osaurus-evals-existing-\(UUID().uuidString)", isDirectory: true)
@@ -180,7 +181,7 @@ struct EvalBootstrapPlanTests {
         }
 
         let root = EvalBootstrap.configureIsolatedSearchStorageIfNeeded(
-            for: EvalBootstrapPlan(loadInstalledPlugins: true, initializeSearchIndices: false)
+            for: EvalBootstrapPlan(loadInstalledPlugins: false, initializeSearchIndices: false)
         )
 
         #expect(root == nil)

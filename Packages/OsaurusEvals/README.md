@@ -46,6 +46,8 @@ make evals FILTER=browser-amazon                    # single case while iteratin
 make evals-report                                   # also writes build/evals.json
 make evals-report EVALS_OUT=reports/today.json      # custom output path
 make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/AgentLoop  # other suite
+make evals-pr-report LOCAL_MODEL=foundation FRONTIER_MODEL=openai/gpt-4o-mini
+make evals-pr-report-baseline BASELINE_DIR=build/evals/main-report
 ```
 
 ### Asset prerequisites (handled automatically)
@@ -84,9 +86,61 @@ cd Packages/OsaurusEvals
 swift run osaurus-evals run --suite Suites/CapabilitySearch --model foundation
 swift run osaurus-evals run --suite Suites/CapabilitySearch --filter browser --out report.json
 swift run osaurus-evals run --suite Suites/CapabilitySearch --bootstrap-plugins
+swift run osaurus-evals report --local-model foundation --frontier-model openai/gpt-4o-mini
 ```
 
-For maintainer proof on agent-loop changes, use the regression lab. It runs
+For maintainer proof on agent-loop changes, use the PR report bundle when you
+need local + frontier evidence in one artifact:
+
+```bash
+make evals-pr-report \
+  LOCAL_MODEL=foundation \
+  FRONTIER_MODEL=openai/gpt-4o-mini
+
+make evals-pr-report-baseline \
+  BASELINE_DIR=build/evals/main-report \
+  LOCAL_MODEL=foundation \
+  FRONTIER_MODEL=openai/gpt-4o-mini
+```
+
+The default report runs `AgentLoop` and `AgentLoopFrontier` for both the local
+and frontier lanes. It writes `build/evals/pr-report/<timestamp>/` unless
+`EVALS_PR_REPORT_OUT` or `--out-dir` is set:
+
+- `manifest.json` — commit, branch, date, runner version, suites, models,
+  command provenance, and environment summary.
+- `summary.md` — maintainer-readable totals, failures, skips, regressions, and
+  the exact commands used.
+- `summary.json` — machine-readable aggregate summary.
+- `reports/<model>/<suite>.json` — raw `EvalReport` output for each lane.
+- `compare.md` / `compare.json` — baseline-vs-current diff when a baseline is
+  supplied.
+
+Use this evidence rule for PRs:
+
+- No eval report needed: docs-only changes, UI-only inspection, isolated
+  storage changes, and non-agent diagnostics.
+- Focused eval report needed: eval harness, provider bootstrap, or scoring
+  changes.
+- Local + frontier eval report required: default tools, tool schemas,
+  prompt/tool interaction, agent-loop routing, memory/tool routing, and
+  model-facing defaults.
+
+PR evidence block:
+
+```text
+Eval evidence:
+- Local: <model>, AgentLoop X/Y, AgentLoopFrontier X/Y
+- Frontier: <model>, AgentLoop X/Y, AgentLoopFrontier X/Y
+- Regressions vs baseline: <none/list>
+- Artifact: <path or uploaded artifact>
+```
+
+The `--from-reports <dir>` flag builds the bundle from existing `EvalReport`
+JSON files without model calls, which is useful for CLI smoke tests and docs
+examples.
+
+For lower-level agent-loop baseline work, use the regression lab. It runs
 selected `agent_loop` suites, writes per-suite JSON artifacts, compares the
 current run against a saved baseline report or report directory, and emits a
 concise JSON + Markdown summary:
@@ -401,8 +455,8 @@ make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/AgentLoop MODEL=mlx-communit
 make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/AgentLoop MODEL=openai/gpt-4o-mini JUDGE_MODEL=openai/gpt-4o
 ```
 
-For release or PR proof against a known-good row, prefer the regression lab so
-the raw reports and summary stay together:
+For release proof against a known-good row, the regression lab is still useful
+when you want only one model lane:
 
 ```bash
 scripts/evals/agent-loop-regression-lab.sh \
@@ -550,7 +604,12 @@ When a case in the floor map's accepted-hit count drops below `minMatches`, the 
 
 ## CI isolation
 
-This package is a **separate Swift package**. CI / Xcode builds run `swift build` and `swift test` from `Packages/OsaurusCore`, never from here. Even if someone does `swift test` from inside `Packages/OsaurusEvals`, no test target exists yet — runner unit tests should be added with a `OSAURUS_EVALS_ENABLED=1` env-var gate so they never burn tokens unintentionally.
+This package is a **separate Swift package**. CI / Xcode builds run
+`swift build` and `swift test` from `Packages/OsaurusCore`, never from here.
+`swift test --package-path Packages/OsaurusEvals` runs pure Swift report /
+schema tests only. Tests that would call a live model or provider must stay
+behind an explicit opt-in env-var gate so they never burn tokens
+unintentionally.
 
 ## Future hooks (deliberately stubbed)
 
