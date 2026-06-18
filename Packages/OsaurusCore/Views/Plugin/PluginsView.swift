@@ -65,6 +65,8 @@ struct PluginsView: View {
     @ObservedObject private var claudeMarketplace = ClaudeMarketplaceService.shared
     /// Selected category key for the marketplace chips. `nil` == "All".
     @State private var selectedCategory: String?
+    /// Selected category key for native community plugins. `nil` == "All".
+    @State private var selectedNativeCategory: String?
     /// Search + category filtered marketplace entries.
     @State private var filteredMarketplaceEntries: [MarketplacePlugin] = []
     /// Detail navigation for a browsable (not-yet-installed) marketplace entry.
@@ -190,13 +192,15 @@ struct PluginsView: View {
             .onChange(of: selectedCategory) { _, _ in
                 Task { await updateFilteredLists() }
             }
+            .onChange(of: selectedNativeCategory) { _, _ in
+                Task { await updateFilteredLists() }
+            }
     }
 
     private var decoratedContent: some View {
         ZStack {
             if selectedPlugin == nil && selectedClaudePlugin == nil
-                && selectedMarketplaceEntry == nil
-            {
+                && selectedMarketplaceEntry == nil {
                 gridContent
                     .transition(.opacity.combined(with: .move(edge: .leading)))
             }
@@ -240,12 +244,14 @@ struct PluginsView: View {
         }
         .onReceive(PluginRepositoryService.shared.$plugins) { newPlugins in
             if let selected = selectedPlugin,
-                let updated = newPlugins.first(where: { $0.pluginId == selected.pluginId })
-            {
+                let updated = newPlugins.first(where: { $0.pluginId == selected.pluginId }) {
                 selectedPlugin = updated
             }
             Task { await updateFilteredLists() }
             applyPendingPluginDetailRequest(in: newPlugins)
+        }
+        .onReceive(PluginRepositoryService.shared.$communityCatalog) { _ in
+            Task { await updateFilteredLists() }
         }
         .onReceive(PluginRepositoryService.shared.$isRefreshing) { isRepoRefreshing = $0 }
         .onReceive(PluginRepositoryService.shared.$updatesAvailableCount) { updatesAvailableCount = $0 }
@@ -299,8 +305,7 @@ struct PluginsView: View {
         }
         .sheet(isPresented: $showClaudeUserConfigSheet) {
             if let target = claudeUserConfigTarget,
-                let snap = target.snapshot
-            {
+                let snap = target.snapshot {
                 ClaudePluginUserConfigSheet(
                     pluginId: target.pluginId,
                     pluginName: target.displayName,
@@ -604,20 +609,13 @@ struct PluginsView: View {
 
     private var browseTabContent: some View {
         Group {
-            if let errorMessage = repoLastError {
-                VStack(spacing: 12) {
-                    offlineBanner(message: errorMessage)
-                        .padding(.horizontal, 24)
-                        .padding(.top, 16)
-                    nativeBrowseGrid
-                }
-            } else if isRepoRefreshing && filteredPlugins.isEmpty {
+            if isRepoRefreshing && filteredPlugins.isEmpty {
                 loadingState
             } else if filteredPlugins.isEmpty {
                 emptyState(
                     icon: "puzzlepiece.extension",
-                    title: searchText.isEmpty ? "No plugins available" : "No plugins match your search",
-                    subtitle: searchText.isEmpty ? nil : "Try a different search term"
+                    title: searchText.isEmpty ? L("No plugins available") : L("No plugins match your search"),
+                    subtitle: searchText.isEmpty ? nil : L("Try a different search term")
                 )
             } else {
                 nativeBrowseGrid
@@ -639,26 +637,47 @@ struct PluginsView: View {
 
     private var nativeBrowseGrid: some View {
         ScrollView {
-            LazyVGrid(columns: twoColumnGrid, spacing: 20) {
-                ForEach(Array(filteredPlugins.enumerated()), id: \.element.id) { index, plugin in
-                    PluginCard(
-                        plugin: plugin,
-                        missingPermissions: [],
-                        animationDelay: Double(index) * 0.05,
-                        hasAppeared: hasAppeared,
-                        onSelect: {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                                selectedPlugin = plugin
-                            }
-                        },
-                        onUpgrade: { try await repoService.upgrade(pluginId: plugin.pluginId) },
-                        onUninstall: {
-                            try await repoService.uninstall(pluginId: plugin.pluginId)
-                            reload()
-                        },
-                        onInstall: { try await repoService.install(pluginId: plugin.pluginId) },
-                        onChange: { reload() }
+            VStack(alignment: .leading, spacing: 16) {
+                if let errorMessage = repoLastError {
+                    offlineBanner(message: errorMessage)
+                }
+
+                if let catalogError = repoService.communityCatalogError {
+                    offlineBanner(message: catalogError)
+                }
+
+                let categories = repoService.communityCatalogCategories
+                if !categories.isEmpty {
+                    CommunityCategoryChips(
+                        categories: categories,
+                        totalCount: repoService.plugins.count,
+                        selected: $selectedNativeCategory
                     )
+                }
+
+                LazyVGrid(columns: twoColumnGrid, spacing: 20) {
+                    ForEach(Array(filteredPlugins.enumerated()), id: \.element.id) { index, plugin in
+                        PluginCard(
+                            plugin: plugin,
+                            missingPermissions: [],
+                            animationDelay: Double(index) * 0.05,
+                            hasAppeared: hasAppeared,
+                            onSelect: {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                    selectedPlugin = plugin
+                                }
+                            },
+                            onUpgrade: { try await repoService.upgrade(pluginId: plugin.pluginId) },
+                            onUninstall: {
+                                try await repoService.uninstall(pluginId: plugin.pluginId)
+                                reload()
+                            },
+                            onInstall: plugin.installPreview?.canInstall == false
+                                ? nil
+                                : { try await repoService.install(pluginId: plugin.pluginId) },
+                            onChange: { reload() }
+                        )
+                    }
                 }
             }
             .padding(24)
@@ -695,9 +714,7 @@ struct PluginsView: View {
             // Installed plugins are excluded upstream (they live in the
             // Installed tab), so this grid is purely available discovery.
             LazyVGrid(columns: twoColumnGrid, spacing: 20) {
-                ForEach(Array(filteredMarketplaceEntries.enumerated()), id: \.element.name) {
-                    index,
-                    entry in
+                ForEach(Array(filteredMarketplaceEntries.enumerated()), id: \.element.name) { index, entry in
                     ClaudeMarketplaceCard(
                         entry: entry,
                         animationDelay: Double(min(index, 12)) * 0.04,
@@ -721,11 +738,14 @@ struct PluginsView: View {
     private func marketplaceErrorView(_ message: String) -> some View {
         VStack(spacing: 12) {
             offlineBanner(message: message)
-            Button(action: { Task { await claudeMarketplace.refresh() } }) {
-                Text("Retry", bundle: .module)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(theme.accentColor)
-            }
+            Button(
+                action: { Task { await claudeMarketplace.refresh() } },
+                label: {
+                    Text("Retry", bundle: .module)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(theme.accentColor)
+                }
+            )
             .buttonStyle(PlainButtonStyle())
             .disabled(claudeMarketplace.isLoading)
         }
@@ -783,17 +803,20 @@ struct PluginsView: View {
 
             Spacer()
 
-            Button(action: {
-                Task {
-                    isRefreshButtonLoading = true
-                    await repoService.refresh()
-                    isRefreshButtonLoading = false
+            Button(
+                action: {
+                    Task {
+                        isRefreshButtonLoading = true
+                        await repoService.refresh()
+                        isRefreshButtonLoading = false
+                    }
+                },
+                label: {
+                    Text("Retry", bundle: .module)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(theme.accentColor)
                 }
-            }) {
-                Text("Retry", bundle: .module)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(theme.accentColor)
-            }
+            )
             .buttonStyle(PlainButtonStyle())
             .disabled(isRepoRefreshing)
         }
@@ -826,11 +849,30 @@ struct PluginsView: View {
     nonisolated private static func pluginMatchesQuery(_ plugin: PluginState, query: String) -> Bool {
         guard !query.isEmpty else { return true }
         let queryLower = query.lowercased()
-        return [
+        let candidates = [
             plugin.pluginId.lowercased(),
             (plugin.name ?? "").lowercased(),
             (plugin.pluginDescription ?? "").lowercased(),
-        ].contains { SearchService.fuzzyMatch(query: queryLower, in: $0) }
+            plugin.catalogCategoryDisplayName.lowercased(),
+        ] + plugin.catalogTags.map {
+            $0.lowercased()
+        }
+        return candidates.contains { SearchService.fuzzyMatch(query: queryLower, in: $0) }
+    }
+
+    nonisolated private static func sortPluginsForBrowse(_ lhs: PluginState, _ rhs: PluginState) -> Bool {
+        let lhsRank = lhs.catalogEntry?.sort_rank ?? Int.max
+        let rhsRank = rhs.catalogEntry?.sort_rank ?? Int.max
+        if lhsRank != rhsRank { return lhsRank < rhsRank }
+        if lhs.isCatalogFeatured != rhs.isCatalogFeatured {
+            return lhs.isCatalogFeatured && !rhs.isCatalogFeatured
+        }
+        return lhs.displayName.lowercased() < rhs.displayName.lowercased()
+    }
+
+    nonisolated private static func categoryMatches(_ plugin: PluginState, category: String?) -> Bool {
+        guard let category else { return true }
+        return plugin.catalogCategoryKey == category
     }
 
     nonisolated private static func claudePluginMatchesQuery(
@@ -876,6 +918,7 @@ struct PluginsView: View {
         let currentClaudePlugins = claudeAggregator.plugins
         let currentMarketplace = claudeMarketplace.entries
         let category = selectedCategory
+        let nativeCategory = selectedNativeCategory
         // Installed Claude plugins live in the Installed tab. Exclude them from
         // the marketplace discovery grid so they aren't duplicated across tabs.
         let installedPluginIds = Set(currentClaudePlugins.map { $0.pluginId })
@@ -883,7 +926,12 @@ struct PluginsView: View {
 
         let (browseResult, installedResult, claudeResult, marketplaceResult) =
             await Task.detached(priority: .userInitiated) {
-                let browse = currentPlugins.filter { Self.pluginMatchesQuery($0, query: query) }
+                let browse = currentPlugins
+                    .filter {
+                        Self.categoryMatches($0, category: nativeCategory)
+                            && Self.pluginMatchesQuery($0, query: query)
+                    }
+                    .sorted(by: Self.sortPluginsForBrowse)
                 let installed =
                     currentPlugins
                     .filter { $0.isInstalled && Self.pluginMatchesQuery($0, query: query) }
@@ -967,23 +1015,26 @@ private struct ClaudePluginImportButton: View {
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: { dispatchAfterDismiss(onSelect) }) {
-            HStack(spacing: 6) {
-                Image(systemName: "square.and.arrow.down")
-                    .font(.system(size: 13, weight: .medium))
-                Text("Import", bundle: .module)
-                    .font(.system(size: 13, weight: .medium))
+        Button(
+            action: { dispatchAfterDismiss(onSelect) },
+            label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("Import", bundle: .module)
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .foregroundStyle(theme.secondaryText)
+                .fixedSize()
+                .padding(.horizontal, 12)
+                .frame(height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(theme.tertiaryBackground)
+                        .opacity(isHovering ? 0.8 : 1)
+                )
             }
-            .foregroundStyle(theme.secondaryText)
-            .fixedSize()
-            .padding(.horizontal, 12)
-            .frame(height: 32)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(theme.tertiaryBackground)
-                    .opacity(isHovering ? 0.8 : 1)
-            )
-        }
+        )
         .buttonStyle(PlainButtonStyle())
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.15)) { isHovering = hovering }
@@ -1102,6 +1153,18 @@ private struct PluginCard: View {
 
                 // Compact stats row
                 HStack(spacing: 0) {
+                    let hasCapabilities =
+                        (plugin.capabilities?.tools?.count ?? 0) > 0
+                        || (plugin.capabilities?.skills?.count ?? 0) > 0
+
+                    if plugin.catalogEntry != nil {
+                        statItem(icon: "tag", text: plugin.catalogCategoryDisplayName)
+                    }
+
+                    if plugin.catalogEntry != nil, hasCapabilities {
+                        statDot
+                    }
+
                     if let caps = plugin.capabilities {
                         let toolCount = caps.tools?.count ?? 0
                         let skillCount = caps.skills?.count ?? 0
@@ -1116,7 +1179,7 @@ private struct PluginCard: View {
                         }
                     }
 
-                    if plugin.capabilities?.tools?.count ?? 0 > 0 || plugin.capabilities?.skills?.count ?? 0 > 0 {
+                    if hasCapabilities {
                         if plugin.authors != nil || plugin.license != nil {
                             statDot
                         }
@@ -1217,6 +1280,8 @@ private struct PluginCard: View {
             StatusCapsuleBadge(icon: "arrow.up.circle.fill", text: L("Update"), color: .orange)
         } else if plugin.isInstalled {
             StatusCapsuleBadge(icon: "checkmark.circle.fill", text: L("Installed"), color: .green)
+        } else if plugin.installPreview?.state == .unavailable {
+            StatusCapsuleBadge(icon: "exclamationmark.triangle.fill", text: L("Unavailable"), color: .red)
         }
     }
 
@@ -1260,7 +1325,9 @@ private struct PluginCard: View {
                         )
                     }
                 }
-                if !plugin.isInstalled, let onInstall {
+                if !plugin.isInstalled,
+                    let onInstall,
+                    plugin.installPreview?.canInstall != false {
                     Button {
                         Task {
                             do { try await onInstall() } catch { handleInstallError(error) }
@@ -1442,6 +1509,11 @@ private struct PluginDetailView: View {
 
                     if !missingPermissions.isEmpty && !plugin.hasLoadError {
                         permissionsBanner
+                    }
+
+                    if let preview = plugin.installPreview,
+                        !plugin.isInstalled || plugin.hasUpdate {
+                        installPreviewSection(preview)
                     }
 
                     if readmeContent != nil {
@@ -1649,6 +1721,16 @@ private struct PluginDetailView: View {
                     if let license = plugin.license {
                         heroStatBadge(icon: "doc.text", text: license, color: theme.tertiaryText)
                     }
+                    if plugin.catalogEntry != nil {
+                        heroStatBadge(
+                            icon: "tag",
+                            text: plugin.catalogCategoryDisplayName,
+                            color: theme.accentColor
+                        )
+                    }
+                    if plugin.isCatalogFeatured {
+                        heroStatBadge(icon: "star.fill", text: L("Featured"), color: .orange)
+                    }
                     if let caps = plugin.capabilities {
                         let toolCount = caps.tools?.count ?? 0
                         let skillCount = caps.skills?.count ?? 0
@@ -1673,42 +1755,49 @@ private struct PluginDetailView: View {
                         .scaleEffect(0.9)
                         .frame(width: 100, height: 36)
                 } else if plugin.hasUpdate {
-                    Button {
-                        Task {
-                            do { try await onUpgrade() } catch { handleInstallError(error) }
+                    if plugin.installPreview?.canInstall == false {
+                        disabledPrimaryAction(title: "Unavailable", icon: "exclamationmark.triangle.fill")
+                    } else {
+                        Button {
+                            Task {
+                                do { try await onUpgrade() } catch { handleInstallError(error) }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "arrow.up.circle.fill").font(.system(size: 12))
+                                Text("Update", bundle: .module).font(.system(size: 13, weight: .semibold))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange))
                         }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "arrow.up.circle.fill").font(.system(size: 12))
-                            Text("Update", bundle: .module).font(.system(size: 13, weight: .semibold))
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange))
+                        .buttonStyle(PlainButtonStyle())
                     }
-                    .buttonStyle(PlainButtonStyle())
                 } else if !plugin.isInstalled {
-                    Button {
-                        Task {
-                            do { try await onInstall() } catch { handleInstallError(error) }
+                    if plugin.installPreview?.canInstall == false {
+                        disabledPrimaryAction(title: "Unavailable", icon: "exclamationmark.triangle.fill")
+                    } else {
+                        Button {
+                            Task {
+                                do { try await onInstall() } catch { handleInstallError(error) }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "arrow.down.circle.fill").font(.system(size: 12))
+                                Text("Install", bundle: .module).font(.system(size: 13, weight: .semibold))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(theme.accentColor))
                         }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "arrow.down.circle.fill").font(.system(size: 12))
-                            Text("Install", bundle: .module).font(.system(size: 13, weight: .semibold))
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(theme.accentColor))
+                        .buttonStyle(PlainButtonStyle())
                     }
-                    .buttonStyle(PlainButtonStyle())
                 }
 
                 if plugin.isInstalled && !plugin.hasLoadError,
-                    let webConfig = loadedPlugin?.webConfig
-                {
+                    let webConfig = loadedPlugin?.webConfig {
                     Button {
                         let port = loadServerPort()
                         // Browsers cannot set the X-Osaurus-Agent-Id header
@@ -1750,6 +1839,18 @@ private struct PluginDetailView: View {
                 .lineLimit(1)
         }
         .foregroundColor(color)
+    }
+
+    private func disabledPrimaryAction(title: String, icon: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 12))
+            Text(LocalizedStringKey(title), bundle: .module)
+                .font(.system(size: 13, weight: .semibold))
+        }
+        .foregroundColor(theme.secondaryText)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(theme.tertiaryBackground))
     }
 
     // MARK: - Error Section
@@ -1939,6 +2040,132 @@ private struct PluginDetailView: View {
         }
     }
 
+    // MARK: - Install Preview Section
+
+    private func installPreviewSection(_ preview: PluginInstallPreview) -> some View {
+        detailSection(title: L("Install Preview"), icon: "checklist") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    let status = previewStatus(for: preview.state)
+                    StatusCapsuleBadge(icon: status.icon, text: status.label, color: status.color)
+
+                    if let category = preview.category, !category.isEmpty {
+                        Text(category)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(theme.secondaryText)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(theme.tertiaryBackground))
+                    }
+
+                    Spacer()
+                }
+
+                HStack(spacing: 12) {
+                    if let version = preview.targetVersion {
+                        previewMetric(label: L("Release"), value: "v\(version.description)")
+                    }
+                    if let artifactSize = preview.artifactSize {
+                        previewMetric(label: L("Archive"), value: formatBytes(artifactSize))
+                    }
+                    if preview.toolCount > 0 {
+                        previewMetric(label: L("Tools"), value: "\(preview.toolCount)")
+                    }
+                    if preview.skillCount > 0 {
+                        previewMetric(label: L("Skills"), value: "\(preview.skillCount)")
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if !preview.tags.isEmpty {
+                    PluginFlowLayout(spacing: 6) {
+                        ForEach(preview.tags, id: \.self) { tag in
+                            Text(tag)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(theme.secondaryText)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(theme.tertiaryBackground))
+                        }
+                    }
+                }
+
+                if let note = preview.installNote, !note.isEmpty {
+                    previewMessageRow(
+                        PluginInstallPreviewMessage(severity: .info, message: note)
+                    )
+                }
+
+                ForEach(preview.messages, id: \.message) { message in
+                    previewMessageRow(message)
+                }
+            }
+        }
+    }
+
+    private func previewMetric(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(theme.tertiaryText)
+            Text(value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(theme.primaryText)
+        }
+    }
+
+    private func previewMessageRow(_ message: PluginInstallPreviewMessage) -> some View {
+        let style = previewMessageStyle(for: message.severity)
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: style.icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(style.color)
+                .frame(width: 16)
+            Text(message.message)
+                .font(.system(size: 12))
+                .foregroundColor(theme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(style.color.opacity(0.08))
+        )
+    }
+
+    private func previewStatus(
+        for state: PluginInstallPreviewState
+    ) -> (label: String, icon: String, color: Color) {
+        switch state {
+        case .installable:
+            return (L("Ready to Install"), "checkmark.shield.fill", theme.accentColor)
+        case .updateAvailable:
+            return (L("Update Available"), "arrow.up.circle.fill", .orange)
+        case .installed:
+            return (L("Installed"), "checkmark.circle.fill", .green)
+        case .unavailable:
+            return (L("Unavailable"), "exclamationmark.triangle.fill", .red)
+        }
+    }
+
+    private func previewMessageStyle(
+        for severity: PluginInstallPreviewSeverity
+    ) -> (icon: String, color: Color) {
+        switch severity {
+        case .info:
+            return ("checkmark.shield.fill", theme.accentColor)
+        case .warning:
+            return ("exclamationmark.triangle.fill", theme.warningColor)
+        case .blocking:
+            return ("xmark.octagon.fill", .red)
+        }
+    }
+
+    private func formatBytes(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
     // MARK: - README Section
 
     private var readmeSection: some View {
@@ -2005,8 +2232,7 @@ private struct PluginDetailView: View {
     private var externalLinksSection: some View {
         if let loaded = loadedPlugin,
             let links = loaded.plugin.manifest.docs?.links,
-            !links.isEmpty
-        {
+            !links.isEmpty {
             detailSection(title: L("Links"), icon: "link") {
                 HStack(spacing: 12) {
                     ForEach(links, id: \.url) { link in
@@ -2317,6 +2543,75 @@ private struct PluginRoutesSummary: View {
 }
 
 // MARK: - Marketplace Category Chips
+
+private struct CommunityCategoryChips: View {
+    @Environment(\.theme) private var theme
+
+    let categories: [CommunityPluginCategory]
+    let totalCount: Int
+    @Binding var selected: String?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                chip(key: nil, label: L("All"), count: totalCount, color: theme.accentColor)
+                ForEach(categories) { category in
+                    chip(
+                        key: category.id,
+                        label: category.displayName,
+                        count: category.count,
+                        color: color(for: category.id)
+                    )
+                }
+            }
+            .padding(.horizontal, 2)
+            .padding(.vertical, 2)
+        }
+    }
+
+    private func chip(key: String?, label: String, count: Int, color: Color) -> some View {
+        let isSelected = selected == key
+        return Button {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                selected = key
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Text(label)
+                    .font(.system(size: 12, weight: .semibold))
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .bold).monospacedDigit())
+                    .foregroundColor(isSelected ? .white.opacity(0.85) : theme.tertiaryText)
+            }
+            .foregroundColor(isSelected ? .white : theme.secondaryText)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                Capsule()
+                    .fill(isSelected ? color : theme.tertiaryBackground)
+            )
+            .overlay(
+                Capsule()
+                    .stroke(isSelected ? Color.clear : theme.cardBorder, lineWidth: 1)
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    private func color(for category: String) -> Color {
+        switch category {
+        case "web": return .blue
+        case "desktop": return .purple
+        case "productivity": return .green
+        case "communication": return .teal
+        case "reference": return .orange
+        case "media": return .pink
+        case "documents": return .indigo
+        case "development": return .cyan
+        default: return theme.accentColor
+        }
+    }
+}
 
 /// Horizontal, scrollable filter chips for the Claude marketplace. The first
 /// chip ("All") clears the filter; each category chip shows its plugin count

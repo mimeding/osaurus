@@ -1,0 +1,272 @@
+{
+  "schema_version": 1,
+  "source_name": "Osaurus community plugin catalog",
+  "source_url": "https://github.com/osaurus-ai/osaurus-tools",
+  "trusted_registry_url": "https://github.com/osaurus-ai/osaurus-tools.git",
+  "generated_at": "2026-06-18",
+  "plugins": [
+    {
+      "plugin_id": "osaurus.browser",
+      "name": "Browser",
+      "summary": "Browse pages, inspect DOM state, and automate web workflows.",
+      "category": "Web",
+      "tags": ["browser", "automation", "web"],
+      "featured": true,
+      "sort_rank": 10,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.search",
+      "name": "Search",
+      "summary": "Search the web and fetch grounded results for research tasks.",
+      "category": "Web",
+      "tags": ["search", "research", "web"],
+      "featured": true,
+      "sort_rank": 20,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.fetch",
+      "name": "Fetch",
+      "summary": "Retrieve URLs and structured web content for tool-assisted workflows.",
+      "category": "Web",
+      "tags": ["http", "download", "web"],
+      "sort_rank": 30,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.macos-use",
+      "name": "macOS Use",
+      "summary": "Operate local macOS apps and UI surfaces with guarded permissions.",
+      "category": "Desktop",
+      "tags": ["macos", "accessibility", "automation"],
+      "featured": true,
+      "sort_rank": 40,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.calendar",
+      "name": "Calendar",
+      "summary": "Read and manage calendar events through the local plugin host.",
+      "category": "Productivity",
+      "tags": ["calendar", "scheduling", "productivity"],
+      "sort_rank": 100,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.contacts",
+      "name": "Contacts",
+      "summary": "Look up and use local contact data with user-controlled access.",
+      "category": "Productivity",
+      "tags": ["contacts", "people", "productivity"],
+      "sort_rank": 110,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.mail",
+      "name": "Mail",
+      "summary": "Work with local email workflows from agent tasks.",
+      "category": "Productivity",
+      "tags": ["mail", "email", "productivity"],
+      "sort_rank": 120,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.messages",
+      "name": "Messages",
+      "summary": "Use local messaging workflows through the plugin runtime.",
+      "category": "Productivity",
+      "tags": ["messages", "communication", "productivity"],
+      "sort_rank": 130,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.notes",
+      "name": "Notes",
+      "summary": "Search and manage notes from local workflows.",
+      "category": "Productivity",
+      "tags": ["notes", "writing", "productivity"],
+      "sort_rank": 140,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.reminders",
+      "name": "Reminders",
+      "summary": "Create and update reminder tasks from conversations.",
+      "category": "Productivity",
+      "tags": ["reminders", "tasks", "productivity"],
+      "sort_rank": 150,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.telegram",
+      "name": "Telegram",
+      "summary": "Bridge Telegram conversations into plugin-dispatched tasks.",
+      "category": "Communication",
+      "tags": ["telegram", "chat", "automation"],
+      "sort_rank": 200,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.resend",
+      "name": "Resend",
+      "summary": "Send transactional email through Resend-backed workflows.",
+      "category": "Communication",
+      "tags": ["email", "resend", "api"],
+      "sort_rank": 210,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.maps",
+      "name": "Maps",
+      "summary": "Resolve places and map-oriented information for local tasks.",
+      "category": "Reference",
+      "tags": ["maps", "places", "reference"],
+      "sort_rank": 300,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.time",
+      "name": "Time",
+      "summary": "Answer date, time, and timezone questions through a plugin tool.",
+      "category": "Reference",
+      "tags": ["time", "timezone", "reference"],
+      "sort_rank": 310,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.images",
+      "name": "Images",
+      "summary": "Handle image-oriented utility workflows from plugin tools.",
+      "category": "Media",
+      "tags": ["images", "media", "vision"],
+      "sort_rank": 400,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.vision",
+      "name": "Vision",
+      "summary": "Inspect visual inputs and expose vision-oriented plugin capabilities.",
+      "category": "Media",
+      "tags": ["vision", "images", "media"],
+      "sort_rank": 410,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.music",
+      "name": "Music",
+      "summary": "Use local music workflows through the plugin runtime.",
+      "category": "Media",
+      "tags": ["music", "media", "playback"],
+      "sort_rank": 420,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.xlsx",
+      "name": "XLSX",
+      "summary": "Work with spreadsheets and workbook-oriented plugin tools.",
+      "category": "Documents",
+      "tags": ["spreadsheet", "xlsx", "documents"],
+      "sort_rank": 500,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.pptx",
+      "name": "PPTX",
+      "summary": "Work with presentation files and slide-oriented plugin tools.",
+      "category": "Documents",
+      "tags": ["slides", "pptx", "documents"],
+      "sort_rank": 510,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    },
+    {
+      "plugin_id": "osaurus.emacs",
+      "name": "Emacs",
+      "summary": "Connect editor workflows into local plugin automation.",
+      "category": "Development",
+      "tags": ["editor", "emacs", "development"],
+      "sort_rank": 600,
+      "trust": {
+        "trusted": true,
+        "source": "osaurus-tools",
+        "notes": "Listed from the trusted plugin registry."
+      }
+    }
+  ]
+}

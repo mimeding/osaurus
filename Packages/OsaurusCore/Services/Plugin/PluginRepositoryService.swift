@@ -21,6 +21,8 @@ struct PluginState: Identifiable, Equatable {
     let authors: [String]?
     let license: String?
     let capabilities: RegistryCapabilities?
+    let catalogEntry: CommunityPluginCatalogEntry?
+    let installPreview: PluginInstallPreview?
 
     // Installation & update state
     var installedVersion: SemanticVersion?
@@ -45,6 +47,22 @@ struct PluginState: Identifiable, Equatable {
     var hasLoadError: Bool {
         isInstalled && loadError != nil
     }
+
+    var isCatalogFeatured: Bool {
+        catalogEntry?.featured ?? false
+    }
+
+    var catalogCategoryKey: String {
+        CommunityPluginBrowserItem.categoryKey(for: catalogEntry?.category)
+    }
+
+    var catalogCategoryDisplayName: String {
+        CommunityPluginBrowserItem.displayName(forCategoryKey: catalogCategoryKey)
+    }
+
+    var catalogTags: [String] {
+        catalogEntry?.tags ?? []
+    }
 }
 
 @MainActor
@@ -59,6 +77,12 @@ final class PluginRepositoryService: ObservableObject {
 
     /// Last refresh timestamp
     @Published private(set) var lastRefreshed: Date?
+
+    /// Bundled trusted catalog metadata used for category browsing and install previews.
+    @Published private(set) var communityCatalog: CommunityPluginCatalog = .empty
+
+    /// Error from loading the bundled community catalog, if packaging is broken.
+    @Published private(set) var communityCatalogError: String?
 
     /// Number of plugins with available updates
     @Published private(set) var updatesAvailableCount: Int = 0
@@ -76,6 +100,8 @@ final class PluginRepositoryService: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     private init() {
+        loadCommunityCatalog()
+
         // Listen for tools list changes to update installed state
         NotificationCenter.default.publisher(for: .toolsListChanged)
             .receive(on: RunLoop.main)
@@ -88,6 +114,23 @@ final class PluginRepositoryService: ObservableObject {
     }
 
     // MARK: - Public API
+
+    var communityCatalogCategories: [CommunityPluginCategory] {
+        let counts = Dictionary(grouping: plugins, by: \.catalogCategoryKey).mapValues(\.count)
+        return counts.map { key, count in
+            CommunityPluginCategory(
+                id: key,
+                displayName: CommunityPluginBrowserItem.displayName(forCategoryKey: key),
+                count: count
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.id == "registry" { return false }
+            if rhs.id == "registry" { return true }
+            if lhs.count != rhs.count { return lhs.count > rhs.count }
+            return lhs.displayName.lowercased() < rhs.displayName.lowercased()
+        }
+    }
 
     /// Start the background refresh timer
     func startBackgroundRefresh() {
@@ -250,17 +293,24 @@ final class PluginRepositoryService: ObservableObject {
     /// `InstalledPluginsStore.snapshot()`) so this stays free of file I/O.
     private static func makeState(
         from spec: PluginSpec,
+        catalogEntry: CommunityPluginCatalogEntry?,
         installedVersion: SemanticVersion?
     ) -> PluginState {
         PluginState(
             pluginId: spec.plugin_id,
-            name: spec.name,
-            pluginDescription: spec.description,
+            name: spec.name ?? catalogEntry?.name,
+            pluginDescription: spec.description ?? catalogEntry?.summary,
             authors: spec.authors,
             license: spec.license,
             capabilities: spec.capabilities,
+            catalogEntry: catalogEntry,
+            installPreview: PluginInstallPreview(
+                spec: spec,
+                catalogEntry: catalogEntry,
+                installedVersion: installedVersion
+            ),
             installedVersion: installedVersion,
-            latestVersion: spec.versions.map(\.version).sorted(by: >).first,
+            latestVersion: spec.versions.map(\.version).max(),
             loadError: PluginManager.shared.loadError(for: spec.plugin_id)
         )
     }
@@ -269,7 +319,8 @@ final class PluginRepositoryService: ObservableObject {
     /// Used when no repo spec is available (offline / plugin not in repository).
     private static func makeInstalledState(
         for pluginId: String,
-        installedVersion: SemanticVersion?
+        installedVersion: SemanticVersion?,
+        catalogEntry: CommunityPluginCatalogEntry?
     ) -> PluginState {
         var name: String?
         var desc: String?
@@ -297,13 +348,35 @@ final class PluginRepositoryService: ObservableObject {
 
         return PluginState(
             pluginId: pluginId,
-            name: name,
-            pluginDescription: desc,
+            name: name ?? catalogEntry?.name,
+            pluginDescription: desc ?? catalogEntry?.summary,
             authors: authors,
             license: license,
             capabilities: capabilities,
+            catalogEntry: catalogEntry,
+            installPreview: nil,
             installedVersion: installedVersion,
             loadError: PluginManager.shared.loadError(for: pluginId)
+        )
+    }
+
+    /// Creates a catalog-only row when the bundled trusted catalog knows about
+    /// a plugin before the registry specs are available locally.
+    private static func makeCatalogState(
+        from entry: CommunityPluginCatalogEntry,
+        installedVersion: SemanticVersion?
+    ) -> PluginState {
+        PluginState(
+            pluginId: entry.plugin_id,
+            name: entry.name,
+            pluginDescription: entry.summary,
+            authors: nil,
+            license: nil,
+            capabilities: nil,
+            catalogEntry: entry,
+            installPreview: nil,
+            installedVersion: installedVersion,
+            loadError: PluginManager.shared.loadError(for: entry.plugin_id)
         )
     }
 
@@ -326,11 +399,13 @@ final class PluginRepositoryService: ObservableObject {
         guard !snapshot.installedIds.isEmpty else { return }
 
         let installingIds = Set(plugins.filter { $0.isInstalling }.map { $0.id })
+        let catalogById = communityCatalog.entriesByPluginId
 
         plugins = snapshot.installedIds.map { pluginId in
             var state = Self.makeInstalledState(
                 for: pluginId,
-                installedVersion: snapshot.latestVersion(for: pluginId)
+                installedVersion: snapshot.latestVersion(for: pluginId),
+                catalogEntry: catalogById[pluginId]
             )
             state.isInstalling = installingIds.contains(pluginId)
             return state
@@ -344,10 +419,12 @@ final class PluginRepositoryService: ObservableObject {
     /// no file I/O on the main actor.
     private func updatePlugins(from specs: [PluginSpec], snapshot: InstalledPluginsStore.Snapshot) {
         var specPluginIds = Set<String>()
+        let catalogById = communityCatalog.entriesByPluginId
         var result: [PluginState] = specs.map { spec in
             specPluginIds.insert(spec.plugin_id)
             return Self.makeState(
                 from: spec,
+                catalogEntry: catalogById[spec.plugin_id],
                 installedVersion: snapshot.latestVersion(for: spec.plugin_id)
             )
         }
@@ -357,7 +434,21 @@ final class PluginRepositoryService: ObservableObject {
             result.append(
                 Self.makeInstalledState(
                     for: pluginId,
-                    installedVersion: snapshot.latestVersion(for: pluginId)
+                    installedVersion: snapshot.latestVersion(for: pluginId),
+                    catalogEntry: catalogById[pluginId]
+                )
+            )
+            specPluginIds.insert(pluginId)
+        }
+
+        // Append catalog entries that have no matching local spec yet. The
+        // installer still refreshes the trusted registry before installing,
+        // but these rows let users browse the default catalog offline.
+        for entry in communityCatalog.plugins where !specPluginIds.contains(entry.plugin_id) {
+            result.append(
+                Self.makeCatalogState(
+                    from: entry,
+                    installedVersion: snapshot.latestVersion(for: entry.plugin_id)
                 )
             )
         }
@@ -380,7 +471,8 @@ final class PluginRepositoryService: ObservableObject {
             plugins.append(
                 Self.makeInstalledState(
                     for: pluginId,
-                    installedVersion: snapshot.latestVersion(for: pluginId)
+                    installedVersion: snapshot.latestVersion(for: pluginId),
+                    catalogEntry: communityCatalog.entry(for: pluginId)
                 )
             )
         }
@@ -397,6 +489,17 @@ final class PluginRepositoryService: ObservableObject {
 
     private func updateUpdatesCount() {
         updatesAvailableCount = plugins.filter { $0.hasUpdate }.count
+    }
+
+    private func loadCommunityCatalog() {
+        do {
+            communityCatalog = try CommunityPluginCatalogBundleSource.loadBundled()
+            communityCatalogError = nil
+        } catch {
+            communityCatalog = .empty
+            communityCatalogError = error.localizedDescription
+            NSLog("[Osaurus] Community plugin catalog load failed: %@", error.localizedDescription)
+        }
     }
 
     /// Check if a newly installed plugin requires secrets and set pendingSecretsPlugin if needed

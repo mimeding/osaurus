@@ -13,6 +13,7 @@ Plugins are macOS dynamic libraries (`.dylib`) that extend Osaurus with new tool
 | **Look up a specific host API callback** | [HOST_API.md](HOST_API.md) |
 | **Build HTTP routes or a web UI for my plugin** | [ROUTES_AND_WEB.md](ROUTES_AND_WEB.md) |
 | **Sign, package, and distribute my plugin** | [PACKAGING.md](PACKAGING.md) |
+| **Understand in-app community catalog metadata** | [COMMUNITY_CATALOG.md](COMMUNITY_CATALOG.md) |
 | **Test my plugin (`tools dev` loop, unit tests with `OsaurusPluginTestKit`)** | [TESTING.md](TESTING.md) |
 | **Debug why my plugin won't load** | [DEBUGGING.md](DEBUGGING.md) |
 | **See what changed in each ABI version** | [ABI_VERSIONS.md](ABI_VERSIONS.md) |
