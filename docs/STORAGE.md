@@ -1,6 +1,6 @@
 # Storage
 
-Osaurus stores your local data — chats, memory, methods, tool indexes, plugin databases, and large attachments — under `~/.osaurus/`. As of 0.21.0, that data is stored **as plaintext SQLite by default**, relying on macOS **FileVault** for at-rest protection, with **SQLCipher whole-database encryption available as an explicit opt-in** in **Settings → Storage**.
+Osaurus stores your local data — chats, memory, methods, tool indexes, plugin databases, and large attachments — under the resolved app-data root. Fresh installs use `~/Library/Application Support/Osaurus/`; existing installs continue to use `~/.osaurus/` or the retired `~/Library/Application Support/com.dinoki.osaurus/` when those roots already exist. As of 0.21.0, that data is stored **as plaintext SQLite by default**, relying on macOS **FileVault** for at-rest protection, with **SQLCipher whole-database encryption available as an explicit opt-in** in **Settings → Storage**.
 
 This is a deliberate change from the earlier always-on encryption model. The "why" is documented in [Why encryption is opt-in](#why-encryption-is-opt-in) below — the short version is reliability: an always-required Keychain key coupled every store's ability to open to a secret that breaks on Mac migration, app re-signing, or a Keychain wipe, and when it broke it failed closed with no recovery.
 
@@ -28,12 +28,12 @@ This document covers how data is stored, how opening is decided per-file, how to
 
 ## Overview
 
-Everything Osaurus persists lives under `~/.osaurus/`:
+Everything Osaurus persists lives under the resolved app-data root:
 
 - **Default (plaintext).** Every SQLite database is a normal SQLite file, and large attachments / `.osec`-class artifacts are written as plaintext. On a modern Mac, **FileVault** already encrypts the entire disk at rest, so plaintext-on-disk is still protected when the Mac is powered off or logged out — without depending on an app-managed key that can go missing.
 - **Opt-in (encrypted).** When you enable encryption in **Settings → Storage**, every SQLite database is converted to a [SQLCipher 4.6.1](https://www.zetetic.net/sqlcipher/) database keyed with a 32-byte symmetric key, and app-layer artifacts are written as AES-GCM `.osec` files. The data-encryption key (DEK) lives in the macOS Keychain, scoped to your account on this device.
 
-The posture (plaintext vs. encrypted) is your choice and is persisted in a small, deliberately **non-encrypted** marker file (`~/.osaurus/.storage-encryption.json`). It cannot itself be encrypted — that would reintroduce the chicken-and-egg key dependency this design removes.
+The posture (plaintext vs. encrypted) is your choice and is persisted in a small, deliberately **non-encrypted** marker file (`<data root>/.storage-encryption.json`). It cannot itself be encrypted — that would reintroduce the chicken-and-egg key dependency this design removes.
 
 ---
 
@@ -46,7 +46,7 @@ In the always-on model, every store's ability to open depended on a Keychain DEK
 - Migrating to a new Mac without iCloud Keychain sync.
 - Re-signing the app (different team/identity) so the Keychain ACL no longer matches.
 - Wiping or resetting the login Keychain.
-- Restoring `~/.osaurus/` into a different user account than the one the key was paired with.
+- Restoring a different app-data root into a different user account than the one the key was paired with.
 
 When that happened, `StorageKeyManager.currentKey()` threw `keyUnavailableForExistingData`, the database refused to open, and the app **failed closed with an opaque error** — silently bricking memory and search for real users, with no recovery path. Reliability is the priority, and FileVault already provides full-disk at-rest encryption on modern macOS. So the default is now plaintext, and SQLCipher is an explicit, reversible opt-in.
 
@@ -55,12 +55,12 @@ When that happened, `StorageKeyManager.currentKey()` threw `keyUnavailableForExi
 | Threat | Plaintext + FileVault (default) | Opt-in SQLCipher |
 |---|---|---|
 | Lost/stolen Mac, powered off | Protected by FileVault full-disk encryption | Protected (FileVault **and** SQLCipher) |
-| Another logged-in user on the same Mac reading your files | Filesystem permissions only (`~/.osaurus` is user-owned); **not** cryptographically separated | Cryptographically separated — the DEK is scoped to your account |
+| Another logged-in user on the same Mac reading your files | Filesystem permissions only (the app-data root is user-owned); **not** cryptographically separated | Cryptographically separated — the DEK is scoped to your account |
 | You don't use FileVault | Data is readable from the raw disk | Encrypted at rest regardless of FileVault |
-| Backups / Time Machine / cloud sync of `~/.osaurus` | Copied as plaintext | Copied as ciphertext |
+| Backups / Time Machine / cloud sync of the app-data root | Copied as plaintext | Copied as ciphertext |
 | Keychain key lost (migration, re-sign, wipe) | **No impact** — nothing depends on the key | Encrypted stores can't be opened until the key is restored or the store is reset |
 
-Plain-language summary: **plaintext is the most reliable option and is well-protected if FileVault is on.** Turn on SQLCipher if you share the Mac account, don't run FileVault, or sync/back up `~/.osaurus` to a place you don't fully trust — and keep a plaintext backup in case the key is ever lost.
+Plain-language summary: **plaintext is the most reliable option and is well-protected if FileVault is on.** Turn on SQLCipher if you share the Mac account, don't run FileVault, or sync/back up the app-data root to a place you don't fully trust — and keep a plaintext backup in case the key is ever lost.
 
 ---
 
@@ -82,7 +82,7 @@ The consequence: in the default (plaintext) world, `currentKey()` is **never cal
 
 Nothing to configure. On first launch of a fresh install:
 
-1. The posture marker is created in plaintext mode (`~/.osaurus/.storage-encryption.json`).
+1. The posture marker is created in plaintext mode (`<data root>/.storage-encryption.json`).
 2. Each database is created as a plaintext SQLite file on first open via [`OsaurusStorageOpener`](../Packages/OsaurusCore/Storage/OsaurusStorageOpener.swift).
 
 If you upgraded from a version that used always-on encryption, your existing encrypted data is **migrated automatically and invisibly on first launch** (see [Migration and Convergence](#migration-and-convergence)): it is decrypted to plaintext when macOS FileVault is enabled, or kept encrypted when FileVault is off so the migration never silently removes its only at-rest protection. There is no prompt or notice — the change is seamless, and you can always flip the posture later from **Settings → Storage**.
@@ -97,15 +97,15 @@ To back up your data in plaintext (for example, before reinstalling macOS), open
 
 | Artifact | Default (plaintext) | Opt-in (encrypted) | On-disk location |
 |---|---|---|---|
-| Chat history | SQLite | SQLCipher | `~/.osaurus/chat-history/history.sqlite` |
-| Router billing ledger | SQLite | SQLCipher | `~/.osaurus/billing/ledger.sqlite` |
-| Memory (identity, pinned facts, episodes, transcript, FTS5 mirrors) | SQLite | SQLCipher | `~/.osaurus/memory/memory.sqlite` |
-| Methods catalog | SQLite | SQLCipher | `~/.osaurus/methods/methods.sqlite` |
-| Tool index | SQLite | SQLCipher | `~/.osaurus/tool-index/tool_index.sqlite` |
-| Per-plugin databases | SQLite | SQLCipher | `~/.osaurus/Tools/<plugin-id>/data/data.db` |
-| Per-agent database (opt-in feature) | SQLite | SQLCipher | `~/.osaurus/agents/<uuid>/db.sqlite` |
-| Self-scheduling slots | SQLite | SQLCipher | `~/.osaurus/scheduler.sqlite` |
-| Large chat attachments | plaintext blob | AES-GCM (`.osec`) | `~/.osaurus/chat-history/blobs/<sha256>` |
+| Chat history | SQLite | SQLCipher | `<data root>/chat-history/history.sqlite` |
+| Router billing ledger | SQLite | SQLCipher | `<data root>/billing/ledger.sqlite` |
+| Memory (identity, pinned facts, episodes, transcript, FTS5 mirrors) | SQLite | SQLCipher | `<data root>/memory/memory.sqlite` |
+| Methods catalog | SQLite | SQLCipher | `<data root>/methods/methods.sqlite` |
+| Tool index | SQLite | SQLCipher | `<data root>/tool-index/tool_index.sqlite` |
+| Per-plugin databases | SQLite | SQLCipher | `<data root>/Tools/<plugin-id>/data/data.db` |
+| Per-agent database (opt-in feature) | SQLite | SQLCipher | `<data root>/agents/<uuid>/db.sqlite` |
+| Self-scheduling slots | SQLite | SQLCipher | `<data root>/scheduler.sqlite` |
+| Large chat attachments | plaintext blob | AES-GCM (`.osec`) | `<data root>/chat-history/blobs/<sha256>` |
 
 **Attachment spillover.** Every `Attachment.image` or `Attachment.document` payload greater than or equal to **16 KB** is hashed (SHA-256, content-addressed so duplicates dedup) and written to its own file via [`AttachmentBlobStore`](../Packages/OsaurusCore/Storage/AttachmentBlobStore.swift). In plaintext mode the blob is written raw; in encrypted mode it is written as an AES-GCM `.osec` twin. Reads are detection-first (sniff the file, prefer the plaintext twin, fall back to `.osec`) via [`EncryptedFileStore`](../Packages/OsaurusCore/Storage/EncryptedFileStore.swift), so a posture change never strands existing blobs. The chat row stores only `{ "ref": "<sha256>", ... }`. Smaller payloads stay inline in the row.
 
@@ -113,10 +113,10 @@ To back up your data in plaintext (for example, before reinstalling macOS), open
 
 **Always plaintext, by design.** A few artifacts stay plaintext in both modes:
 
-- The encryption posture marker `~/.osaurus/.storage-encryption.json` (it cannot be encrypted — see [Overview](#overview)).
-- JSON config under `~/.osaurus/config/`, `agents/`, `themes/`, `providers/`, `schedules/`, `watchers/`, `skills/` that is read as raw JSON by various consumers. (In encrypted mode, sensitive app-layer artifacts that go through `EncryptedFileStore` are wrapped; pure config that must be world-readable JSON stays plaintext.)
-- Plugin manifests under `~/.osaurus/sandbox-plugins/`.
-- Vector index files under `~/.osaurus/memory/vectura/<agentId>/`. These are rebuilt from the SQLite source on demand; see [Limitations](#limitations-and-trade-offs).
+- The encryption posture marker `<data root>/.storage-encryption.json` (it cannot be encrypted — see [Overview](#overview)).
+- JSON config under the resolved config root plus `<data root>/agents/`, `themes/`, `providers/`, `schedules/`, `watchers/`, and `skills/` that is read as raw JSON by various consumers. (In encrypted mode, sensitive app-layer artifacts that go through `EncryptedFileStore` are wrapped; pure config that must be world-readable JSON stays plaintext.)
+- Plugin manifests under `<data root>/sandbox-plugins/`.
+- Vector index files under `<data root>/memory/vectura/<agentId>/`. These are rebuilt from the SQLite source on demand; see [Limitations](#limitations-and-trade-offs).
 
 ---
 
@@ -158,7 +158,7 @@ Convergence **never auto-deletes data**. If a store can't be converted or opened
 Recovery actions are provided by [`StorageRecoveryService`](../Packages/OsaurusCore/Storage/StorageRecoveryService.swift):
 
 - **Retry** re-attempts the open (e.g. after you restore the Keychain key or fix signing) and clears the recorded issue on success.
-- **Reset** quarantines the unreadable file to `~/.osaurus/quarantine/` (it is **moved, never deleted**), removes the `-wal`/`-shm` sidecars via [`StorageFile`](../Packages/OsaurusCore/Storage/StorageFile.swift), and recreates an empty store in the current posture so the feature works again. Resetting the memory store also rebuilds its VecturaKit vector index from the fresh (empty) source.
+- **Reset** quarantines the unreadable file to `<data root>/quarantine/` (it is **moved, never deleted**), removes the `-wal`/`-shm` sidecars via [`StorageFile`](../Packages/OsaurusCore/Storage/StorageFile.swift), and recreates an empty store in the current posture so the feature works again. Resetting the memory store also rebuilds its VecturaKit vector index from the fresh (empty) source.
 
 Because the original file is only quarantined, a user who later recovers the key can still export the old data from the quarantined copy.
 
@@ -190,7 +190,7 @@ Code that needs to know whether it can safely persist checks `StorageKeyManager.
 
 ### Optional: derive from the master key
 
-For users who want their DEK reproducible across devices via the iCloud-synced Identity master key, `StorageKeyManager.deriveFromMasterKey(context:)` replaces the Keychain entry with `HKDF-SHA256(masterKeyBytes, salt, "osaurus-storage-v1")`. The salt is persisted in the Keychain (`com.osaurus.storage` / `data-encryption-salt`) and in a sidecar file at `~/.osaurus/.storage-key.salt` so it travels with a manual restore. The salt is harmless without the master key (HKDF is one-way).
+For users who want their DEK reproducible across devices via the iCloud-synced Identity master key, `StorageKeyManager.deriveFromMasterKey(context:)` replaces the Keychain entry with `HKDF-SHA256(masterKeyBytes, salt, "osaurus-storage-v1")`. The salt is persisted in the Keychain (`com.osaurus.storage` / `data-encryption-salt`) and in a sidecar file at `<data root>/.storage-key.salt` so it travels with a manual restore. The salt is harmless without the master key (HKDF is one-way).
 
 ### Rotation and reset
 
@@ -217,7 +217,7 @@ The panel includes a plain-language trade-offs section covering FileVault relian
 
 ### Export plaintext backup
 
-Writes a plaintext copy of every database, attachment, and config under `~/.osaurus/` to a folder you pick. In encrypted mode this decrypts on the way out; in plaintext mode it copies as-is. Use it **before** reinstalling macOS, migrating Macs, rotating the key, or wiping state. Export never changes anything on disk.
+Writes a plaintext copy of every database, attachment, and config under the resolved app-data root to a folder you pick. In encrypted mode this decrypts on the way out; in plaintext mode it copies as-is. Use it **before** reinstalling macOS, migrating Macs, rotating the key, or wiping state. Export never changes anything on disk.
 
 ### Rotate storage key (encrypted mode only)
 
@@ -239,7 +239,7 @@ Appears only when one or more stores failed to open this session. Lists each deg
 | `PRAGMA wal_checkpoint(TRUNCATE)` | every 7 days | Bounds the size of the `-wal` sidecar. |
 | `VACUUM` | every 30 days | Reclaims space after large deletes. |
 
-State is persisted in `~/.osaurus/.storage-maintenance.json`. The first load stamps "last run" to now, so the first tick never triggers a 30-day-old VACUUM. The ticker is started from [`AppDelegate`](../Packages/OsaurusCore/AppDelegate.swift) during launch.
+State is persisted in `<data root>/.storage-maintenance.json`. The first load stamps "last run" to now, so the first tick never triggers a 30-day-old VACUUM. The ticker is started from [`AppDelegate`](../Packages/OsaurusCore/AppDelegate.swift) during launch.
 
 **Plugin databases are intentionally not registered.** With hundreds of installed plugins, a global maintenance pass would thrash IO. Plugin DBs are still maintained by the plugin host, not the maintenance ticker.
 
@@ -249,52 +249,61 @@ State is persisted in `~/.osaurus/.storage-maintenance.json`. The first load sta
 
 | Path | Description |
 |---|---|
-| `~/.osaurus/.storage-encryption.json` | Desired at-rest posture marker (always plaintext) |
-| `~/.osaurus/.storage-maintenance.json` | Last `optimize` / `checkpoint` / `vacuum` timestamps |
-| `~/.osaurus/.storage-key.salt` | HKDF salt sidecar (only present when DEK is master-derived) |
-| `~/.osaurus/quarantine/` | Unreadable stores moved here by Reset recovery (never deleted) |
-| `~/.osaurus/billing/ledger.sqlite` | Router billing ledger (SQLite, or SQLCipher when encrypted) |
-| `~/.osaurus/chat-history/history.sqlite` | Chat database (SQLite, or SQLCipher when encrypted) |
-| `~/.osaurus/chat-history/blobs/<sha256>` | Spilled attachments (plaintext blob, or `.osec` when encrypted) |
-| `~/.osaurus/memory/memory.sqlite` | Memory database (SQLite, or SQLCipher when encrypted) |
-| `~/.osaurus/memory/vectura/<agentId>/` | Per-agent VecturaKit vector index (plaintext, see Limitations) |
-| `~/.osaurus/methods/methods.sqlite` | Methods catalog (SQLite, or SQLCipher when encrypted) |
-| `~/.osaurus/tool-index/tool_index.sqlite` | Tool index (SQLite, or SQLCipher when encrypted) |
-| `~/.osaurus/Tools/<plugin-id>/data/data.db` | Per-plugin database (SQLite, or SQLCipher when encrypted) |
-| `~/.osaurus/agents/<uuid>/db.sqlite` | Per-agent database (see [Agent DB & Self-Scheduling](AGENT_DB.md)) |
-| `~/.osaurus/scheduler.sqlite` | Cross-agent next-run + pause slots (SQLite, or SQLCipher when encrypted) |
+| `<data root>/.storage-encryption.json` | Desired at-rest posture marker (always plaintext) |
+| `<data root>/.storage-maintenance.json` | Last `optimize` / `checkpoint` / `vacuum` timestamps |
+| `<data root>/.storage-key.salt` | HKDF salt sidecar (only present when DEK is master-derived) |
+| `<data root>/quarantine/` | Unreadable stores moved here by Reset recovery (never deleted) |
+| `<data root>/billing/ledger.sqlite` | Router billing ledger (SQLite, or SQLCipher when encrypted) |
+| `<data root>/chat-history/history.sqlite` | Chat database (SQLite, or SQLCipher when encrypted) |
+| `<data root>/chat-history/blobs/<sha256>` | Spilled attachments (plaintext blob, or `.osec` when encrypted) |
+| `<data root>/memory/memory.sqlite` | Memory database (SQLite, or SQLCipher when encrypted) |
+| `<data root>/memory/vectura/<agentId>/` | Per-agent VecturaKit vector index (plaintext, see Limitations) |
+| `<data root>/methods/methods.sqlite` | Methods catalog (SQLite, or SQLCipher when encrypted) |
+| `<data root>/tool-index/tool_index.sqlite` | Tool index (SQLite, or SQLCipher when encrypted) |
+| `<data root>/Tools/<plugin-id>/data/data.db` | Per-plugin database (SQLite, or SQLCipher when encrypted) |
+| `<data root>/agents/<uuid>/db.sqlite` | Per-agent database (see [Agent DB & Self-Scheduling](AGENT_DB.md)) |
+| `<data root>/scheduler.sqlite` | Cross-agent next-run + pause slots (SQLite, or SQLCipher when encrypted) |
+| `<config root>/server.json` | Server configuration |
 
-When encryption is on, the DEK lives in macOS Keychain, **not** in `~/.osaurus/`.
+When encryption is on, the DEK lives in macOS Keychain, **not** in the app-data root.
 
 ---
 
 ## Storage Location Standards
 
-Issue [#1422](https://github.com/osaurus-ai/osaurus/issues/1422) is right: the app-data root `~/.osaurus/` follows neither [Apple's file-system guidance](https://developer.apple.com/documentation/foundation/using-the-file-system-effectively) (app data belongs under `~/Library/Application Support/`) nor the [XDG base-directory spec](https://specifications.freedesktop.org/basedir/latest/). Historically the data deliberately moved *out of* `~/Library/Application Support/com.dinoki.osaurus/` *into* `~/.osaurus/` (see `OsaurusPaths.defaultRoot`), so this is a known trade-off, not an accident.
+Issue [#1422](https://github.com/osaurus-ai/osaurus/issues/1422) is right: the historical app-data root `~/.osaurus/` follows neither [Apple's file-system guidance](https://developer.apple.com/documentation/foundation/using-the-file-system-effectively) (app data belongs under `~/Library/Application Support/`) nor the [XDG base-directory spec](https://specifications.freedesktop.org/basedir/latest/) (`~/.local/share/`, `~/.config/`, `~/.cache/`). Path resolution now prefers Apple locations for fresh installs while preserving read-only fallback to existing legacy locations.
 
 ### Where things stand
 
-| Root | Current location | Spec-compliant target |
+| Root | Fresh-install location | Legacy fallback |
 |---|---|---|
-| App data | `~/.osaurus/` | `~/Library/Application Support/Osaurus/` |
-| Legacy app data | `~/Library/Application Support/com.dinoki.osaurus/` (copied/merged once into `~/.osaurus/` when the marker is missing; never deleted) | n/a — retired by `~/.osaurus/.legacy-application-support-merge.done` |
-| Model weights | `~/MLXModels/` (legacy `~/Documents/MLXModels/`, env override, or user-picked folder) | separate decision — weights are user-managed and home-visible by design |
+| App data | `~/Library/Application Support/Osaurus/` | `~/.osaurus/`, then `~/Library/Application Support/com.dinoki.osaurus/` when those already exist |
+| Config | `~/Library/Application Support/Osaurus/config/` | Matching legacy data root's `config/` directory |
+| Cache | `~/Library/Caches/Osaurus/` | Existing `~/.osaurus/cache/` or retired Application Support cache |
+| XDG fallback | `~/.local/share/osaurus/`, `~/.config/osaurus/`, `~/.cache/osaurus/` | Used only when Apple directory APIs are unavailable |
+| Model weights | `~/MLXModels/` (legacy `~/Documents/MLXModels/`, env override, or user-picked folder) | Separate decision — weights are user-managed and home-visible by design |
 
 ### The audit surface
 
-`GET /admin/cache-stats` returns a read-only `storage_locations` block (built by [`StorageLocationStandards`](../Packages/OsaurusCore/Utils/StorageLocationStandards.swift)) reporting: the active root and its classification, `spec_compliant`, whether the legacy `com.dinoki.osaurus` root still exists, whether the one-shot merge marker is present, the models root classification, and stable snake_case `reason_codes`. The audit never creates, copies, moves, or deletes anything.
+`GET /admin/cache-stats` returns a read-only `storage_locations` block (built by [`StorageLocationStandards`](../Packages/OsaurusCore/Utils/StorageLocationStandards.swift)) reporting: active data/config/cache roots, each root's source (`standard`, `legacy_home_dot_directory`, `legacy_application_support`, `test_override`, or `environment_override`), standard candidate roots, legacy candidate roots, candidate presence/selection, `migration_required`, the model root classification, and stable snake_case `reason_codes` with human-readable findings. The audit never creates, copies, moves, or deletes anything.
 
-### Why the root has not moved (yet)
+### Migration policy
 
-Relocating `~/.osaurus/` is a data-safety decision pending an explicit maintainer call, because the (optional) Keychain DEK and HKDF salt sidecar are paired with the existing tree, sandbox tooling references `~/.osaurus/` literally, and plugin/container trees can be many gigabytes. Until that decision, paths resolve exclusively through `OsaurusPaths`, and no code outside `OsaurusPaths` may invent a storage root.
+The resolver does **not** move user data automatically. Existing legacy roots remain active until a user or a future explicit migration flow moves the full tree safely. This is deliberate because:
+
+- The Keychain DEK is paired with the existing tree when encryption is enabled, and the HKDF salt sidecar (`<data root>/.storage-key.salt`) must travel with the data it unlocks (see Key Management above).
+- Sandbox tooling and plugin/container trees can be many gigabytes; a silent move on upgrade is not acceptable.
+- If a standard root and a legacy root both exist, the resolver keeps the legacy root active to avoid switching away from existing user data. The diagnostic report surfaces this with `standard_location_available_legacy_active`.
+
+The contract is: paths resolve through `AppDataLocationResolver` via `OsaurusPaths` / `ToolsPaths`, the audit reports reality instead of hiding it, and no code should invent a storage root directly.
 
 ---
 
 ## Limitations and Trade-offs
 
 - **Plaintext default relies on FileVault.** In the default mode, on-disk files are plaintext; their at-rest protection comes from FileVault full-disk encryption. If FileVault is off, the raw disk and any backups of `~/.osaurus/` are readable. Turn on FileVault, or opt in to SQLCipher, if that matters for your threat model. See [Why encryption is opt-in](#why-encryption-is-opt-in).
-- **Encrypted mode is device-bound and key-loss is unrecoverable.** When you opt in, the Keychain entry is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and is **not** synced to iCloud. There is no escrow key. If you wipe the Keychain, restore a different `~/.osaurus/` than the one your Keychain was paired with, or migrate Macs without bringing the key, the encrypted stores can't be opened — Reset recovery quarantines them and recreates empty stores. Export a plaintext backup before any risky migration.
+- **Encrypted mode is device-bound and key-loss is unrecoverable.** When you opt in, the Keychain entry is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and is **not** synced to iCloud. There is no escrow key. If you wipe the Keychain, restore a different app-data root than the one your Keychain was paired with, or migrate Macs without bringing the key, the encrypted stores can't be opened — Reset recovery quarantines them and recreates empty stores. Export a plaintext backup before any risky migration.
 - **`kdf_iter = 256000`.** SQLCipher's PBKDF2 round count is the SQLCipher 4 default. We use a CSPRNG key, so the PBKDF2 work is largely overhead, but the safer default stays. This only affects encrypted mode.
-- **VecturaKit indexes are plaintext in both modes.** The vector index files under `~/.osaurus/memory/vectura/<agentId>/` are written by VecturaKit, which doesn't support pluggable storage encryption. They are rebuilt from the SQLite source via `MemorySearchService.shared.rebuildIndex()`. The vectors leak some information (clustering, approximate counts) but no raw text.
+- **VecturaKit indexes are plaintext in both modes.** The vector index files under `<data root>/memory/vectura/<agentId>/` are written by VecturaKit, which doesn't support pluggable storage encryption. They are rebuilt from the SQLite source via `MemorySearchService.shared.rebuildIndex()`. The vectors leak some information (clustering, approximate counts) but no raw text.
 - **Plugin database maintenance is per-plugin.** Skipping global `StorageMaintenance` registration means plugin DBs can grow large `-wal` files if a plugin opens a transaction it never commits. Plugin authors should run `PRAGMA wal_checkpoint` on long-lived connections.
 - **Recovery requires the data itself, plus the Keychain entry only in encrypted mode.** In plaintext mode nothing extra is needed. In encrypted mode, recovery requires either the Keychain entry or a plaintext backup. See [`SECURITY.md`](SECURITY.md) for the recovery posture.

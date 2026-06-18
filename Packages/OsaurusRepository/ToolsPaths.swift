@@ -3,7 +3,7 @@
 //  osaurus
 //
 //  Path management for plugin storage and specifications.
-//  Mirrors OsaurusPaths.root() for use in the OsaurusRepository package.
+//  Mirrors the shared app-data resolver for use in the OsaurusRepository package.
 //
 
 import Foundation
@@ -11,25 +11,19 @@ import Foundation
 public enum ToolsPaths {
     /// Optional root directory override for tests
     /// Note: nonisolated(unsafe) since this is only set during test setup before any concurrent access
-    public nonisolated(unsafe) static var overrideRoot: URL?
+    nonisolated(unsafe) public static var overrideRoot: URL?
 
-    /// The root data directory for Osaurus: `~/.osaurus/`
+    /// The resolved root data directory for Osaurus.
     public static func root() -> URL {
-        if let override = overrideRoot {
-            return override
-        }
-        let fm = FileManager.default
-        return fm.homeDirectoryForCurrentUser.appendingPathComponent(".osaurus", isDirectory: true)
+        AppDataLocationResolver.resolve(overrideRoot: overrideRoot).dataRoot
     }
 
     /// Tools directory (plugins)
-    /// `~/.osaurus/Tools/`
     public static func toolsRootDirectory() -> URL {
         root().appendingPathComponent("Tools", isDirectory: true)
     }
 
     /// Plugin specifications directory
-    /// `~/.osaurus/PluginSpecs/`
     public static func pluginSpecsRoot() -> URL {
         root().appendingPathComponent("PluginSpecs", isDirectory: true)
     }

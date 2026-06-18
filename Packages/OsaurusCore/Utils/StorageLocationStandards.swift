@@ -4,46 +4,29 @@
 //
 //  Storage-location standards audit for issue #1422.
 //
-//  Osaurus currently keeps its app data in `~/.osaurus/` (see
-//  `OsaurusPaths`), which follows neither Apple's file-system guidance
-//  (`~/Library/Application Support/...`) nor the XDG base-directory spec
-//  (`~/.local/share/...`). Relocating the root is a data-safety decision —
-//  the Keychain data-encryption key is paired with the existing tree, the
-//  HKDF salt sidecar lives inside it, sandbox tooling references
-//  `~/.osaurus` literally, and plugin/container trees can be large — so this
-//  module deliberately performs **no migration**. It only classifies the
-//  current layout and reports stable reason codes through
-//  `/admin/cache-stats` so users and maintainers can see exactly where data
-//  lives and why. Classification is a pure function over `Inputs`; the live
-//  probe is read-only and never mutates the filesystem.
-//
 
 import Foundation
+import OsaurusRepository
 
+/// Read-only storage-location audit. Path resolution lives in
+/// `AppDataLocationResolver`; this module turns the resolved data/config/cache
+/// roots into a stable diagnostic surface for `/admin/cache-stats`.
 public enum StorageLocationStandards {
 
     // MARK: - Model
 
-    /// Where the active app-data root was resolved from.
-    public enum RootSource: String, Sendable {
-        case standard
-        case testOverride = "test_override"
-        case environmentOverride = "environment_override"
-    }
-
-    /// Classification of the active app-data root against platform
-    /// storage-location conventions.
     public enum RootClassification: String, Sendable {
         case appleApplicationSupport = "apple_application_support"
+        case xdgBaseDirectory = "xdg_base_directory"
         case homeDotDirectory = "home_dot_directory"
+        case legacyApplicationSupport = "legacy_application_support"
         case testOverride = "test_override"
         case environmentOverride = "environment_override"
         case custom
     }
 
     /// Classification of the model-weights root, reported separately from
-    /// the app-data root because user-managed weights are home-visible by
-    /// design today.
+    /// app data because user-managed weights remain home-visible by design.
     public enum ModelsRootClassification: String, Sendable {
         case applicationSupport = "application_support"
         case homeVisible = "home_visible"
@@ -51,14 +34,19 @@ public enum StorageLocationStandards {
     }
 
     /// Stable, machine-readable reason codes. These are part of the
-    /// diagnostic surface — do not rename existing raw values.
+    /// diagnostic surface; avoid renaming existing raw values.
     public enum ReasonCode: String, CaseIterable, Sendable {
         case rootHomeDotDirectoryNotAppleSpec = "root_home_dot_directory_not_apple_spec"
+        case dataRootLegacyApplicationSupportFallback =
+            "data_root_legacy_application_support_fallback"
         case rootOverriddenForTests = "root_overridden_for_tests"
         case rootEnvironmentOverride = "root_environment_override"
         case rootCustomLocation = "root_custom_location"
+        case standardLocationAvailableLegacyActive = "standard_location_available_legacy_active"
         case legacyApplicationSupportRootPresent = "legacy_application_support_root_present"
-        case migrationDecisionPending = "migration_decision_pending"
+        case configRootLegacyFallback = "config_root_legacy_fallback"
+        case cacheRootLegacyFallback = "cache_root_legacy_fallback"
+        case migrationRequiredManual = "migration_required_manual"
         case modelsRootHomeVisibleByDesign = "models_root_home_visible_by_design"
     }
 
@@ -83,41 +71,26 @@ public enum StorageLocationStandards {
     /// Everything the pure classifier needs. Built by `currentInputs()` in
     /// production; built by hand in tests.
     public struct Inputs: Equatable, Sendable {
-        public let activeRootPath: String
-        public let rootSource: RootSource
+        public let locations: AppDataLocationResolver.ResolvedLocations
         public let homeDirectoryPath: String
         public let applicationSupportPath: String?
-        public let legacyApplicationSupportRootPath: String?
-        public let legacyApplicationSupportRootPresent: Bool
         public let legacyApplicationSupportMergeMarkerPath: String?
         public let legacyApplicationSupportMergeMarked: Bool
-        public let appleSpecCandidateRootPath: String?
-        public let appleSpecCandidateRootPresent: Bool
         public let modelsRootPath: String
 
         public init(
-            activeRootPath: String,
-            rootSource: RootSource,
+            locations: AppDataLocationResolver.ResolvedLocations,
             homeDirectoryPath: String,
             applicationSupportPath: String?,
-            legacyApplicationSupportRootPath: String?,
-            legacyApplicationSupportRootPresent: Bool,
-            legacyApplicationSupportMergeMarkerPath: String?,
-            legacyApplicationSupportMergeMarked: Bool,
-            appleSpecCandidateRootPath: String?,
-            appleSpecCandidateRootPresent: Bool,
+            legacyApplicationSupportMergeMarkerPath: String? = nil,
+            legacyApplicationSupportMergeMarked: Bool = false,
             modelsRootPath: String
         ) {
-            self.activeRootPath = activeRootPath
-            self.rootSource = rootSource
+            self.locations = locations
             self.homeDirectoryPath = homeDirectoryPath
             self.applicationSupportPath = applicationSupportPath
-            self.legacyApplicationSupportRootPath = legacyApplicationSupportRootPath
-            self.legacyApplicationSupportRootPresent = legacyApplicationSupportRootPresent
             self.legacyApplicationSupportMergeMarkerPath = legacyApplicationSupportMergeMarkerPath
             self.legacyApplicationSupportMergeMarked = legacyApplicationSupportMergeMarked
-            self.appleSpecCandidateRootPath = appleSpecCandidateRootPath
-            self.appleSpecCandidateRootPresent = appleSpecCandidateRootPresent
             self.modelsRootPath = modelsRootPath
         }
     }
@@ -126,52 +99,93 @@ public enum StorageLocationStandards {
     public struct Report: Equatable, Sendable {
         public let classification: RootClassification
         public let specCompliant: Bool
-        public let activeRootPath: String
+        public let dataRootPath: String
+        public let dataSource: AppDataLocationResolver.LocationSource
+        public let configRootPath: String
+        public let configSource: AppDataLocationResolver.LocationSource
+        public let cacheRootPath: String
+        public let cacheSource: AppDataLocationResolver.LocationSource
+        public let standardDataRootPath: String
+        public let standardConfigRootPath: String
+        public let standardCacheRootPath: String
         public let appleSpecCandidateRootPath: String?
         public let appleSpecCandidateRootPresent: Bool
+        public let legacyHomeRootPath: String
+        public let legacyHomeRootPresent: Bool
         public let legacyApplicationSupportRootPath: String?
         public let legacyApplicationSupportRootPresent: Bool
         public let legacyApplicationSupportMergeMarkerPath: String?
         public let legacyApplicationSupportMergeMarked: Bool
+        public let migrationRequired: Bool
+        public let candidateLocations: [AppDataLocationResolver.Candidate]
         public let modelsRootPath: String
         public let modelsRootClassification: ModelsRootClassification
         public let findings: [Finding]
+
+        /// Backward-compatible alias for the active data root.
+        public var activeRootPath: String { dataRootPath }
 
         public var reasonCodes: [String] {
             findings.map { $0.code.rawValue }
         }
 
         public var summary: String {
-            let compliance = specCompliant ? "apple-spec" : "non-compliant"
-            let legacy = legacyApplicationSupportRootPresent ? "present" : "absent"
-            return "root=\(classification.rawValue) (\(compliance)); "
-                + "legacy_root=\(legacy); "
+            let compliance = specCompliant ? "spec-compliant" : "needs-attention"
+            let migration = migrationRequired ? "required" : "not_required"
+            return "data=\(dataSource.rawValue); "
+                + "config=\(configSource.rawValue); "
+                + "cache=\(cacheSource.rawValue); "
+                + "\(compliance); migration=\(migration); "
                 + "models_root=\(modelsRootClassification.rawValue)"
         }
 
         public init(
             classification: RootClassification,
             specCompliant: Bool,
-            activeRootPath: String,
+            dataRootPath: String,
+            dataSource: AppDataLocationResolver.LocationSource,
+            configRootPath: String,
+            configSource: AppDataLocationResolver.LocationSource,
+            cacheRootPath: String,
+            cacheSource: AppDataLocationResolver.LocationSource,
+            standardDataRootPath: String,
+            standardConfigRootPath: String,
+            standardCacheRootPath: String,
             appleSpecCandidateRootPath: String?,
             appleSpecCandidateRootPresent: Bool,
+            legacyHomeRootPath: String,
+            legacyHomeRootPresent: Bool,
             legacyApplicationSupportRootPath: String?,
             legacyApplicationSupportRootPresent: Bool,
             legacyApplicationSupportMergeMarkerPath: String?,
             legacyApplicationSupportMergeMarked: Bool,
+            migrationRequired: Bool,
+            candidateLocations: [AppDataLocationResolver.Candidate],
             modelsRootPath: String,
             modelsRootClassification: ModelsRootClassification,
             findings: [Finding]
         ) {
             self.classification = classification
             self.specCompliant = specCompliant
-            self.activeRootPath = activeRootPath
+            self.dataRootPath = dataRootPath
+            self.dataSource = dataSource
+            self.configRootPath = configRootPath
+            self.configSource = configSource
+            self.cacheRootPath = cacheRootPath
+            self.cacheSource = cacheSource
+            self.standardDataRootPath = standardDataRootPath
+            self.standardConfigRootPath = standardConfigRootPath
+            self.standardCacheRootPath = standardCacheRootPath
             self.appleSpecCandidateRootPath = appleSpecCandidateRootPath
             self.appleSpecCandidateRootPresent = appleSpecCandidateRootPresent
+            self.legacyHomeRootPath = legacyHomeRootPath
+            self.legacyHomeRootPresent = legacyHomeRootPresent
             self.legacyApplicationSupportRootPath = legacyApplicationSupportRootPath
             self.legacyApplicationSupportRootPresent = legacyApplicationSupportRootPresent
             self.legacyApplicationSupportMergeMarkerPath = legacyApplicationSupportMergeMarkerPath
             self.legacyApplicationSupportMergeMarked = legacyApplicationSupportMergeMarked
+            self.migrationRequired = migrationRequired
+            self.candidateLocations = candidateLocations
             self.modelsRootPath = modelsRootPath
             self.modelsRootClassification = modelsRootClassification
             self.findings = findings
@@ -180,51 +194,25 @@ public enum StorageLocationStandards {
 
     // MARK: - Live probe (read-only)
 
-    /// Name of the legacy pre-`~/.osaurus` root under Application Support.
-    public static let legacyApplicationSupportFolderName = "com.dinoki.osaurus"
+    public static let legacyApplicationSupportFolderName =
+        AppDataLocationResolver.legacyApplicationSupportFolderName
+    public static let appleSpecCandidateFolderName =
+        AppDataLocationResolver.standardApplicationSupportFolderName
 
-    /// Proposed Apple-spec folder name under Application Support. Reported
-    /// as a candidate only; nothing is created or moved.
-    public static let appleSpecCandidateFolderName = "Osaurus"
-
-    /// Gather live inputs. Read-only: performs `fileExists` probes plus the
-    /// same root resolution `OsaurusPaths.root()` already performed for the
-    /// running process; it never creates, copies, or deletes anything.
+    /// Gather live inputs. Read-only: reports the same resolved locations used
+    /// by `OsaurusPaths` and never creates, copies, moves, or deletes anything.
     public static func currentInputs(fileManager fm: FileManager = .default) -> Inputs {
-        let testRootOverride = ProcessInfo.processInfo.environment["OSAURUS_TEST_ROOT"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let rootSource: RootSource
-        if OsaurusPaths.overrideRoot != nil {
-            rootSource = .testOverride
-        } else if testRootOverride?.isEmpty == false {
-            rootSource = .environmentOverride
-        } else {
-            rootSource = .standard
-        }
+        let locations = OsaurusPaths.resolvedLocations()
+        let mergeMarker = OsaurusPaths.legacyApplicationSupportMergeMarker(
+            for: locations.dataRoot
+        )
         let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        let legacy = support?.appendingPathComponent(
-            legacyApplicationSupportFolderName,
-            isDirectory: true
-        )
-        let candidate = support?.appendingPathComponent(
-            appleSpecCandidateFolderName,
-            isDirectory: true
-        )
-        let activeRoot = OsaurusPaths.root()
-        let mergeMarker = OsaurusPaths.legacyApplicationSupportMergeMarker(for: activeRoot)
         return Inputs(
-            activeRootPath: activeRoot.path,
-            rootSource: rootSource,
+            locations: locations,
             homeDirectoryPath: fm.homeDirectoryForCurrentUser.path,
             applicationSupportPath: support?.path,
-            legacyApplicationSupportRootPath: legacy?.path,
-            legacyApplicationSupportRootPresent: legacy.map { fm.fileExists(atPath: $0.path) }
-                ?? false,
             legacyApplicationSupportMergeMarkerPath: mergeMarker.path,
             legacyApplicationSupportMergeMarked: fm.fileExists(atPath: mergeMarker.path),
-            appleSpecCandidateRootPath: candidate?.path,
-            appleSpecCandidateRootPresent: candidate.map { fm.fileExists(atPath: $0.path) }
-                ?? false,
             modelsRootPath: DirectoryPickerService.effectiveModelsDirectory().path
         )
     }
@@ -237,12 +225,14 @@ public enum StorageLocationStandards {
     // MARK: - Pure classification
 
     public static func audit(_ inputs: Inputs) -> Report {
+        let locations = inputs.locations
         let classification = classifyRoot(inputs)
         let modelsClassification = classifyModelsRoot(inputs)
+        let migrationRequired = requiresManualMigration(locations)
         var findings: [Finding] = []
 
         switch classification {
-        case .appleApplicationSupport:
+        case .appleApplicationSupport, .xdgBaseDirectory:
             break
         case .homeDotDirectory:
             findings.append(
@@ -250,10 +240,21 @@ public enum StorageLocationStandards {
                     code: .rootHomeDotDirectoryNotAppleSpec,
                     severity: .warning,
                     message:
-                        "App data root \(inputs.activeRootPath) is a home dot-directory. "
-                        + "Apple's file-system guidance places app data under "
-                        + "~/Library/Application Support; the XDG equivalent is "
-                        + "~/.local/share. See docs/STORAGE.md (Storage Location Standards)."
+                        "Using legacy app data root \(locations.dataRoot.path) because it "
+                        + "already exists. New installs use "
+                        + "\(locations.standardDataRoot.path). No data is moved automatically; "
+                        + "back up or export data before a manual migration."
+                )
+            )
+        case .legacyApplicationSupport:
+            findings.append(
+                Finding(
+                    code: .dataRootLegacyApplicationSupportFallback,
+                    severity: .warning,
+                    message:
+                        "Using retired Application Support root \(locations.dataRoot.path) "
+                        + "because it already exists and no newer data root was selected. "
+                        + "No data is moved automatically."
                 )
             )
         case .testOverride:
@@ -282,59 +283,84 @@ public enum StorageLocationStandards {
                     code: .rootCustomLocation,
                     severity: .info,
                     message:
-                        "Storage root \(inputs.activeRootPath) is neither the default home "
-                        + "dot-directory nor under Application Support."
+                        "Storage root \(locations.dataRoot.path) is neither a standard "
+                        + "Apple/XDG location nor a known legacy location."
                 )
             )
         }
 
-        if inputs.legacyApplicationSupportRootPresent {
-            let legacyPath =
-                inputs.legacyApplicationSupportRootPath
-                ?? legacyApplicationSupportFolderName
-            let markerPath =
-                inputs.legacyApplicationSupportMergeMarkerPath
-                ?? OsaurusPaths.legacyApplicationSupportMergeMarkerName
-            let severity: Severity = inputs.legacyApplicationSupportMergeMarked ? .info : .warning
-            let message: String
-            if inputs.legacyApplicationSupportMergeMarked {
-                message =
-                    "Legacy root \(legacyPath) still exists, but one-shot migration marker "
-                    + "\(markerPath) is present. OsaurusPaths will not re-merge it into "
-                    + "the active root on future launches."
-            } else {
-                message =
-                    "Legacy root \(legacyPath) still exists and one-shot migration marker "
-                    + "\(markerPath) is missing. OsaurusPaths will copy or merge it into "
-                    + "the active root once, then write the marker so future launches do "
-                    + "not resurrect stale legacy files."
-            }
+        if locations.usesLegacyDataRoot && candidateExists(locations, kind: .data, source: .standard) {
+            findings.append(
+                Finding(
+                    code: .standardLocationAvailableLegacyActive,
+                    severity: .info,
+                    message:
+                        "Standard data root \(locations.standardDataRoot.path) exists, but "
+                        + "legacy root \(locations.dataRoot.path) remains active to avoid "
+                        + "silently switching away from existing user data."
+                )
+            )
+        }
+
+        let legacySupportPresent = candidateExists(
+            locations,
+            kind: .data,
+            source: .legacyApplicationSupport
+        )
+        if legacySupportPresent {
             findings.append(
                 Finding(
                     code: .legacyApplicationSupportRootPresent,
-                    severity: severity,
-                    message: message
+                    severity: locations.data.source == .legacyApplicationSupport ? .warning : .info,
+                    message:
+                        "Retired Application Support root "
+                        + "\(locations.legacyApplicationSupportRoot?.path ?? legacyApplicationSupportFolderName) "
+                        + "still exists. The resolver reports it as a legacy fallback and "
+                        + "does not copy, merge, or delete it."
                 )
             )
         }
 
-        if classification == .homeDotDirectory || inputs.legacyApplicationSupportRootPresent {
+        if isLegacy(locations.config.source) {
             findings.append(
                 Finding(
-                    code: .migrationDecisionPending,
-                    severity: .info,
+                    code: .configRootLegacyFallback,
+                    severity: .warning,
                     message:
-                        "Relocating the storage root is deferred pending a maintainer "
-                        + "decision: the Keychain data-encryption key is paired with the "
-                        + "current tree, the HKDF salt sidecar lives inside it, sandbox "
-                        + "tooling references ~/.osaurus literally, and plugin/container "
-                        + "trees can be large."
+                        "Configuration root \(locations.configRoot.path) is a legacy "
+                        + "location selected for compatibility with existing files."
                 )
             )
         }
 
-        let usesStandardRoot = classification != .testOverride && classification != .environmentOverride
-        if usesStandardRoot && modelsClassification == .homeVisible {
+        if isLegacy(locations.cache.source) {
+            findings.append(
+                Finding(
+                    code: .cacheRootLegacyFallback,
+                    severity: .info,
+                    message:
+                        "Cache root \(locations.cacheRoot.path) is a legacy location "
+                        + "because an existing cache directory was found."
+                )
+            )
+        }
+
+        if migrationRequired {
+            findings.append(
+                Finding(
+                    code: .migrationRequiredManual,
+                    severity: .info,
+                    message:
+                        "A manual migration is required before all app data can use "
+                        + "standard Apple/XDG locations. The resolver only selects safe "
+                        + "fallbacks and never moves user data."
+                )
+            )
+        }
+
+        let usesOverride =
+            locations.data.source == .testOverride || locations.data.source == .environmentOverride
+        if !usesOverride && modelsClassification == .homeVisible {
             findings.append(
                 Finding(
                     code: .modelsRootHomeVisibleByDesign,
@@ -347,16 +373,38 @@ public enum StorageLocationStandards {
             )
         }
 
+        let mergeMarkerPath = inputs.legacyApplicationSupportMergeMarkerPath
+            ?? OsaurusPaths.legacyApplicationSupportMergeMarker(for: locations.dataRoot).path
         return Report(
             classification: classification,
-            specCompliant: classification == .appleApplicationSupport,
-            activeRootPath: inputs.activeRootPath,
-            appleSpecCandidateRootPath: inputs.appleSpecCandidateRootPath,
-            appleSpecCandidateRootPresent: inputs.appleSpecCandidateRootPresent,
-            legacyApplicationSupportRootPath: inputs.legacyApplicationSupportRootPath,
-            legacyApplicationSupportRootPresent: inputs.legacyApplicationSupportRootPresent,
-            legacyApplicationSupportMergeMarkerPath: inputs.legacyApplicationSupportMergeMarkerPath,
+            specCompliant: isSpecCompliant(classification, locations),
+            dataRootPath: locations.dataRoot.path,
+            dataSource: locations.data.source,
+            configRootPath: locations.configRoot.path,
+            configSource: locations.config.source,
+            cacheRootPath: locations.cacheRoot.path,
+            cacheSource: locations.cache.source,
+            standardDataRootPath: locations.standardDataRoot.path,
+            standardConfigRootPath: locations.standardConfigRoot.path,
+            standardCacheRootPath: locations.standardCacheRoot.path,
+            appleSpecCandidateRootPath: appleCandidatePath(inputs, locations: locations),
+            appleSpecCandidateRootPresent: candidateExists(
+                locations,
+                kind: .data,
+                source: .standard
+            ),
+            legacyHomeRootPath: locations.legacyHomeRoot.path,
+            legacyHomeRootPresent: candidateExists(
+                locations,
+                kind: .data,
+                source: .legacyHomeDotDirectory
+            ),
+            legacyApplicationSupportRootPath: locations.legacyApplicationSupportRoot?.path,
+            legacyApplicationSupportRootPresent: legacySupportPresent,
+            legacyApplicationSupportMergeMarkerPath: mergeMarkerPath,
             legacyApplicationSupportMergeMarked: inputs.legacyApplicationSupportMergeMarked,
+            migrationRequired: migrationRequired,
+            candidateLocations: locations.candidates,
             modelsRootPath: inputs.modelsRootPath,
             modelsRootClassification: modelsClassification,
             findings: findings
@@ -372,14 +420,35 @@ public enum StorageLocationStandards {
             "classification": report.classification.rawValue,
             "spec_compliant": report.specCompliant,
             "active_root": report.activeRootPath,
+            "data_root": report.dataRootPath,
+            "data_source": report.dataSource.rawValue,
+            "config_root": report.configRootPath,
+            "config_source": report.configSource.rawValue,
+            "cache_root": report.cacheRootPath,
+            "cache_source": report.cacheSource.rawValue,
+            "standard_data_root": report.standardDataRootPath,
+            "standard_config_root": report.standardConfigRootPath,
+            "standard_cache_root": report.standardCacheRootPath,
             "apple_spec_candidate_root": report.appleSpecCandidateRootPath as Any? ?? NSNull(),
             "apple_spec_candidate_root_present": report.appleSpecCandidateRootPresent,
+            "legacy_home_root": report.legacyHomeRootPath,
+            "legacy_home_root_present": report.legacyHomeRootPresent,
             "legacy_application_support_root": report.legacyApplicationSupportRootPath as Any?
                 ?? NSNull(),
             "legacy_application_support_root_present": report.legacyApplicationSupportRootPresent,
             "legacy_application_support_merge_marker":
                 report.legacyApplicationSupportMergeMarkerPath as Any? ?? NSNull(),
             "legacy_application_support_merge_marked": report.legacyApplicationSupportMergeMarked,
+            "migration_required": report.migrationRequired,
+            "candidate_locations": report.candidateLocations.map { candidate in
+                [
+                    "kind": candidate.kind.rawValue,
+                    "source": candidate.source.rawValue,
+                    "path": candidate.url.path,
+                    "exists": candidate.exists,
+                    "selected": candidate.isSelected,
+                ]
+            },
             "models_root": report.modelsRootPath,
             "models_root_classification": report.modelsRootClassification.rawValue,
             "reason_codes": report.reasonCodes,
@@ -397,32 +466,31 @@ public enum StorageLocationStandards {
     // MARK: - Helpers
 
     private static func classifyRoot(_ inputs: Inputs) -> RootClassification {
-        switch inputs.rootSource {
+        let locations = inputs.locations
+        switch locations.data.source {
         case .testOverride:
             return .testOverride
         case .environmentOverride:
             return .environmentOverride
-        case .standard:
-            break
-        }
-        let activeRootIsInApplicationSupport =
-            inputs.applicationSupportPath.map { isSubpath(inputs.activeRootPath, of: $0) } ?? false
-        if activeRootIsInApplicationSupport {
-            return .appleApplicationSupport
-        }
-        let root = URL(fileURLWithPath: normalizedPath(inputs.activeRootPath))
-        let rootParentPath = root.deletingLastPathComponent().path
-        let normalizedHomePath = normalizedPath(inputs.homeDirectoryPath)
-        if root.lastPathComponent.hasPrefix(".") && rootParentPath == normalizedHomePath {
+        case .legacyHomeDotDirectory:
             return .homeDotDirectory
+        case .legacyApplicationSupport:
+            return .legacyApplicationSupport
+        case .standard:
+            if let support = inputs.applicationSupportPath,
+                isSubpath(locations.dataRoot.path, of: support) {
+                return .appleApplicationSupport
+            }
+            if samePath(locations.dataRoot.path, locations.standardDataRoot.path) {
+                return .xdgBaseDirectory
+            }
+            return .custom
         }
-        return .custom
     }
 
     private static func classifyModelsRoot(_ inputs: Inputs) -> ModelsRootClassification {
-        let modelsRootIsInApplicationSupport =
-            inputs.applicationSupportPath.map { isSubpath(inputs.modelsRootPath, of: $0) } ?? false
-        if modelsRootIsInApplicationSupport {
+        if let support = inputs.applicationSupportPath,
+            isSubpath(inputs.modelsRootPath, of: support) {
             return .applicationSupport
         }
         if isSubpath(inputs.modelsRootPath, of: inputs.homeDirectoryPath) {
@@ -431,13 +499,62 @@ public enum StorageLocationStandards {
         return .externalOrCustom
     }
 
-    private static func normalizedPath(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
+    private static func isSpecCompliant(
+        _ classification: RootClassification,
+        _ locations: AppDataLocationResolver.ResolvedLocations
+    ) -> Bool {
+        switch classification {
+        case .appleApplicationSupport, .xdgBaseDirectory:
+            return locations.data.source == .standard
+                && locations.config.source == .standard
+                && locations.cache.source == .standard
+        case .homeDotDirectory,
+             .legacyApplicationSupport,
+             .testOverride,
+             .environmentOverride,
+             .custom:
+            return false
+        }
+    }
+
+    private static func requiresManualMigration(
+        _ locations: AppDataLocationResolver.ResolvedLocations
+    ) -> Bool {
+        locations.usesLegacyDataRoot
+            || isLegacy(locations.config.source)
+            || isLegacy(locations.cache.source)
+    }
+
+    private static func candidateExists(
+        _ locations: AppDataLocationResolver.ResolvedLocations,
+        kind: AppDataLocationResolver.LocationKind,
+        source: AppDataLocationResolver.LocationSource
+    ) -> Bool {
+        locations.candidates.contains {
+            $0.kind == kind && $0.source == source && $0.exists
+        }
+    }
+
+    private static func isLegacy(_ source: AppDataLocationResolver.LocationSource) -> Bool {
+        source == .legacyHomeDotDirectory || source == .legacyApplicationSupport
+    }
+
+    private static func appleCandidatePath(
+        _ inputs: Inputs,
+        locations: AppDataLocationResolver.ResolvedLocations
+    ) -> String? {
+        guard inputs.applicationSupportPath != nil else { return nil }
+        return locations.standardDataRoot.path
+    }
+
+    private static func samePath(_ lhs: String, _ rhs: String) -> Bool {
+        URL(fileURLWithPath: lhs).standardizedFileURL.path
+            == URL(fileURLWithPath: rhs).standardizedFileURL.path
     }
 
     private static func isSubpath(_ path: String, of parent: String) -> Bool {
-        let child = normalizedPath(path)
-        let base = normalizedPath(parent)
+        let child = URL(fileURLWithPath: path).standardizedFileURL.path
+        let base = URL(fileURLWithPath: parent).standardizedFileURL.path
         if child == base {
             return true
         }

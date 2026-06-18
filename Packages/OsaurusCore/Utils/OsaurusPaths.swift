@@ -8,6 +8,7 @@
 
 import AppKit
 import Foundation
+import OsaurusRepository
 
 /// Centralized path management for all Osaurus app data.
 /// All stores and services should use this module for path resolution.
@@ -18,45 +19,26 @@ public enum OsaurusPaths {
 
     // MARK: - Root Directory
 
-    private static let defaultRoot: URL = {
-        let fm = FileManager.default
-        let newRoot = fm.homeDirectoryForCurrentUser.appendingPathComponent(".osaurus", isDirectory: true)
-        let supportDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let oldRoot = supportDir.appendingPathComponent("com.dinoki.osaurus", isDirectory: true)
+    private static let defaultLocations = AppDataLocationResolver.resolve()
 
-        _ = migrateLegacyApplicationSupportRootIfNeeded(
-            fileManager: fm,
-            legacyRoot: oldRoot,
-            activeRoot: newRoot
-        )
-
-        return newRoot
-    }()
-
-    /// Marker written after the legacy Application Support root has been
-    /// copied/merged into `~/.osaurus`. The legacy root is intentionally never
-    /// deleted, so this marker prevents every future launch from re-merging it.
+    /// Historical marker written by older builds after copying/merging the
+    /// retired Application Support root. New path resolution is read-only, but
+    /// diagnostics still report this marker when present.
     public static let legacyApplicationSupportMergeMarkerName =
         ".legacy-application-support-merge.done"
 
-    enum LegacyApplicationSupportMigrationResult: Equatable {
-        case legacyRootAbsent
-        case alreadyMarked(URL)
-        case copied(URL)
-        case merged(URL)
+    /// The resolved root data directory for Osaurus.
+    public static func root() -> URL {
+        resolvedLocations().dataRoot
     }
 
-    /// The root data directory for Osaurus: `~/.osaurus/`
-    public static func root() -> URL {
-        if let override = overrideRoot {
-            return override
+    /// Resolved data/config/cache locations for diagnostics and callers that
+    /// need the whole location set.
+    public static func resolvedLocations() -> AppDataLocationResolver.ResolvedLocations {
+        if overrideRoot != nil || testRootEnvironmentOverridePresent() {
+            return AppDataLocationResolver.resolve(overrideRoot: overrideRoot)
         }
-        if let envRoot = ProcessInfo.processInfo.environment["OSAURUS_TEST_ROOT"],
-            !envRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        {
-            return URL(fileURLWithPath: envRoot, isDirectory: true)
-        }
-        return defaultRoot
+        return defaultLocations
     }
 
     /// Returns the marker path for a resolved root without triggering another
@@ -65,11 +47,20 @@ public enum OsaurusPaths {
         root.appendingPathComponent(legacyApplicationSupportMergeMarkerName)
     }
 
+    private static func testRootEnvironmentOverridePresent() -> Bool {
+        guard let raw = ProcessInfo.processInfo.environment[
+            AppDataLocationResolver.testRootEnvironmentVariable
+        ] else {
+            return false
+        }
+        return !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     // MARK: - Directory Paths
 
     /// Configuration files directory
     public static func config() -> URL {
-        root().appendingPathComponent("config", isDirectory: true)
+        resolvedLocations().configRoot
     }
 
     /// Voice-related configuration directory
@@ -139,7 +130,7 @@ public enum OsaurusPaths {
 
     /// Cache directory
     public static func cache() -> URL {
-        root().appendingPathComponent("cache", isDirectory: true)
+        resolvedLocations().cacheRoot
     }
 
     /// Disk KV cache directory used by vmlx-swift's `DiskCache` (L2 tier).
@@ -172,8 +163,7 @@ public enum OsaurusPaths {
     public static func volumeFreeBytes(forPath path: String) -> Int64? {
         var legacyFree: Int64?
         if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path),
-            let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value
-        {
+            let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value {
             legacyFree = free
         }
         if let legacyFree, legacyFree > 0 {
@@ -184,8 +174,7 @@ public enum OsaurusPaths {
         var importantCapacity: Int64?
         let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey]
         if let values = try? url.resourceValues(forKeys: keys),
-            let capacity = values.volumeAvailableCapacityForImportantUsage
-        {
+            let capacity = values.volumeAvailableCapacityForImportantUsage {
             importantCapacity = capacity
         }
         return resolvedVolumeFreeBytes(
@@ -214,13 +203,11 @@ public enum OsaurusPaths {
         let url = URL(fileURLWithPath: path)
         let keys: Set<URLResourceKey> = [.volumeTotalCapacityKey]
         if let values = try? url.resourceValues(forKeys: keys),
-            let capacity = values.volumeTotalCapacity
-        {
+            let capacity = values.volumeTotalCapacity {
             return Int64(capacity)
         }
         if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: path),
-            let total = (attrs[.systemSize] as? NSNumber)?.int64Value
-        {
+            let total = (attrs[.systemSize] as? NSNumber)?.int64Value {
             return total
         }
         return nil
@@ -274,7 +261,7 @@ public enum OsaurusPaths {
         root().appendingPathComponent("methods", isDirectory: true)
     }
 
-    /// On-device Osaurus Router billing ledger directory (`~/.osaurus/billing/`).
+    /// On-device Osaurus Router billing ledger directory (`<data root>/billing/`).
     public static func billing() -> URL {
         root().appendingPathComponent("billing", isDirectory: true)
     }
@@ -286,13 +273,13 @@ public enum OsaurusPaths {
 
     // MARK: - Agent DB + Self-Scheduling (Agent DB feature)
 
-    /// Per-agent feature directory: `~/.osaurus/agents/<uuid>/`.
+    /// Per-agent feature directory: `<data root>/agents/<uuid>/`.
     /// Sibling to the agent's JSON file (which lives directly under `agents()`).
     public static func agentDirectory(for id: UUID) -> URL {
         agents().appendingPathComponent(id.uuidString, isDirectory: true)
     }
 
-    /// Per-agent SQLite database file: `~/.osaurus/agents/<uuid>/db.sqlite`.
+    /// Per-agent SQLite database file: `<data root>/agents/<uuid>/db.sqlite`.
     /// Encrypted via `EncryptedSQLiteOpener` with the shared storage key.
     public static func agentDatabaseFile(for id: UUID) -> URL {
         agentDirectory(for: id).appendingPathComponent("db.sqlite")
@@ -304,20 +291,20 @@ public enum OsaurusPaths {
         agentDirectory(for: id).appendingPathComponent("schema.sql")
     }
 
-    /// Per-agent migrations directory: `~/.osaurus/agents/<uuid>/migrations/`.
+    /// Per-agent migrations directory: `<data root>/agents/<uuid>/migrations/`.
     /// Each `db.create_table`/`db.alter_table`/`db.migrate` call writes a
     /// numbered up + down SQL pair here.
     public static func agentMigrationsDirectory(for id: UUID) -> URL {
         agentDirectory(for: id).appendingPathComponent("migrations", isDirectory: true)
     }
 
-    /// Per-agent saved-views directory: `~/.osaurus/agents/<uuid>/views/`.
+    /// Per-agent saved-views directory: `<data root>/agents/<uuid>/views/`.
     /// Auto-synced with the `_views` system table for portability.
     public static func agentViewsDirectory(for id: UUID) -> URL {
         agentDirectory(for: id).appendingPathComponent("views", isDirectory: true)
     }
 
-    /// Per-agent run-trace directory: `~/.osaurus/agents/<uuid>/runs/`.
+    /// Per-agent run-trace directory: `<data root>/agents/<uuid>/runs/`.
     /// One JSON file per run with the full prompt, tool calls, and output.
     public static func agentRunsDirectory(for id: UUID) -> URL {
         agentDirectory(for: id).appendingPathComponent("runs", isDirectory: true)
@@ -329,42 +316,42 @@ public enum OsaurusPaths {
     }
 
     /// Host-side record of which sandbox packages have been installed for
-    /// an agent: `~/.osaurus/agents/<uuid>/installed-packages.json`. Seeded
+    /// an agent: `<data root>/agents/<uuid>/installed-packages.json`. Seeded
     /// by `SandboxAgentProvisioner` (lazy reconcile) and appended to by
     /// `sandbox_install`; surfaced as a compact line in the system prompt.
     public static func agentPackageManifestFile(for id: UUID) -> URL {
         agentDirectory(for: id).appendingPathComponent("installed-packages.json")
     }
 
-    /// Cross-agent scheduler database: `~/.osaurus/scheduler.sqlite`.
+    /// Cross-agent scheduler database: `<data root>/scheduler.sqlite`.
     /// Owns `agent_next_run`, `agent_runs`, `agent_pause`. Encrypted.
     public static func schedulerDatabaseFile() -> URL {
         root().appendingPathComponent("scheduler.sqlite")
     }
 
-    /// Plugin binaries directory (`~/.osaurus/Tools/`)
+    /// Plugin binaries directory (`<data root>/Tools/`)
     public static func tools() -> URL {
         root().appendingPathComponent("Tools", isDirectory: true)
     }
 
-    /// Plugin specifications directory (`~/.osaurus/PluginSpecs/`)
+    /// Plugin specifications directory (`<data root>/PluginSpecs/`)
     public static func toolSpecs() -> URL {
         root().appendingPathComponent("PluginSpecs", isDirectory: true)
     }
 
-    /// Central sandbox plugin library (`~/.osaurus/sandbox-plugins/`)
+    /// Central sandbox plugin library (`<data root>/sandbox-plugins/`)
     public static func sandboxPluginLibrary() -> URL {
         root().appendingPathComponent("sandbox-plugins", isDirectory: true)
     }
 
     // MARK: - Container / Sandbox Paths
 
-    /// Container root: `~/.osaurus/container/`
+    /// Container root: `<data root>/container/`
     public static func container() -> URL {
         root().appendingPathComponent("container", isDirectory: true)
     }
 
-    /// Kernel binary directory: `~/.osaurus/container/kernel/`
+    /// Kernel binary directory: `<data root>/container/kernel/`
     public static func containerKernelDir() -> URL {
         container().appendingPathComponent("kernel", isDirectory: true)
     }
@@ -374,7 +361,7 @@ public enum OsaurusPaths {
         containerKernelDir().appendingPathComponent("vmlinux")
     }
 
-    /// Path to the init filesystem image: `~/.osaurus/container/initfs.ext4`
+    /// Path to the init filesystem image: `<data root>/container/initfs.ext4`
     public static func containerInitFSFile() -> URL {
         container().appendingPathComponent("initfs.ext4")
     }
@@ -401,12 +388,12 @@ public enum OsaurusPaths {
 
     // MARK: - Shared Artifacts
 
-    /// Root directory for all shared artifacts: `~/.osaurus/artifacts/`
+    /// Root directory for all shared artifacts: `<data root>/artifacts/`
     public static func artifactsDir() -> URL {
         root().appendingPathComponent("artifacts", isDirectory: true)
     }
 
-    /// Per-context artifacts directory: `~/.osaurus/artifacts/{contextId}/`
+    /// Per-context artifacts directory: `<data root>/artifacts/{contextId}/`
     public static func contextArtifactsDir(contextId: String) -> URL {
         artifactsDir().appendingPathComponent(contextId, isDirectory: true)
     }
@@ -461,7 +448,7 @@ public enum OsaurusPaths {
         chatHistory().appendingPathComponent("history.sqlite")
     }
     public static func methodsDatabaseFile() -> URL { methods().appendingPathComponent("methods.sqlite") }
-    /// Encrypted on-device Osaurus Router billing ledger: `~/.osaurus/billing/ledger.sqlite`.
+    /// Encrypted on-device Osaurus Router billing ledger: `<data root>/billing/ledger.sqlite`.
     public static func billingLedgerDatabaseFile() -> URL { billing().appendingPathComponent("ledger.sqlite") }
     public static func toolIndexDatabaseFile() -> URL { toolIndex().appendingPathComponent("tool_index.sqlite") }
     public static func memoryConfigFile() -> URL { config().appendingPathComponent("memory.json") }
@@ -501,31 +488,31 @@ public enum OsaurusPaths {
     // MARK: - Claude plugins (imported via GitHub)
 
     /// Root directory for Claude-plugin metadata and per-plugin storage:
-    /// `~/.osaurus/claude-plugins/`.
+    /// `<data root>/claude-plugins/`.
     public static func claudePluginsRoot() -> URL {
         root().appendingPathComponent("claude-plugins", isDirectory: true)
     }
 
     /// Per-plugin manifest snapshot directory:
-    /// `~/.osaurus/claude-plugins/manifests/`.
+    /// `<data root>/claude-plugins/manifests/`.
     public static func claudePluginsManifestsDir() -> URL {
         claudePluginsRoot().appendingPathComponent("manifests", isDirectory: true)
     }
 
     /// Per-plugin user-config (non-sensitive) JSON directory:
-    /// `~/.osaurus/claude-plugins/userconfig/`.
+    /// `<data root>/claude-plugins/userconfig/`.
     public static func claudePluginsUserConfigDir() -> URL {
         claudePluginsRoot().appendingPathComponent("userconfig", isDirectory: true)
     }
 
     /// Per-plugin data directory parent (`CLAUDE_PLUGIN_DATA` root):
-    /// `~/.osaurus/claude-plugins/data/`.
+    /// `<data root>/claude-plugins/data/`.
     public static func claudePluginsDataDir() -> URL {
         claudePluginsRoot().appendingPathComponent("data", isDirectory: true)
     }
 
     /// Per-plugin synthesised source cache (`CLAUDE_PLUGIN_ROOT` target):
-    /// `~/.osaurus/claude-plugins/cache/`. Currently a placeholder so the
+    /// `<data root>/claude-plugins/cache/`. Currently a placeholder so the
     /// variable expander can hand out a stable path even though we don't
     /// keep a full plugin checkout.
     public static func claudePluginsCacheDir() -> URL {
@@ -533,21 +520,21 @@ public enum OsaurusPaths {
     }
 
     /// Per-plugin manifest snapshot file:
-    /// `~/.osaurus/claude-plugins/manifests/<safeId>.json`.
+    /// `<data root>/claude-plugins/manifests/<safeId>.json`.
     public static func claudePluginManifestFile(for pluginId: String) -> URL {
         claudePluginsManifestsDir()
             .appendingPathComponent("\(claudePluginSafeId(pluginId)).json")
     }
 
     /// Per-plugin user-config JSON file:
-    /// `~/.osaurus/claude-plugins/userconfig/<safeId>.json`.
+    /// `<data root>/claude-plugins/userconfig/<safeId>.json`.
     public static func claudePluginUserConfigFile(for pluginId: String) -> URL {
         claudePluginsUserConfigDir()
             .appendingPathComponent("\(claudePluginSafeId(pluginId)).json")
     }
 
     /// Per-plugin data directory:
-    /// `~/.osaurus/claude-plugins/data/<safeId>/`. Created lazily on first
+    /// `<data root>/claude-plugins/data/<safeId>/`. Created lazily on first
     /// reference by `ClaudePluginVariableExpander`.
     public static func claudePluginDataDir(for pluginId: String) -> URL {
         claudePluginsDataDir()
@@ -555,7 +542,7 @@ public enum OsaurusPaths {
     }
 
     /// Per-plugin synthesised source cache directory:
-    /// `~/.osaurus/claude-plugins/cache/<safeId>/`.
+    /// `<data root>/claude-plugins/cache/<safeId>/`.
     public static func claudePluginCacheDir(for pluginId: String) -> URL {
         claudePluginsCacheDir()
             .appendingPathComponent(claudePluginSafeId(pluginId), isDirectory: true)
@@ -649,108 +636,6 @@ public enum OsaurusPaths {
         return total
     }
 
-    // MARK: - Migration
-
-    /// Copies or merges the retired Application Support root into the active
-    /// root once, then writes a marker in the active root. The legacy root is
-    /// left untouched so users can inspect or delete it manually.
-    @discardableResult
-    static func migrateLegacyApplicationSupportRootIfNeeded(
-        fileManager fm: FileManager = .default,
-        legacyRoot oldRoot: URL,
-        activeRoot newRoot: URL
-    ) -> LegacyApplicationSupportMigrationResult {
-        var isLegacyDirectory = ObjCBool(false)
-        guard fm.fileExists(atPath: oldRoot.path, isDirectory: &isLegacyDirectory),
-            isLegacyDirectory.boolValue
-        else {
-            return .legacyRootAbsent
-        }
-
-        let marker = legacyApplicationSupportMergeMarker(for: newRoot)
-        if fm.fileExists(atPath: marker.path) {
-            print("[Osaurus] Legacy data migration already marked at \(marker.path); skipping")
-            return .alreadyMarked(marker)
-        }
-
-        if !fm.fileExists(atPath: newRoot.path) {
-            do {
-                try fm.copyItem(at: oldRoot, to: newRoot)
-                writeLegacyApplicationSupportMergeMarker(
-                    marker,
-                    legacyRoot: oldRoot,
-                    activeRoot: newRoot
-                )
-                print("[Osaurus] Copied data from \(oldRoot.path) to \(newRoot.path)")
-                return .copied(marker)
-            } catch {
-                print("[Osaurus] Copy failed, falling back to merge: \(error)")
-            }
-        }
-
-        mergeDirectory(from: oldRoot, into: newRoot)
-        writeLegacyApplicationSupportMergeMarker(
-            marker,
-            legacyRoot: oldRoot,
-            activeRoot: newRoot
-        )
-        print("[Osaurus] Merged data from \(oldRoot.path) into \(newRoot.path)")
-        return .merged(marker)
-    }
-
-    private static func writeLegacyApplicationSupportMergeMarker(
-        _ marker: URL,
-        legacyRoot: URL,
-        activeRoot: URL
-    ) {
-        let payload = """
-            legacy_application_support_migrated=1
-            legacy_root=\(legacyRoot.path)
-            active_root=\(activeRoot.path)
-
-            """
-        do {
-            try ensureExists(marker.deletingLastPathComponent())
-            try Data(payload.utf8).write(to: marker, options: .atomic)
-        } catch {
-            print("[Osaurus] Failed to write legacy data migration marker \(marker.path): \(error)")
-        }
-    }
-
-    /// Recursively copy the contents of `src` into `dest` (never deletes from `src`).
-    /// When both source and destination files exist, the newer one wins.
-    private static func mergeDirectory(from src: URL, into dest: URL) {
-        let fm = FileManager.default
-        ensureExistsSilent(dest)
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .contentModificationDateKey]
-        guard let contents = try? fm.contentsOfDirectory(at: src, includingPropertiesForKeys: Array(keys)) else {
-            return
-        }
-        for item in contents {
-            let target = dest.appendingPathComponent(item.lastPathComponent)
-            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-
-            if fm.fileExists(atPath: target.path) {
-                if isDir {
-                    mergeDirectory(from: item, into: target)
-                } else {
-                    let srcDate =
-                        (try? item.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-                        ?? .distantPast
-                    let destDate =
-                        (try? target.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-                        ?? .distantPast
-                    if srcDate > destDate {
-                        try? fm.removeItem(at: target)
-                        try? fm.copyItem(at: item, to: target)
-                    }
-                }
-            } else {
-                try? fm.copyItem(at: item, to: target)
-            }
-        }
-    }
-
     // MARK: - Legacy Personas -> agents migration
 
     /// Result of the one-time legacy `Personas` -> `agents` agent-JSON
@@ -835,8 +720,7 @@ public enum OsaurusPaths {
         // Best-effort cleanup: only remove the legacy directory once empty so
         // we never discard unexpected non-JSON contents.
         if let remaining = try? fm.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil),
-            remaining.isEmpty
-        {
+            remaining.isEmpty {
             try? fm.removeItem(at: legacy)
         }
 

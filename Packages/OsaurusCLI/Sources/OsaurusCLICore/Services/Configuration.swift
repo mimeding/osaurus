@@ -9,16 +9,9 @@ import Foundation
 import OsaurusRepository
 
 public struct Configuration {
-    /// Root data directory for Osaurus (`~/.osaurus/`)
+    /// Resolved data directory for Osaurus.
     public static func root() -> URL {
         ToolsPaths.root()
-    }
-
-    /// The previous root directory before migration to `~/.osaurus/`.
-    private static func legacyRoot() -> URL {
-        let fm = FileManager.default
-        let supportDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return supportDir.appendingPathComponent("com.dinoki.osaurus", isDirectory: true)
     }
 
     public static func resolveConfiguredPort() -> Int? {
@@ -27,16 +20,15 @@ public struct Configuration {
         }
 
         let fm = FileManager.default
-        let root = root()
-        let oldRoot = legacyRoot()
+        let locations = AppDataLocationResolver.resolve(overrideRoot: ToolsPaths.overrideRoot)
 
-        // Check ~/.osaurus/config/server.json first, then legacy Application Support locations
-        let candidates: [URL] = [
-            root.appendingPathComponent("config/server.json"),
-            root.appendingPathComponent("ServerConfiguration.json"),
-            oldRoot.appendingPathComponent("config/server.json"),
-            oldRoot.appendingPathComponent("ServerConfiguration.json"),
-        ]
+        let configCandidates = locations.configSearchDirectories.map {
+            $0.appendingPathComponent("server.json")
+        }
+        let rootCandidates = locations.dataSearchRoots.map {
+            $0.appendingPathComponent("ServerConfiguration.json")
+        }
+        let candidates = (configCandidates + rootCandidates).deduplicatedByPath()
 
         guard let configURL = candidates.first(where: { fm.fileExists(atPath: $0.path) }) else {
             return nil
@@ -54,5 +46,18 @@ public struct Configuration {
 
     public static func toolsRootDirectory() -> URL {
         ToolsPaths.toolsRootDirectory()
+    }
+}
+
+private extension Array where Element == URL {
+    func deduplicatedByPath() -> [URL] {
+        var seen: Set<String> = []
+        var result: [URL] = []
+        for url in self {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { continue }
+            result.append(url)
+        }
+        return result
     }
 }
