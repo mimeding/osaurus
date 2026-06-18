@@ -1666,9 +1666,11 @@ public struct ActivityTabView: View {
     @State private var runs: [AgentRunRecord] = []
     @State private var selectedRunId: UUID? = nil
     @State private var changelogRows: [ChangelogEntry] = []
+    @State private var traceInspection: RunTraceInspection? = nil
     @State private var isLoadingRuns = true
     @State private var isLoadingTrace = false
     @State private var loadError: String? = nil
+    @State private var traceLoadError: String? = nil
 
     public init(agentId: UUID) {
         self.agentId = agentId
@@ -1809,18 +1811,28 @@ public struct ActivityTabView: View {
                 Divider().foregroundColor(theme.primaryBorder)
                 if isLoadingTrace {
                     ProgressView().padding(24)
-                } else if changelogRows.isEmpty {
-                    Text("No changelog entries for this run.", bundle: .module)
-                        .font(.system(size: 12))
-                        .foregroundColor(theme.tertiaryText)
-                        .padding(24)
                 } else {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(changelogRows) { row in
-                                changelogRowView(row)
+                        VStack(alignment: .leading, spacing: 0) {
+                            if let traceInspection {
+                                RunTraceDiagnosticView(inspection: traceInspection)
+                            }
+                            if let traceLoadError {
+                                Text("Changelog unavailable: \(traceLoadError)", bundle: .module)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.orange)
+                                    .padding(12)
+                            }
+                            if !changelogRows.isEmpty {
+                                changelogSection
+                            } else if traceInspection == nil && traceLoadError == nil {
+                                Text("No trace artifact or changelog entries for this run.", bundle: .module)
+                                    .font(.system(size: 12))
+                                    .foregroundColor(theme.tertiaryText)
+                                    .padding(24)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
                 }
             } else {
@@ -1832,6 +1844,21 @@ public struct ActivityTabView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var changelogSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Database Writes", bundle: .module)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(theme.tertiaryText)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
+            ForEach(changelogRows) { row in
+                changelogRowView(row)
+            }
+        }
     }
 
     @ViewBuilder
@@ -1967,10 +1994,20 @@ public struct ActivityTabView: View {
     private func loadTrace() async {
         guard let runId = selectedRunId else {
             changelogRows = []
+            traceInspection = nil
+            traceLoadError = nil
             return
         }
         isLoadingTrace = true
         defer { isLoadingTrace = false }
+
+        let traceURL = OsaurusPaths.agentRunTraceFile(agentId: agentId, runId: runId)
+        if FileManager.default.fileExists(atPath: traceURL.path) {
+            traceInspection = RunTraceInspector.inspectFile(at: traceURL)
+        } else {
+            traceInspection = nil
+        }
+
         do {
             let sql =
                 "SELECT ts, actor, op, table_name, row_pk, sql "
@@ -1996,8 +2033,10 @@ public struct ActivityTabView: View {
                     sql: textValue(row[5])
                 )
             }
+            traceLoadError = nil
         } catch {
             changelogRows = []
+            traceLoadError = error.localizedDescription
         }
     }
 
