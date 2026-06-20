@@ -322,7 +322,11 @@ struct ConfigurationView: View {
                             "Max Tool Attempts",
                             "Generation",
                             "Memory",
-                            "Tools"
+                            "Tools",
+                            "Discord",
+                            "Bot Token",
+                            "Server IDs",
+                            "Channel IDs"
                         ) {
                             SettingsSection(title: "Chat", icon: "message") {
                                 VStack(alignment: .leading, spacing: 20) {
@@ -418,6 +422,10 @@ struct ConfigurationView: View {
                                             .foregroundColor(theme.tertiaryText)
                                         }
                                     }
+
+                                    SettingsDivider()
+
+                                    DiscordSettingsView()
 
                                     SettingsDivider()
 

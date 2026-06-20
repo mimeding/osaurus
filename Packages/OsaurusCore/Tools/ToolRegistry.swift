@@ -246,7 +246,38 @@ final class ToolRegistry: ObservableObject {
         if configChanged {
             ToolConfigurationStore.save(configuration)
         }
+
+        for tool in Self.discordTools {
+            registerPluginTool(tool)
+        }
     }
+
+    private static let discordTools: [OsaurusTool] = [
+        // First-party Discord group-interaction tools. They are registered as a
+        // dynamic native tool group so the default baseline schema does not
+        // change for users who have not asked for Discord.
+        DiscordDiagnosticsTool(),
+        DiscordListServersTool(),
+        DiscordListChannelsTool(),
+        DiscordReadChannelTool(),
+        DiscordReadThreadTool(),
+        DiscordFindRecentMessagesTool(),
+        DiscordDraftMessageTool(),
+        DiscordSendMessageTool(),
+        DiscordReplyToThreadTool(),
+    ]
+
+    nonisolated static let discordToolNames: Set<String> = [
+        "discord_diagnostics",
+        "discord_list_servers",
+        "discord_list_channels",
+        "discord_read_channel",
+        "discord_read_thread",
+        "discord_find_recent_messages",
+        "discord_draft_message",
+        "discord_send_message",
+        "discord_reply_to_thread",
+    ]
 
     /// Register a plain (non-bucketed) tool. Used by built-in registration
     /// and folder-tool installation; sandbox / MCP / plugin paths use the
@@ -340,8 +371,11 @@ final class ToolRegistry: ObservableObject {
     /// arbitrary shell commands. These names refuse with a structured
     /// envelope regardless of registration state and are hidden from
     /// `/mcp/tools` listings.
-    public nonisolated static let externallyDeniedToolNames: Set<String> = [
+    nonisolated public static let externallyDeniedToolNames: Set<String> = [
         "file_write", "file_edit", "shell_run", "git_commit", "file_undo",
+        "discord_diagnostics", "discord_list_servers", "discord_list_channels",
+        "discord_read_channel", "discord_read_thread", "discord_find_recent_messages",
+        "discord_draft_message", "discord_send_message", "discord_reply_to_thread",
     ]
 
     /// Whether `name` is blocked for the current execution because an
@@ -357,7 +391,7 @@ final class ToolRegistry: ObservableObject {
         ToolEnvelope.failure(
             kind: .rejected,
             message:
-                "'\(tool)' is not available to external callers. Folder write and shell tools can only run from the Osaurus app.",
+                "'\(tool)' is not available to external callers. This tool can only run from the Osaurus app.",
             tool: tool
         )
     }
@@ -379,7 +413,7 @@ final class ToolRegistry: ObservableObject {
                 code: 3,
                 userInfo: [
                     NSLocalizedDescriptionKey:
-                        "'\(name)' is not available to external callers. Folder write and shell tools can only run from the Osaurus app."
+                        "'\(name)' is not available to external callers. This tool can only run from the Osaurus app."
                 ]
             )
         }
@@ -1455,6 +1489,7 @@ final class ToolRegistry: ObservableObject {
     /// Returns the plugin or provider name that a tool belongs to, if any.
     func groupName(for toolName: String) -> String? {
         guard let tool = toolsByName[toolName] else { return nil }
+        if Self.discordToolNames.contains(toolName) { return DiscordCredentialStore.pluginId }
         if let ext = tool as? ExternalTool { return ext.pluginId }
         if let mcp = tool as? MCPProviderTool { return mcp.providerName }
         if let sandbox = tool as? SandboxPluginTool { return sandbox.plugin.id }
@@ -1464,6 +1499,7 @@ final class ToolRegistry: ObservableObject {
     private func availabilityRuntimeLabel(for toolName: String, builtIn: Bool) -> String {
         if isSandboxTool(toolName) { return L("sandbox") }
         if isMCPTool(toolName) { return "mcp" }
+        if Self.discordToolNames.contains(toolName) { return L("native") }
         if isPluginTool(toolName) { return L("plugin") }
         if builtIn { return L("builtin") }
         return L("native")
