@@ -173,6 +173,93 @@ struct DiscordConnectionTests {
         }
     }
 
+    @Test func agentChannelSendToolDispatchesThroughDiscordConnection() async throws {
+        try await withIsolatedDiscordStores {
+            let fake = FakeDiscordAPIClient()
+            let discordService = DiscordConnectionService(client: fake)
+            try discordService.saveBotToken("discord-bot-token-super-secret")
+            try discordService.saveConfiguration(
+                DiscordConnectionConfiguration(
+                    writableChannelIds: ["333333333333333333"],
+                    writeEnabled: true
+                )
+            )
+            let channelService = AgentChannelConnectionService(discordService: discordService)
+            let tool = AgentChannelSendMessageTool(service: channelService)
+
+            let result = try await tool.execute(
+                argumentsJSON:
+                    #"{"connection_id":"discord","room_id":"333333333333333333","content":"Ship it","confirm_send":true}"#
+            )
+            let payload = try #require(EnvelopeAssertions.successPayload(result))
+            #expect(payload["connection_id"] as? String == "discord")
+            #expect(payload["standard_kind"] as? String == "message_sent")
+            #expect(payload["kind"] as? String == "discord_message_sent")
+            #expect(await fake.sentMessageCount() == 1)
+        }
+    }
+
+    @Test func customAgentChannelCanBeDefinedWithPureJSON() async throws {
+        try await withIsolatedDiscordStores {
+            let json = """
+            {
+              "schemaVersion": 1,
+              "connections": [
+                {
+                  "id": "ops-webhook",
+                  "name": "Ops Webhook",
+                  "kind": "custom_http",
+                  "enabled": true,
+                  "supportedActions": ["diagnostics", "send_message"],
+                  "spaceAllowlist": ["ops"],
+                  "readRoomAllowlist": [],
+                  "writeRoomAllowlist": ["alerts"],
+                  "writeEnabled": true,
+                  "defaultReadLimit": 25,
+                  "secrets": [
+                    { "name": "bearer", "keychainId": "ops_webhook_token" }
+                  ],
+                  "customHTTP": {
+                    "baseURL": "https://hooks.example.test",
+                    "actions": {
+                      "send_message": {
+                        "method": "POST",
+                        "path": "/rooms/{room_id}/messages",
+                        "headers": {
+                          "Authorization": "Bearer ${secret:bearer}"
+                        },
+                        "bodyTemplate": "{\\"text\\":\\"${content}\\"}"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+            """
+            try FileManager.default.createDirectory(
+                at: AgentChannelConfigurationStore.configurationFileURL().deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try json.write(
+                to: AgentChannelConfigurationStore.configurationFileURL(),
+                atomically: true,
+                encoding: .utf8
+            )
+
+            let config = AgentChannelConfigurationStore.load()
+            let connection = try #require(config.connection(id: "ops-webhook"))
+            #expect(connection.kind == .customHTTP)
+            #expect(connection.supportedActions == [.diagnostics, .sendMessage])
+            #expect(connection.writeRoomAllowlist == ["alerts"])
+            #expect(connection.customHTTP?.actions["send_message"]?.method == "POST")
+
+            let service = AgentChannelConnectionService(discordService: DiscordConnectionService(client: FakeDiscordAPIClient()))
+            let diagnostics = await service.diagnostics(connectionId: "ops-webhook")
+            #expect(diagnostics["status"] as? String == "configured_not_executable")
+            #expect(diagnostics["custom_actions"] as? [String] == ["send_message"])
+        }
+    }
+
     @Test func findRecentMessagesScansOnlyReadableChannels() async throws {
         try await withIsolatedDiscordStores {
             let fake = FakeDiscordAPIClient()
@@ -204,8 +291,8 @@ struct DiscordConnectionTests {
         }
     }
 
-    @Test func discordToolsAreDeniedOnExternalSurfaces() async throws {
-        let names = ToolRegistry.discordToolNames.sorted()
+    @Test func agentChannelToolsAreDeniedOnExternalSurfacesAndNotBaselineBuiltIns() async throws {
+        let names = ToolRegistry.agentChannelToolNames.sorted()
         let builtInNames = await MainActor.run {
             ToolRegistry.shared.builtInToolNames
         }
@@ -223,19 +310,26 @@ struct DiscordConnectionTests {
             #expect(EnvelopeAssertions.failureKind(envelope) == "rejected")
             #expect(EnvelopeAssertions.failureMessage(envelope)?.contains("Osaurus app") == true)
         }
+
+        for name in ToolRegistry.discordToolNames {
+            #expect(ToolRegistry.externallyDeniedToolNames.contains(name))
+        }
     }
 
     private func withIsolatedDiscordStores(
         _ body: () async throws -> Void
     ) async throws {
         let previousDirectory = DiscordConnectionConfigurationStore.overrideDirectory
+        let previousChannelDirectory = AgentChannelConfigurationStore.overrideDirectory
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("osaurus-discord-tests-\(UUID().uuidString)", isDirectory: true)
         DiscordConnectionConfigurationStore.overrideDirectory = directory
+        AgentChannelConfigurationStore.overrideDirectory = directory
         DiscordCredentialStore.deleteBotToken()
         defer {
             DiscordCredentialStore.deleteBotToken()
             DiscordConnectionConfigurationStore.overrideDirectory = previousDirectory
+            AgentChannelConfigurationStore.overrideDirectory = previousChannelDirectory
             try? FileManager.default.removeItem(at: directory)
         }
         try await body()

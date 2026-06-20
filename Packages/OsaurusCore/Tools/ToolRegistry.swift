@@ -247,24 +247,38 @@ final class ToolRegistry: ObservableObject {
             ToolConfigurationStore.save(configuration)
         }
 
-        for tool in Self.discordTools {
+        for tool in Self.agentChannelTools {
             registerPluginTool(tool)
         }
     }
 
-    private static let discordTools: [OsaurusTool] = [
-        // First-party Discord group-interaction tools. They are registered as a
-        // dynamic native tool group so the default baseline schema does not
-        // change for users who have not asked for Discord.
-        DiscordDiagnosticsTool(),
-        DiscordListServersTool(),
-        DiscordListChannelsTool(),
-        DiscordReadChannelTool(),
-        DiscordReadThreadTool(),
-        DiscordFindRecentMessagesTool(),
-        DiscordDraftMessageTool(),
-        DiscordSendMessageTool(),
-        DiscordReplyToThreadTool(),
+    private static let agentChannelTools: [OsaurusTool] = [
+        // First-party Agent Channel tools. Discord is the first executable
+        // channel driver, but the model-facing action vocabulary is shared
+        // by future Slack, Telegram, and custom JSON channel connections.
+        AgentChannelListConnectionsTool(),
+        AgentChannelDiagnosticsTool(),
+        AgentChannelListSpacesTool(),
+        AgentChannelListRoomsTool(),
+        AgentChannelReadMessagesTool(),
+        AgentChannelReadThreadTool(),
+        AgentChannelSearchMessagesTool(),
+        AgentChannelDraftMessageTool(),
+        AgentChannelSendMessageTool(),
+        AgentChannelReplyThreadTool(),
+    ]
+
+    nonisolated static let agentChannelToolNames: Set<String> = [
+        "agent_channel_list_connections",
+        "agent_channel_diagnostics",
+        "agent_channel_list_spaces",
+        "agent_channel_list_rooms",
+        "agent_channel_read_messages",
+        "agent_channel_read_thread",
+        "agent_channel_search_messages",
+        "agent_channel_draft_message",
+        "agent_channel_send_message",
+        "agent_channel_reply_thread",
     ]
 
     nonisolated static let discordToolNames: Set<String> = [
@@ -373,6 +387,11 @@ final class ToolRegistry: ObservableObject {
     /// `/mcp/tools` listings.
     nonisolated public static let externallyDeniedToolNames: Set<String> = [
         "file_write", "file_edit", "shell_run", "git_commit", "file_undo",
+        "agent_channel_list_connections", "agent_channel_diagnostics",
+        "agent_channel_list_spaces", "agent_channel_list_rooms",
+        "agent_channel_read_messages", "agent_channel_read_thread",
+        "agent_channel_search_messages", "agent_channel_draft_message",
+        "agent_channel_send_message", "agent_channel_reply_thread",
         "discord_diagnostics", "discord_list_servers", "discord_list_channels",
         "discord_read_channel", "discord_read_thread", "discord_find_recent_messages",
         "discord_draft_message", "discord_send_message", "discord_reply_to_thread",
@@ -814,8 +833,7 @@ final class ToolRegistry: ObservableObject {
         // marker is a leading root key, so scanning the whole string just to
         // detect it could hang the UI.
         if raw.prefix(4096).contains("\"action\":\"\(SecretPromptAction.actionKey)\""),
-            SecretPromptParser.parse(raw) != nil
-        {
+            SecretPromptParser.parse(raw) != nil {
             return raw
         }
 
@@ -1489,6 +1507,7 @@ final class ToolRegistry: ObservableObject {
     /// Returns the plugin or provider name that a tool belongs to, if any.
     func groupName(for toolName: String) -> String? {
         guard let tool = toolsByName[toolName] else { return nil }
+        if Self.agentChannelToolNames.contains(toolName) { return "agent_channels" }
         if Self.discordToolNames.contains(toolName) { return DiscordCredentialStore.pluginId }
         if let ext = tool as? ExternalTool { return ext.pluginId }
         if let mcp = tool as? MCPProviderTool { return mcp.providerName }
@@ -1499,6 +1518,7 @@ final class ToolRegistry: ObservableObject {
     private func availabilityRuntimeLabel(for toolName: String, builtIn: Bool) -> String {
         if isSandboxTool(toolName) { return L("sandbox") }
         if isMCPTool(toolName) { return "mcp" }
+        if Self.agentChannelToolNames.contains(toolName) { return L("native") }
         if Self.discordToolNames.contains(toolName) { return L("native") }
         if isPluginTool(toolName) { return L("plugin") }
         if builtIn { return L("builtin") }
