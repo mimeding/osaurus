@@ -265,6 +265,32 @@ def media_payload_proven(payload: dict[str, Any]) -> bool:
     return False
 
 
+def cancellation_cleanup_failures(payload: dict[str, Any]) -> list[str]:
+    row_checks = checks(payload)
+    return [name for name in CANCELLATION_CLEANUP_CHECKS if row_checks.get(name) is False]
+
+
+def cancellation_cleanup_passes(payload: dict[str, Any]) -> list[str]:
+    row_checks = checks(payload)
+    return [name for name in CANCELLATION_CLEANUP_CHECKS if row_checks.get(name) is True]
+
+
+def cancellation_requirement_blocker(payload: dict[str, Any]) -> str | None:
+    failures = cancellation_cleanup_failures(payload)
+    if failures:
+        return "row cancellation cleanup checks failed: " + ", ".join(failures)
+    if cancellation_cleanup_passes(payload):
+        return None
+    row_checks = checks(payload)
+    observed = [name for name in CANCELLATION_OBSERVATION_CHECKS if row_checks.get(name) is True]
+    if observed:
+        return "cancellation was observed but cleanup proof is missing: " + ", ".join(observed)
+    explicit = payload.get("cancellation_evidence") or payload.get("cancellation")
+    if explicit or any(name in row_checks for name in CANCELLATION_CHECKS):
+        return "row cancellation cleanup evidence is incomplete"
+    return "row lacks required cancellation cleanup evidence"
+
+
 def token_rate_signal(
     payload: dict[str, Any],
     payload_path: str | None,
@@ -372,14 +398,14 @@ def cancellation_signal(
     present = required or bool(explicit) or any(name in row_checks for name in CANCELLATION_CHECKS)
     if not present:
         return signal_record("unproven", "no cancellation cleanup proof was recorded for this row", paths)
-    failures = [name for name in CANCELLATION_CLEANUP_CHECKS if row_checks.get(name) is False]
+    failures = cancellation_cleanup_failures(payload)
     if failures:
         return signal_record(
             "failed" if row_failed else "partial",
             "cancellation cleanup checks failed: " + ", ".join(failures),
             paths,
         )
-    passed = [name for name in CANCELLATION_CLEANUP_CHECKS if row_checks.get(name) is True]
+    passed = cancellation_cleanup_passes(payload)
     if passed:
         return signal_record(
             "proven",
@@ -504,6 +530,15 @@ def requirement_blockers(payload: dict[str, Any], manifest_row: dict[str, Any]) 
                 "message": "VL/media row lacks real media payload, media routing, or media cache-hit proof",
             }
         )
+    if "cancellation" in requirements:
+        message = cancellation_requirement_blocker(payload)
+        if message:
+            blockers.append(
+                {
+                    "requirement": "cancellation",
+                    "message": message,
+                }
+            )
     return blockers
 
 

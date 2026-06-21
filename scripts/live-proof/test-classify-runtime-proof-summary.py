@@ -195,6 +195,8 @@ def test_resilience_evidence_records_token_cache_marker_cancellation_and_crash_l
         row = report["rows"][0]
         evidence = row["resilience_evidence"]
 
+        assert row["verdict"] == "proven", row
+        assert not any(issue["requirement"] == "cancellation" for issue in row["blockers"])
         assert evidence["tokens_per_second"]["verdict"] == "proven", evidence
         assert "16.00 token/s" in evidence["tokens_per_second"]["summary"]
         assert evidence["cache"]["verdict"] == "proven", evidence
@@ -205,6 +207,31 @@ def test_resilience_evidence_records_token_cache_marker_cancellation_and_crash_l
         assert evidence["crash_proof"]["verdict"] == "proven", evidence
         assert report["issue_coverage"]["#1228"]["verdict"] == "partial"
         assert "full-kv" in report["issue_coverage"]["#1228"]["rows"]
+
+
+def test_required_cancellation_without_evidence_blocks_proven_row() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = pathlib.Path(temp)
+        summary = matrix_summary(root, "cancel-required", base_payload())
+        manifest = [
+            {
+                "id": "cancel-required",
+                "model": "model",
+                "family": "gemma4",
+                "priority": "required",
+                "required_cancellation_evidence": ["cold_load_cleanup"],
+            }
+        ]
+
+        report = run_classifier(root, manifest, summary)
+        row = report["rows"][0]
+        evidence = row["resilience_evidence"]["cancellation"]
+
+        assert row["verdict"] == "partial", row
+        assert any(issue["requirement"] == "cancellation" for issue in row["blockers"])
+        assert "lacks required cancellation cleanup evidence" in row["blockers"][0]["message"]
+        assert evidence["verdict"] == "partial", evidence
+        assert report["passed"] is False
 
 
 def test_cancellation_stop_status_alone_is_not_cleanup_proof() -> None:
@@ -224,10 +251,43 @@ def test_cancellation_stop_status_alone_is_not_cleanup_proof() -> None:
         ]
 
         report = run_classifier(root, manifest, summary)
-        evidence = report["rows"][0]["resilience_evidence"]["cancellation"]
+        row = report["rows"][0]
+        evidence = row["resilience_evidence"]["cancellation"]
 
+        assert row["verdict"] == "partial", row
+        assert any(issue["requirement"] == "cancellation" for issue in row["blockers"])
+        assert "cleanup proof is missing" in row["blockers"][0]["message"]
         assert evidence["verdict"] == "partial", evidence
         assert "cleanup proof is missing" in evidence["summary"]
+        assert report["passed"] is False
+
+
+def test_failed_cancellation_cleanup_blocks_proven_row() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = pathlib.Path(temp)
+        payload = base_payload()
+        payload["checks"]["cancelled_load_unloaded"] = False
+        summary = matrix_summary(root, "cancel-failed", payload)
+        manifest = [
+            {
+                "id": "cancel-failed",
+                "model": "model",
+                "family": "gemma4",
+                "priority": "required",
+                "required_cancellation_evidence": ["cold_load_cleanup"],
+            }
+        ]
+
+        report = run_classifier(root, manifest, summary)
+        row = report["rows"][0]
+        evidence = row["resilience_evidence"]["cancellation"]
+
+        assert row["verdict"] == "partial", row
+        assert any(issue["requirement"] == "cancellation" for issue in row["blockers"])
+        assert "cancelled_load_unloaded" in row["blockers"][0]["message"]
+        assert evidence["verdict"] == "partial", evidence
+        assert "cancelled_load_unloaded" in evidence["summary"]
+        assert report["passed"] is False
 
 
 def test_renderer_writes_runtime_resilience_dashboard() -> None:
@@ -309,7 +369,9 @@ def main() -> int:
     test_vl_row_without_media_payload_is_not_proven()
     test_unreadable_row_is_unproven()
     test_resilience_evidence_records_token_cache_marker_cancellation_and_crash_links()
+    test_required_cancellation_without_evidence_blocks_proven_row()
     test_cancellation_stop_status_alone_is_not_cleanup_proof()
+    test_failed_cancellation_cleanup_blocks_proven_row()
     test_renderer_writes_runtime_resilience_dashboard()
     test_family_runner_dry_run_writes_dashboard_artifacts()
     print("runtime proof classifier tests passed")
