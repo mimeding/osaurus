@@ -14,9 +14,10 @@ import Testing
 struct DiscordConnectionTests {
 
     @Test func configurationPersistsAllowlistsButNeverBotToken() async throws {
-        try await withIsolatedDiscordStores {
+        try await withIsolatedDiscordStores { credentials in
             let token = "discord-bot-token-super-secret"
-            try DiscordConnectionService(client: FakeDiscordAPIClient()).saveBotToken(token)
+            try DiscordConnectionService(client: FakeDiscordAPIClient(), credentialStore: credentials)
+                .saveBotToken(token)
             let configuration = DiscordConnectionConfiguration(
                 configuredGuildIds: [" 111111111111111111 ", "111111111111111111"],
                 readableChannelIds: ["222222222222222222"],
@@ -24,7 +25,8 @@ struct DiscordConnectionTests {
                 writeEnabled: true,
                 defaultReadLimit: 250
             )
-            try DiscordConnectionService(client: FakeDiscordAPIClient()).saveConfiguration(configuration)
+            try DiscordConnectionService(client: FakeDiscordAPIClient(), credentialStore: credentials)
+                .saveConfiguration(configuration)
 
             let saved = DiscordConnectionConfigurationStore.load()
             #expect(saved.configuredGuildIds == ["111111111111111111"])
@@ -42,11 +44,11 @@ struct DiscordConnectionTests {
     }
 
     @Test func diagnosticsRedactsTokenEchoedByTransportError() async throws {
-        try await withIsolatedDiscordStores {
+        try await withIsolatedDiscordStores { credentials in
             let token = "discord-bot-token-super-secret"
             let fake = FakeDiscordAPIClient()
             await fake.setCurrentUserFailureEchoingToken()
-            let service = DiscordConnectionService(client: fake)
+            let service = DiscordConnectionService(client: fake, credentialStore: credentials)
             try service.saveBotToken(token)
             try service.saveConfiguration(
                 DiscordConnectionConfiguration(configuredGuildIds: ["111111111111111111"])
@@ -85,8 +87,45 @@ struct DiscordConnectionTests {
         }
     }
 
+    @Test func apiClientNeutralizesAllowedMentionsWhenSendingMessage() async throws {
+        let token = "discord-bot-token-super-secret"
+        let session = DiscordHTTPStubProtocol.session(
+            statusCode: 200,
+            body: """
+            {
+              "id": "sent-1",
+              "channel_id": "333333333333333333",
+              "content": "Hello @everyone <@123456789012345678>",
+              "timestamp": "2026-06-19T20:00:00.000000+00:00",
+              "author": {
+                "id": "444444444444444444",
+                "username": "osaurus-bot",
+                "global_name": "Osaurus",
+                "bot": true
+              },
+              "attachments": []
+            }
+            """
+        )
+        let client = DiscordAPIClient(
+            baseURL: URL(string: "https://discord.test/api/v10")!,
+            sessionProvider: { session }
+        )
+
+        _ = try await client.sendMessage(
+            channelId: "333333333333333333",
+            content: "Hello @everyone <@123456789012345678>",
+            token: token
+        )
+
+        let body = try #require(DiscordHTTPStubProtocol.lastRequestJSONBody())
+        let allowedMentions = try #require(body["allowed_mentions"] as? [String: Any])
+        let parse = try #require(allowedMentions["parse"] as? [Any])
+        #expect(parse.isEmpty)
+    }
+
     @Test func readChannelReturnsBoundedMessagesForAllowlistedChannel() async throws {
-        try await withIsolatedDiscordStores {
+        try await withIsolatedDiscordStores { credentials in
             let fake = FakeDiscordAPIClient()
             await fake.setMessages([
                 "222222222222222222": [
@@ -94,7 +133,7 @@ struct DiscordConnectionTests {
                     .fixture(id: "9002", channelId: "222222222222222222", content: "review requested"),
                 ],
             ])
-            let service = DiscordConnectionService(client: fake)
+            let service = DiscordConnectionService(client: fake, credentialStore: credentials)
             try service.saveBotToken("discord-bot-token-super-secret")
             try service.saveConfiguration(
                 DiscordConnectionConfiguration(
@@ -215,7 +254,7 @@ struct DiscordConnectionTests {
     }
 
     @Test func readChannelRecordsFetchedMessagesInAgentChannelStore() async throws {
-        try await withIsolatedDiscordStores {
+        try await withIsolatedDiscordStores { credentials in
             let store = AgentChannelMessageStore()
             try store.openInMemory()
             defer { store.close() }
@@ -229,6 +268,7 @@ struct DiscordConnectionTests {
             ])
             let service = DiscordConnectionService(
                 client: fake,
+                credentialStore: credentials,
                 messageStore: store,
                 recordMessageSnapshotsInline: true
             )
@@ -255,7 +295,7 @@ struct DiscordConnectionTests {
     }
 
     @Test func sendMessageRecordsOutboundMessageInAgentChannelStore() async throws {
-        try await withIsolatedDiscordStores {
+        try await withIsolatedDiscordStores { credentials in
             let store = AgentChannelMessageStore()
             try store.openInMemory()
             defer { store.close() }
@@ -263,6 +303,7 @@ struct DiscordConnectionTests {
             let fake = FakeDiscordAPIClient()
             let service = DiscordConnectionService(
                 client: fake,
+                credentialStore: credentials,
                 messageStore: store,
                 recordMessageSnapshotsInline: true
             )
@@ -295,7 +336,7 @@ struct DiscordConnectionTests {
     }
 
     @Test func searchMessagesRecordsScannedInboundMessagesInAgentChannelStore() async throws {
-        try await withIsolatedDiscordStores {
+        try await withIsolatedDiscordStores { credentials in
             let store = AgentChannelMessageStore()
             try store.openInMemory()
             defer { store.close() }
@@ -309,6 +350,7 @@ struct DiscordConnectionTests {
             ])
             let service = DiscordConnectionService(
                 client: fake,
+                credentialStore: credentials,
                 messageStore: store,
                 recordMessageSnapshotsInline: true
             )
@@ -329,27 +371,31 @@ struct DiscordConnectionTests {
         }
     }
 
-    @Test func readToolRejectsChannelsOutsideReadAllowlist() async throws {
-        try await withIsolatedDiscordStores {
-            let service = DiscordConnectionService(client: FakeDiscordAPIClient())
+    @Test func agentChannelReadToolRejectsRoomsOutsideReadAllowlist() async throws {
+        try await withIsolatedDiscordStores { credentials in
+            let service = DiscordConnectionService(
+                client: FakeDiscordAPIClient(),
+                credentialStore: credentials
+            )
             try service.saveBotToken("discord-bot-token-super-secret")
             try service.saveConfiguration(
                 DiscordConnectionConfiguration(readableChannelIds: ["222222222222222222"])
             )
-            let tool = DiscordReadChannelTool(service: service)
+            let channelService = AgentChannelConnectionService(discordService: service)
+            let tool = AgentChannelReadMessagesTool(service: channelService)
 
             let result = try await tool.execute(
-                argumentsJSON: #"{"channel_id":"333333333333333333"}"#
+                argumentsJSON: #"{"connection_id":"discord","room_id":"333333333333333333"}"#
             )
             #expect(EnvelopeAssertions.failureKind(result) == "rejected")
             #expect(EnvelopeAssertions.failureMessage(result)?.contains("not allowlisted") == true)
         }
     }
 
-    @Test func sendToolRequiresConfirmSendEvenWhenWriteAllowlisted() async throws {
-        try await withIsolatedDiscordStores {
+    @Test func agentChannelSendToolRequiresConfirmSendEvenWhenWriteAllowlisted() async throws {
+        try await withIsolatedDiscordStores { credentials in
             let fake = FakeDiscordAPIClient()
-            let service = DiscordConnectionService(client: fake)
+            let service = DiscordConnectionService(client: fake, credentialStore: credentials)
             try service.saveBotToken("discord-bot-token-super-secret")
             try service.saveConfiguration(
                 DiscordConnectionConfiguration(
@@ -357,20 +403,22 @@ struct DiscordConnectionTests {
                     writeEnabled: true
                 )
             )
-            let tool = DiscordSendMessageTool(service: service)
+            let channelService = AgentChannelConnectionService(discordService: service)
+            let tool = AgentChannelSendMessageTool(service: channelService)
 
             let result = try await tool.execute(
-                argumentsJSON: #"{"channel_id":"333333333333333333","content":"Ship it","confirm_send":false}"#
+                argumentsJSON:
+                    #"{"connection_id":"discord","room_id":"333333333333333333","content":"Ship it","confirm_send":false}"#
             )
             #expect(EnvelopeAssertions.failureKind(result) == "invalid_args")
             #expect(await fake.sentMessageCount() == 0)
         }
     }
 
-    @Test func sendToolPostsOnlyWhenWriteEnabledAllowlistedAndConfirmed() async throws {
-        try await withIsolatedDiscordStores {
+    @Test func agentChannelSendToolPostsOnlyWhenWriteEnabledAllowlistedAndConfirmed() async throws {
+        try await withIsolatedDiscordStores { credentials in
             let fake = FakeDiscordAPIClient()
-            let service = DiscordConnectionService(client: fake)
+            let service = DiscordConnectionService(client: fake, credentialStore: credentials)
             try service.saveBotToken("discord-bot-token-super-secret")
             try service.saveConfiguration(
                 DiscordConnectionConfiguration(
@@ -378,22 +426,25 @@ struct DiscordConnectionTests {
                     writeEnabled: true
                 )
             )
-            let tool = DiscordSendMessageTool(service: service)
+            let channelService = AgentChannelConnectionService(discordService: service)
+            let tool = AgentChannelSendMessageTool(service: channelService)
 
             let result = try await tool.execute(
-                argumentsJSON: #"{"channel_id":"333333333333333333","content":"Ship it","confirm_send":true}"#
+                argumentsJSON:
+                    #"{"connection_id":"discord","room_id":"333333333333333333","content":"Ship it","confirm_send":true}"#
             )
             let payload = try #require(EnvelopeAssertions.successPayload(result))
+            #expect(payload["standard_kind"] as? String == "message_sent")
             #expect(payload["kind"] as? String == "discord_message_sent")
             #expect(await fake.sentMessageCount() == 1)
             #expect(await fake.lastSentContent() == "Ship it")
         }
     }
 
-    @Test func sendToolRejectsMessagesAboveDiscordUTF16Limit() async throws {
-        try await withIsolatedDiscordStores {
+    @Test func agentChannelSendToolRejectsMessagesAboveDiscordUTF16Limit() async throws {
+        try await withIsolatedDiscordStores { credentials in
             let fake = FakeDiscordAPIClient()
-            let service = DiscordConnectionService(client: fake)
+            let service = DiscordConnectionService(client: fake, credentialStore: credentials)
             try service.saveBotToken("discord-bot-token-super-secret")
             try service.saveConfiguration(
                 DiscordConnectionConfiguration(
@@ -401,11 +452,13 @@ struct DiscordConnectionTests {
                     writeEnabled: true
                 )
             )
-            let tool = DiscordSendMessageTool(service: service)
+            let channelService = AgentChannelConnectionService(discordService: service)
+            let tool = AgentChannelSendMessageTool(service: channelService)
             let emojiMessage = String(repeating: "😀", count: 1001)
 
             let result = try await tool.execute(
-                argumentsJSON: #"{"channel_id":"333333333333333333","content":"\#(emojiMessage)","confirm_send":true}"#
+                argumentsJSON:
+                    #"{"connection_id":"discord","room_id":"333333333333333333","content":"\#(emojiMessage)","confirm_send":true}"#
             )
 
             #expect(EnvelopeAssertions.failureKind(result) == "invalid_args")
@@ -414,9 +467,9 @@ struct DiscordConnectionTests {
     }
 
     @Test func agentChannelSendToolDispatchesThroughDiscordConnection() async throws {
-        try await withIsolatedDiscordStores {
+        try await withIsolatedDiscordStores { credentials in
             let fake = FakeDiscordAPIClient()
-            let discordService = DiscordConnectionService(client: fake)
+            let discordService = DiscordConnectionService(client: fake, credentialStore: credentials)
             try discordService.saveBotToken("discord-bot-token-super-secret")
             try discordService.saveConfiguration(
                 DiscordConnectionConfiguration(
@@ -439,8 +492,32 @@ struct DiscordConnectionTests {
         }
     }
 
+    @Test func nativeDiscordConnectionIdIsCaseInsensitive() async throws {
+        try await withIsolatedDiscordStores { credentials in
+            let fake = FakeDiscordAPIClient()
+            let discordService = DiscordConnectionService(client: fake, credentialStore: credentials)
+            try discordService.saveBotToken("discord-bot-token-super-secret")
+            try discordService.saveConfiguration(
+                DiscordConnectionConfiguration(
+                    writableChannelIds: ["333333333333333333"],
+                    writeEnabled: true
+                )
+            )
+            let channelService = AgentChannelConnectionService(discordService: discordService)
+            let tool = AgentChannelSendMessageTool(service: channelService)
+
+            let result = try await tool.execute(
+                argumentsJSON:
+                    #"{"connection_id":"Discord","room_id":"333333333333333333","content":"Ship it","confirm_send":true}"#
+            )
+            let payload = try #require(EnvelopeAssertions.successPayload(result))
+            #expect(payload["connection_id"] as? String == "discord")
+            #expect(await fake.sentMessageCount() == 1)
+        }
+    }
+
     @Test func customAgentChannelCanBeDefinedWithPureJSON() async throws {
-        try await withIsolatedDiscordStores {
+        try await withIsolatedDiscordStores { credentials in
             let json = """
             {
               "schemaVersion": 1,
@@ -493,7 +570,12 @@ struct DiscordConnectionTests {
             #expect(connection.writeRoomAllowlist == ["alerts"])
             #expect(connection.customHTTP?.actions["send_message"]?.method == "POST")
 
-            let service = AgentChannelConnectionService(discordService: DiscordConnectionService(client: FakeDiscordAPIClient()))
+            let service = AgentChannelConnectionService(
+                discordService: DiscordConnectionService(
+                    client: FakeDiscordAPIClient(),
+                    credentialStore: credentials
+                )
+            )
             let diagnostics = await service.diagnostics(connectionId: "ops-webhook")
             #expect(diagnostics["status"] as? String == "configured_not_executable")
             #expect(diagnostics["custom_actions"] as? [String] == ["send_message"])
@@ -501,7 +583,7 @@ struct DiscordConnectionTests {
     }
 
     @Test func findRecentMessagesScansOnlyReadableChannels() async throws {
-        try await withIsolatedDiscordStores {
+        try await withIsolatedDiscordStores { credentials in
             let fake = FakeDiscordAPIClient()
             await fake.setMessages([
                 "222222222222222222": [
@@ -511,7 +593,7 @@ struct DiscordConnectionTests {
                     .fixture(id: "9002", channelId: "333333333333333333", content: "eval secret"),
                 ],
             ])
-            let service = DiscordConnectionService(client: fake)
+            let service = DiscordConnectionService(client: fake, credentialStore: credentials)
             try service.saveBotToken("discord-bot-token-super-secret")
             try service.saveConfiguration(
                 DiscordConnectionConfiguration(readableChannelIds: ["222222222222222222"])
@@ -533,13 +615,28 @@ struct DiscordConnectionTests {
 
     @Test func nativeAgentChannelToolsAreDynamicButNotPluginOwned() async throws {
         let names = ToolRegistry.agentChannelToolNames.sorted()
-        let (builtInNames, pluginNames) = await MainActor.run {
+        let phantomDiscordNames: Set<String> = [
+            "discord_diagnostics",
+            "discord_list_servers",
+            "discord_list_channels",
+            "discord_read_channel",
+            "discord_read_thread",
+            "discord_find_recent_messages",
+            "discord_draft_message",
+            "discord_send_message",
+            "discord_reply_to_thread",
+        ]
+        let (registeredNames, builtInNames, pluginNames, phantomNames) = await MainActor.run {
             (
+                Set(ToolRegistry.shared.listTools().map(\.name)),
                 ToolRegistry.shared.builtInToolNames,
-                names.filter { ToolRegistry.shared.isPluginTool($0) }
+                names.filter { ToolRegistry.shared.isPluginTool($0) },
+                phantomDiscordNames.filter { ToolRegistry.shared.entry(named: $0) != nil }
             )
         }
+        #expect(Set(names).isSubset(of: registeredNames))
         #expect(pluginNames.isEmpty)
+        #expect(phantomNames.isEmpty)
 
         for name in names {
             #expect(ToolRegistry.externallyDeniedToolNames.contains(name))
@@ -555,14 +652,17 @@ struct DiscordConnectionTests {
             #expect(EnvelopeAssertions.failureMessage(envelope)?.contains("Osaurus app") == true)
         }
 
-        for name in ToolRegistry.discordToolNames {
-            #expect(ToolRegistry.externallyDeniedToolNames.contains(name))
+        for name in phantomDiscordNames {
+            #expect(!ToolRegistry.externallyDeniedToolNames.contains(name))
         }
     }
 
     @Test func discordChannelIsConfiguredForWriteOnlySetups() async throws {
-        try await withIsolatedDiscordStores {
-            let service = DiscordConnectionService(client: FakeDiscordAPIClient())
+        try await withIsolatedDiscordStores { credentials in
+            let service = DiscordConnectionService(
+                client: FakeDiscordAPIClient(),
+                credentialStore: credentials
+            )
             try service.saveBotToken("discord-bot-token-super-secret")
             try service.saveConfiguration(
                 DiscordConnectionConfiguration(
@@ -582,22 +682,46 @@ struct DiscordConnectionTests {
     }
 
     private func withIsolatedDiscordStores(
-        _ body: () async throws -> Void
+        _ body: (any DiscordCredentialStorage) async throws -> Void
     ) async throws {
         let previousDirectory = DiscordConnectionConfigurationStore.overrideDirectory
         let previousChannelDirectory = AgentChannelConfigurationStore.overrideDirectory
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("osaurus-discord-tests-\(UUID().uuidString)", isDirectory: true)
+        let credentials = FakeDiscordCredentialStore()
         DiscordConnectionConfigurationStore.overrideDirectory = directory
         AgentChannelConfigurationStore.overrideDirectory = directory
-        DiscordCredentialStore.deleteBotToken()
         defer {
-            DiscordCredentialStore.deleteBotToken()
             DiscordConnectionConfigurationStore.overrideDirectory = previousDirectory
             AgentChannelConfigurationStore.overrideDirectory = previousChannelDirectory
             try? FileManager.default.removeItem(at: directory)
         }
-        try await body()
+        try await body(credentials)
+    }
+}
+
+private final class FakeDiscordCredentialStore: DiscordCredentialStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedToken: String?
+
+    func saveBotToken(_ token: String) -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        lock.withLock { storedToken = trimmed }
+        return true
+    }
+
+    func botToken() -> String? {
+        lock.withLock { storedToken }
+    }
+
+    func hasBotToken() -> Bool {
+        botToken() != nil
+    }
+
+    func deleteBotToken() -> Bool {
+        lock.withLock { storedToken = nil }
+        return true
     }
 }
 
@@ -680,14 +804,42 @@ private actor FakeDiscordAPIClient: DiscordAPIClientProtocol {
 private final class DiscordHTTPStubProtocol: URLProtocol {
     nonisolated(unsafe) private static var statusCode: Int = 200
     nonisolated(unsafe) private static var body = Data()
+    nonisolated(unsafe) private static var requestBody = Data()
 
     static func session(statusCode: Int, body: String) -> URLSession {
         self.statusCode = statusCode
         self.body = Data(body.utf8)
+        requestBody = Data()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [DiscordHTTPStubProtocol.self]
         return URLSession(configuration: configuration)
     }
+
+    static func lastRequestJSONBody() -> [String: Any]? {
+        guard !requestBody.isEmpty else { return nil }
+        return try? JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+    }
+
+    private static func bodyData(from request: URLRequest) -> Data {
+        if let data = request.httpBody {
+            return data
+        }
+        guard let stream = request.httpBodyStream else {
+            return Data()
+        }
+        stream.open()
+        defer { stream.close() }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+
 
     override class func canInit(with request: URLRequest) -> Bool {
         true
@@ -698,6 +850,7 @@ private final class DiscordHTTPStubProtocol: URLProtocol {
     }
 
     override func startLoading() {
+        Self.requestBody = Self.bodyData(from: request)
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: Self.statusCode,

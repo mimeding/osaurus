@@ -281,18 +281,6 @@ final class ToolRegistry: ObservableObject {
         "agent_channel_reply_thread",
     ]
 
-    nonisolated static let discordToolNames: Set<String> = [
-        "discord_diagnostics",
-        "discord_list_servers",
-        "discord_list_channels",
-        "discord_read_channel",
-        "discord_read_thread",
-        "discord_find_recent_messages",
-        "discord_draft_message",
-        "discord_send_message",
-        "discord_reply_to_thread",
-    ]
-
     /// Register a plain (non-bucketed) tool. Used by built-in registration
     /// and folder-tool installation; sandbox / MCP / plugin paths use the
     /// dedicated typed helpers so they can also stamp their bucket sets.
@@ -392,9 +380,6 @@ final class ToolRegistry: ObservableObject {
         "agent_channel_read_messages", "agent_channel_read_thread",
         "agent_channel_search_messages", "agent_channel_draft_message",
         "agent_channel_send_message", "agent_channel_reply_thread",
-        "discord_diagnostics", "discord_list_servers", "discord_list_channels",
-        "discord_read_channel", "discord_read_thread", "discord_find_recent_messages",
-        "discord_draft_message", "discord_send_message", "discord_reply_to_thread",
     ]
 
     /// Whether `name` is blocked for the current execution because an
@@ -1535,7 +1520,6 @@ final class ToolRegistry: ObservableObject {
     func groupName(for toolName: String) -> String? {
         guard let tool = toolsByName[toolName] else { return nil }
         if Self.agentChannelToolNames.contains(toolName) { return "agent_channels" }
-        if Self.discordToolNames.contains(toolName) { return DiscordCredentialStore.pluginId }
         if let ext = tool as? ExternalTool { return ext.pluginId }
         if let mcp = tool as? MCPProviderTool { return mcp.providerName }
         if let sandbox = tool as? SandboxPluginTool { return sandbox.plugin.id }
@@ -1546,7 +1530,6 @@ final class ToolRegistry: ObservableObject {
         if isSandboxTool(toolName) { return L("sandbox") }
         if isMCPTool(toolName) { return "mcp" }
         if Self.agentChannelToolNames.contains(toolName) { return L("native") }
-        if Self.discordToolNames.contains(toolName) { return L("native") }
         if isPluginTool(toolName) { return L("plugin") }
         if builtIn { return L("builtin") }
         return L("native")

@@ -273,7 +273,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
     private func resolveConnection(_ connectionId: String?) throws -> AgentChannelConnection {
         let id = AgentChannelConnection.normalizedId(connectionId ?? "")
         let resolvedId = id.isEmpty ? Self.discordConnectionId : id
-        if resolvedId == Self.discordConnectionId {
+        if resolvedId.lowercased() == Self.discordConnectionId {
             return discordConnection()
         }
         guard let connection = AgentChannelConfigurationStore.load().connection(id: resolvedId) else {
@@ -315,10 +315,10 @@ final class AgentChannelConnectionService: @unchecked Sendable {
 
     private func discordConnectionDictionary() -> [String: Any] {
         var row = connectionDictionary(discordConnection())
-        row["credential_saved"] = DiscordCredentialStore.hasBotToken()
+        row["credential_saved"] = discordService.hasBotToken()
         let readRooms = row["read_room_allowlist"] as? [String] ?? []
         let writeRooms = row["write_room_allowlist"] as? [String] ?? []
-        row["configured"] = DiscordCredentialStore.hasBotToken()
+        row["configured"] = discordService.hasBotToken()
             && (!readRooms.isEmpty || !writeRooms.isEmpty)
         return row
     }

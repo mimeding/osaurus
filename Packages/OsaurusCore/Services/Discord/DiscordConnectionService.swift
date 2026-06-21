@@ -102,19 +102,23 @@ enum DiscordConnectionServiceError: LocalizedError, Equatable, Sendable {
 final class DiscordConnectionService: @unchecked Sendable {
     static let shared = DiscordConnectionService(
         client: DiscordAPIClient(),
+        credentialStore: KeychainDiscordCredentialStorage(),
         messageStore: AgentChannelMessageStore.shared
     )
 
     private let client: DiscordAPIClientProtocol
+    private let credentialStore: any DiscordCredentialStorage
     private let messageStore: AgentChannelMessageStore?
     private let recordMessageSnapshotsInline: Bool
 
     init(
         client: DiscordAPIClientProtocol,
+        credentialStore: any DiscordCredentialStorage = KeychainDiscordCredentialStorage(),
         messageStore: AgentChannelMessageStore? = nil,
         recordMessageSnapshotsInline: Bool = false
     ) {
         self.client = client
+        self.credentialStore = credentialStore
         self.messageStore = messageStore
         self.recordMessageSnapshotsInline = recordMessageSnapshotsInline
     }
@@ -133,7 +137,7 @@ final class DiscordConnectionService: @unchecked Sendable {
 
     @discardableResult
     func saveBotToken(_ token: String) throws -> Bool {
-        let saved = DiscordCredentialStore.saveBotToken(token)
+        let saved = credentialStore.saveBotToken(token)
         if !saved {
             throw DiscordConnectionServiceError.configurationSaveFailed(
                 "The token was empty or Keychain storage was unavailable."
@@ -144,12 +148,16 @@ final class DiscordConnectionService: @unchecked Sendable {
 
     @discardableResult
     func deleteBotToken() -> Bool {
-        DiscordCredentialStore.deleteBotToken()
+        credentialStore.deleteBotToken()
+    }
+
+    func hasBotToken() -> Bool {
+        credentialStore.hasBotToken()
     }
 
     func diagnostics() async -> DiscordConnectionDiagnostics {
         let config = configuration()
-        guard let token = DiscordCredentialStore.botToken() else {
+        guard let token = credentialStore.botToken() else {
             return DiscordConnectionDiagnostics(
                 tokenSaved: false,
                 bot: nil,
@@ -408,7 +416,7 @@ final class DiscordConnectionService: @unchecked Sendable {
     }
 
     private func requireToken() throws -> String {
-        guard let token = DiscordCredentialStore.botToken() else {
+        guard let token = credentialStore.botToken() else {
             throw DiscordConnectionServiceError.notConfigured
         }
         return token

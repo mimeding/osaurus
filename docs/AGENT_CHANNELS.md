@@ -65,6 +65,23 @@ credential substitution, response mapping, and security review are implemented.
 Until then, JSON custom channels can be loaded and diagnosed, while executable
 actions are provided by native adapters such as Discord.
 
+## Discord Connection
+
+Discord is the first native Agent Channel connection. It is addressed through
+`connection_id: "discord"` on the `agent_channel_*` tools rather than through a
+separate Discord-specific model-facing tool set.
+
+The Discord bot token is stored in Keychain. The JSON configuration stores only
+non-secret IDs and policy:
+
+- `configuredGuildIds` limits which servers can be inspected.
+- `readableChannelIds` limits rooms that `read_messages`, `read_thread`, and
+  `search_messages` can read.
+- `writableChannelIds` limits rooms that `draft_message`, `send_message`, and
+  `reply_thread` can target.
+- `writeEnabled` must be true, and send/reply actions still require
+  `confirm_send: true`.
+
 ## Message State And Dedupe
 
 Agent Channels keep provider-neutral message state in

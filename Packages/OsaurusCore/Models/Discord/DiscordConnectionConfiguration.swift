@@ -146,6 +146,32 @@ enum DiscordCredentialStore {
     }
 }
 
+protocol DiscordCredentialStorage: Sendable {
+    func saveBotToken(_ token: String) -> Bool
+    func botToken() -> String?
+    func hasBotToken() -> Bool
+    func deleteBotToken() -> Bool
+}
+
+struct KeychainDiscordCredentialStorage: DiscordCredentialStorage {
+    func saveBotToken(_ token: String) -> Bool {
+        DiscordCredentialStore.saveBotToken(token)
+    }
+
+    func botToken() -> String? {
+        DiscordCredentialStore.botToken()
+    }
+
+    func hasBotToken() -> Bool {
+        DiscordCredentialStore.hasBotToken()
+    }
+
+    @discardableResult
+    func deleteBotToken() -> Bool {
+        DiscordCredentialStore.deleteBotToken()
+    }
+}
+
 enum DiscordSecurity {
     static func redact(_ text: String, token: String?) -> String {
         guard let token, token.count >= SecretScrubber.minimumValueLength else {

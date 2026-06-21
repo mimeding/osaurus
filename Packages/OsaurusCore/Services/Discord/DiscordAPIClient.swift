@@ -203,7 +203,12 @@ final class DiscordAPIClient: DiscordAPIClientProtocol, @unchecked Sendable {
         return try await post(
             ["channels", channelId, "messages"],
             token: token,
-            body: ["content": content]
+            body: [
+                "content": content,
+                "allowed_mentions": [
+                    "parse": [] as [String],
+                ],
+            ]
         )
     }
 
