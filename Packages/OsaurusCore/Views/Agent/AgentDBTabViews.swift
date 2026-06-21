@@ -1671,6 +1671,7 @@ public struct ActivityTabView: View {
     @State private var isLoadingTrace = false
     @State private var loadError: String? = nil
     @State private var traceLoadError: String? = nil
+    @State private var traceLoadRequestID: UUID? = nil
 
     public init(agentId: UUID) {
         self.agentId = agentId
@@ -1993,19 +1994,39 @@ public struct ActivityTabView: View {
     @MainActor
     private func loadTrace() async {
         guard let runId = selectedRunId else {
+            traceLoadRequestID = nil
             changelogRows = []
             traceInspection = nil
             traceLoadError = nil
+            isLoadingTrace = false
             return
         }
+        let requestID = UUID()
+        let agentId = agentId
+        traceLoadRequestID = requestID
         isLoadingTrace = true
-        defer { isLoadingTrace = false }
 
+        let result = await Task.detached(priority: .userInitiated) {
+            ActivityTraceLoader.load(agentId: agentId, runId: runId)
+        }.value
+        guard traceLoadRequestID == requestID, selectedRunId == runId else {
+            return
+        }
+        traceInspection = result.inspection
+        changelogRows = result.changelogRows
+        traceLoadError = result.errorMessage
+        isLoadingTrace = false
+    }
+}
+
+fileprivate enum ActivityTraceLoader {
+    static func load(agentId: UUID, runId: UUID) -> TraceLoadResult {
         let traceURL = OsaurusPaths.agentRunTraceFile(agentId: agentId, runId: runId)
+        let inspection: RunTraceInspection?
         if FileManager.default.fileExists(atPath: traceURL.path) {
-            traceInspection = RunTraceInspector.inspectFile(at: traceURL)
+            inspection = RunTraceInspector.inspectFile(at: traceURL)
         } else {
-            traceInspection = nil
+            inspection = nil
         }
 
         do {
@@ -2017,7 +2038,7 @@ public struct ActivityTabView: View {
                 sql: sql,
                 params: [.text(runId.uuidString)]
             )
-            changelogRows = result.rows.enumerated().compactMap { (index, row) in
+            let rows: [ChangelogEntry] = result.rows.enumerated().compactMap { (index, row) in
                 guard row.count >= 6 else { return nil }
                 let ts: Int64 = {
                     if case .integer(let v) = row[0] { return v }
@@ -2033,20 +2054,33 @@ public struct ActivityTabView: View {
                     sql: textValue(row[5])
                 )
             }
-            traceLoadError = nil
+            return TraceLoadResult(
+                inspection: inspection,
+                changelogRows: rows,
+                errorMessage: nil
+            )
         } catch {
-            changelogRows = []
-            traceLoadError = error.localizedDescription
+            return TraceLoadResult(
+                inspection: inspection,
+                changelogRows: [],
+                errorMessage: error.localizedDescription
+            )
         }
     }
 
-    private func textValue(_ value: AgentSQLValue) -> String? {
+    private static func textValue(_ value: AgentSQLValue) -> String? {
         if case .text(let v) = value { return v }
         return nil
     }
 }
 
-fileprivate struct ChangelogEntry: Identifiable {
+fileprivate struct TraceLoadResult: Sendable {
+    let inspection: RunTraceInspection?
+    let changelogRows: [ChangelogEntry]
+    let errorMessage: String?
+}
+
+fileprivate struct ChangelogEntry: Identifiable, Sendable {
     var id: Int { index }
     let index: Int
     let timestamp: Date
