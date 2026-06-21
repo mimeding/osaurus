@@ -36,7 +36,8 @@ struct AgentWorkspacePromptTests {
                     agentId: agent.id,
                     name: "Project Notes",
                     description: "Planning notes for the agent.",
-                    paths: [notes.path]
+                    paths: [notes.path],
+                    sourceAuthorization: .trustedLocal
                 )
 
                 let context = await SystemPromptComposer.composeChatContext(
@@ -50,7 +51,9 @@ struct AgentWorkspacePromptTests {
                 #expect(section.cacheability == .dynamic)
                 #expect(context.prompt.contains("## Agent workspaces"))
                 #expect(context.prompt.contains("Project Notes"))
-                #expect(context.prompt.contains("Roadmap item"))
+                #expect(context.prompt.contains("Source summaries and full paths are hidden"))
+                #expect(context.prompt.contains("Roadmap item") == false)
+                #expect(context.prompt.contains(notes.path) == false)
 
                 _ = await AgentManager.shared.delete(id: agent.id)
                 OsaurusPaths.overrideRoot = previousRoot

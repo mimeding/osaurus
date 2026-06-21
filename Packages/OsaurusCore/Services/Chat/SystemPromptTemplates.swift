@@ -151,7 +151,7 @@ public enum SystemPromptTemplates {
         if summary.canReadSources {
             lines.append("Use the summaries for orientation, and inspect the source path before quoting details.")
         } else {
-            lines.append("Use the summaries for orientation only; do not quote them as exact source text.")
+            lines.append("Source summaries and full paths are hidden because file reading is not available in this chat.")
         }
 
         for workspace in summary.workspaces {

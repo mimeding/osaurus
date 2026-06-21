@@ -140,6 +140,86 @@ struct HTTPHandlerEndpointTests {
         }
     }
 
+    @Test func agentWorkspaces_remoteCallerCannotInspectHostSourcePath() async throws {
+        try await SandboxTestLock.runWithStoragePaths {
+            let root = try makeTempDirectory(prefix: "osaurus-agent-workspace-http-remote")
+            let previousRoot = OsaurusPaths.overrideRoot
+            OsaurusPaths.overrideRoot = root
+            let agent = Agent(
+                name: "WorkspaceHTTPRemote-\(UUID().uuidString.prefix(6))",
+                systemPrompt: "HTTP workspace remote test",
+                agentAddress: "workspace-http-remote-\(UUID().uuidString)"
+            )
+
+            do {
+                AgentManager.shared.add(agent)
+                let source = root.appendingPathComponent("remote.md")
+                try "Remote caller must not receive this.".write(to: source, atomically: true, encoding: .utf8)
+                let localWorkspace = try AgentWorkspaceStore.create(
+                    agentId: agent.id,
+                    name: "Local Workspace",
+                    paths: [source.path],
+                    sourceAuthorization: .trustedLocal
+                )
+
+                let server = try await startServer(
+                    trustLoopback: false,
+                    apiKeyValidator: .forAlice()
+                )
+                defer { Task { await server.shutdown() } }
+                let token = try TokenBuilder.build(
+                    privateKey: TestKeys.alicePrivateKey,
+                    iss: TestKeys.aliceAddress,
+                    aud: TestKeys.aliceAddress
+                )
+                let create = AgentWorkspaceCreateBody(
+                    name: "Remote Workspace",
+                    description: "Attempted remote source attach.",
+                    paths: [source.path]
+                )
+                let (data, response) = try await postJSON(
+                    create,
+                    path: "/agents/\(agent.id.uuidString)/workspaces",
+                    server: server,
+                    authorization: "Bearer \(token)"
+                )
+
+                #expect((response as? HTTPURLResponse)?.statusCode == 403)
+                let body = String(decoding: data, as: UTF8.self)
+                #expect(body.contains("workspace_source_inspection_denied"))
+                #expect(body.contains("Remote caller must not receive this") == false)
+
+                let (listData, listResponse) = try await get(
+                    path: "/agents/\(agent.id.uuidString)/workspaces",
+                    server: server,
+                    authorization: "Bearer \(token)"
+                )
+                #expect((listResponse as? HTTPURLResponse)?.statusCode == 200)
+                let listed = try JSONDecoder().decode(AgentWorkspaceListBody.self, from: listData)
+                let listedLocal = try #require(listed.workspaces.first { $0.id == localWorkspace.id.uuidString })
+                let listedSource = try #require(listedLocal.sources.first)
+                #expect(listedSource.path == source.lastPathComponent)
+                #expect(listedSource.summary == nil)
+                #expect(listedSource.error == nil)
+                #expect(listedSource.byte_count == nil)
+                #expect(listedSource.item_count == nil)
+                #expect(listedSource.indexed_at == nil)
+                let listBody = String(decoding: listData, as: UTF8.self)
+                #expect(listBody.contains(source.path) == false)
+                #expect(listBody.contains("Remote caller must not receive this") == false)
+
+                _ = await AgentManager.shared.delete(id: agent.id)
+                OsaurusPaths.overrideRoot = previousRoot
+                try? FileManager.default.removeItem(at: root)
+            } catch {
+                _ = await AgentManager.shared.delete(id: agent.id)
+                OsaurusPaths.overrideRoot = previousRoot
+                try? FileManager.default.removeItem(at: root)
+                throw error
+            }
+        }
+    }
+
     @Test func runtimeSettings_get_returnsPersistedSnapshot() async throws {
         let dir = try makeTempDirectory()
         try await withOverriddenRuntimeSettingsDirectory(dir) {
@@ -347,7 +427,10 @@ struct HTTPHandlerEndpointTests {
         }
     }
 
-    private func startServer() async throws -> TestServer {
+    private func startServer(
+        trustLoopback: Bool = true,
+        apiKeyValidator: APIKeyValidator = .empty
+    ) async throws -> TestServer {
         let config = ServerConfiguration.default
         let lease = await HTTPServerTestLock.shared.acquire()
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -360,9 +443,9 @@ struct HTTPHandlerEndpointTests {
                         channel.pipeline.addHandler(
                             HTTPHandler(
                                 configuration: config,
-                                apiKeyValidator: .empty,
+                                apiKeyValidator: apiKeyValidator,
                                 eventLoop: channel.eventLoop,
-                                trustLoopback: true
+                                trustLoopback: trustLoopback
                             )
                         )
                     }
@@ -440,16 +523,38 @@ struct HTTPHandlerEndpointTests {
     private struct AgentWorkspaceSourceBody: Decodable {
         let path: String
         let status: String
+        let byte_count: Int64?
+        let item_count: Int?
+        let summary: String?
+        let error: String?
+        let indexed_at: String?
+    }
+
+    private func get(
+        path: String,
+        server: TestServer,
+        authorization: String? = nil
+    ) async throws -> (Data, URLResponse) {
+        var request = URLRequest(url: URL(string: "http://\(server.host):\(server.port)\(path)")!)
+        request.httpMethod = "GET"
+        if let authorization {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
+        return try await URLSession.shared.data(for: request)
     }
 
     private func postJSON<T: Encodable>(
         _ value: T,
         path: String,
-        server: TestServer
+        server: TestServer,
+        authorization: String? = nil
     ) async throws -> (Data, URLResponse) {
         var request = URLRequest(url: URL(string: "http://\(server.host):\(server.port)\(path)")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let authorization {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = try JSONEncoder().encode(value)
         return try await URLSession.shared.data(for: request)
     }

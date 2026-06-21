@@ -21,6 +21,35 @@ public enum AgentWorkspaceStoreError: Error, LocalizedError, Sendable {
     }
 }
 
+public struct AgentWorkspaceSourceAuthorization: Sendable, Equatable {
+    public enum Mode: Sendable, Equatable {
+        case denied
+        case trustedLocal
+        case scopedRoots([URL])
+    }
+
+    public let mode: Mode
+    public let allowSensitivePaths: Bool
+
+    public static let denied = AgentWorkspaceSourceAuthorization(mode: .denied)
+    public static let trustedLocal = AgentWorkspaceSourceAuthorization(mode: .trustedLocal)
+
+    public static func scopedRoots(
+        _ roots: [URL],
+        allowSensitivePaths: Bool = false
+    ) -> AgentWorkspaceSourceAuthorization {
+        AgentWorkspaceSourceAuthorization(
+            mode: .scopedRoots(roots),
+            allowSensitivePaths: allowSensitivePaths
+        )
+    }
+
+    public init(mode: Mode, allowSensitivePaths: Bool = false) {
+        self.mode = mode
+        self.allowSensitivePaths = allowSensitivePaths
+    }
+}
+
 public enum AgentWorkspaceStore {
     public static let defaultFileReadLimit = 64 * 1024
     public static let defaultFileSummaryLimit = 1_500
@@ -84,7 +113,8 @@ public enum AgentWorkspaceStore {
         agentId: UUID,
         name: String,
         description: String = "",
-        paths: [String] = []
+        paths: [String] = [],
+        sourceAuthorization: AgentWorkspaceSourceAuthorization = .denied
     ) throws -> AgentWorkspace {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { throw AgentWorkspaceStoreError.emptyName }
@@ -97,7 +127,7 @@ public enum AgentWorkspaceStore {
             createdAt: now,
             updatedAt: now
         )
-        workspace.sources = paths.map { inspectSource(path: $0) }
+        workspace.sources = paths.map { inspectSource(path: $0, authorization: sourceAuthorization) }
         save(workspace)
         return workspace
     }
@@ -106,12 +136,13 @@ public enum AgentWorkspaceStore {
     public static func attachPaths(
         agentId: UUID,
         workspaceId: UUID,
-        paths: [String]
+        paths: [String],
+        sourceAuthorization: AgentWorkspaceSourceAuthorization = .denied
     ) throws -> AgentWorkspace {
         guard var workspace = load(agentId: agentId, workspaceId: workspaceId) else {
             throw AgentWorkspaceStoreError.workspaceNotFound(workspaceId)
         }
-        workspace.sources.append(contentsOf: paths.map { inspectSource(path: $0) })
+        workspace.sources.append(contentsOf: paths.map { inspectSource(path: $0, authorization: sourceAuthorization) })
         workspace.updatedAt = Date()
         save(workspace)
         return workspace
@@ -152,11 +183,13 @@ public enum AgentWorkspaceStore {
             let sources = workspace.sources.prefix(max(0, maxSourcesPerWorkspace)).map { source in
                 AgentWorkspacePromptSource(
                     kind: source.kind,
-                    path: source.path,
+                    path: canReadSources ? source.path : source.displayName,
                     displayName: source.displayName,
                     status: source.status,
-                    summary: capped(source.summary, maxCharacters: maxSourceSummaryCharacters),
-                    error: source.error
+                    summary: canReadSources
+                        ? capped(source.summary, maxCharacters: maxSourceSummaryCharacters)
+                        : nil,
+                    error: canReadSources ? source.error : nil
                 )
             }
             if workspace.sources.count > sources.count {
@@ -179,6 +212,7 @@ public enum AgentWorkspaceStore {
 
     public static func inspectSource(
         path rawPath: String,
+        authorization: AgentWorkspaceSourceAuthorization = .denied,
         fileReadLimit: Int = defaultFileReadLimit,
         fileSummaryLimit: Int = defaultFileSummaryLimit,
         folderEntryLimit: Int = defaultFolderEntryLimit
@@ -197,6 +231,17 @@ public enum AgentWorkspaceStore {
         let url = url(forUserPath: trimmedPath)
         let path = url.standardizedFileURL.path
         let displayName = url.lastPathComponent.isEmpty ? path : url.lastPathComponent
+
+        if let rejection = authorizeSourceURL(url, authorization: authorization) {
+            return AgentWorkspaceSource(
+                kind: .missing,
+                path: path,
+                displayName: displayName,
+                status: .skipped,
+                error: rejection
+            )
+        }
+
         var isDirectory = ObjCBool(false)
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else {
             return AgentWorkspaceSource(
@@ -306,7 +351,8 @@ public enum AgentWorkspaceStore {
             let sorted = entries.sorted {
                 $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
             }
-            let sample = sorted.prefix(max(0, entryLimit)).map { entry -> String in
+            let visibleEntries = sorted.filter { !isSensitiveSourcePath($0) }
+            let sample = visibleEntries.prefix(max(0, entryLimit)).map { entry -> String in
                 let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
                 return isDirectory ? "\(entry.lastPathComponent)/" : entry.lastPathComponent
             }
@@ -314,8 +360,9 @@ public enum AgentWorkspaceStore {
                 sample.isEmpty
                 ? "Folder is empty."
                 : "Top-level entries: \(sample.joined(separator: ", "))."
-            if entries.count > sample.count {
-                summary += " \(entries.count - sample.count) additional entries omitted."
+            let omitted = entries.count - sample.count
+            if omitted > 0 {
+                summary += " \(omitted) additional entries omitted."
             }
             return AgentWorkspaceSource(
                 kind: .folder,
@@ -355,6 +402,68 @@ public enum AgentWorkspaceStore {
             return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(suffix)
         }
         return URL(fileURLWithPath: path)
+    }
+
+    private static func authorizeSourceURL(
+        _ url: URL,
+        authorization: AgentWorkspaceSourceAuthorization
+    ) -> String? {
+        switch authorization.mode {
+        case .denied:
+            return "Source inspection requires a trusted local caller or an explicit scoped root."
+        case .trustedLocal:
+            break
+        case .scopedRoots(let roots):
+            guard isURL(url, containedInAnyOf: roots) else {
+                return "Source path is outside the authorized workspace roots."
+            }
+        }
+
+        if !authorization.allowSensitivePaths, isSensitiveSourcePath(url) {
+            return "Sensitive source paths are not eligible for workspace summaries."
+        }
+        return nil
+    }
+
+    private static func isURL(_ url: URL, containedInAnyOf roots: [URL]) -> Bool {
+        roots.contains { root in
+            let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
+            let candidatePath = url.resolvingSymlinksInPath().standardizedFileURL.path
+            return candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")
+        }
+    }
+
+    private static func isSensitiveSourcePath(_ url: URL) -> Bool {
+        let realURL = url.resolvingSymlinksInPath().standardizedFileURL
+        let path = realURL.path
+        let components = realURL.pathComponents.map { $0.lowercased() }
+        let systemRoots: Set<String> = [
+            "/",
+            "/bin",
+            "/cores",
+            "/dev",
+            "/etc",
+            "/library",
+            "/network",
+            "/sbin",
+            "/system",
+            "/usr",
+        ]
+        if systemRoots.contains(path.lowercased()) { return true }
+        if path.hasPrefix("/System/")
+            || path.hasPrefix("/Library/")
+            || path.hasPrefix("/private/etc/")
+            || path.hasPrefix("/private/var/db/")
+            || path.hasPrefix("/private/var/root/")
+            || path.hasPrefix("/usr/")
+            || path.hasPrefix("/etc/")
+            || path.hasPrefix("/var/db/")
+            || path.hasPrefix("/var/root/")
+        {
+            return true
+        }
+        if components.contains("keychains") { return true }
+        return FolderToolHelpers.isSecretPath(fileURL: realURL)
     }
 
     private static func normalizeWhitespace(_ string: String) -> String {

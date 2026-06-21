@@ -4390,6 +4390,7 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         let loop = context.eventLoop
         let ctx = NIOLoopBound(context, eventLoop: loop)
         let cors = stateRef.value.corsHeaders
+        let isTrustedLocalCaller = isLoopbackConnection(context)
         let hop = Self.makeHop(channel: context.channel, loop: loop)
         let logSelf = self
         let logStartTime = startTime
@@ -4511,7 +4512,13 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             switch (head.method, components.count) {
             case (.GET, 3):
                 let items = AgentWorkspaceStore.loadAll(agentId: agentId)
-                    .map { agentWorkspaceItem($0, formatter: formatter) }
+                    .map {
+                        agentWorkspaceItem(
+                            $0,
+                            formatter: formatter,
+                            includeSourceDetails: isTrustedLocalCaller
+                        )
+                    }
                 let body = agentWorkspaceJSON(
                     AgentWorkspaceListResponse(workspaces: items),
                     fallback: #"{"workspaces":[]}"#
@@ -4531,16 +4538,33 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     )
                     return
                 }
+                if !isTrustedLocalCaller, request.paths?.isEmpty == false {
+                    reply(
+                        status: .forbidden,
+                        body: agentWorkspaceErrorJSON(
+                            code: "workspace_source_inspection_denied",
+                            message: "Workspace source paths can only be inspected by a trusted local caller."
+                        ),
+                        code: 403,
+                        errorMessage: "Workspace source inspection denied"
+                    )
+                    return
+                }
                 do {
                     let workspace = try AgentWorkspaceStore.create(
                         agentId: agentId,
                         name: request.name,
                         description: request.description ?? "",
-                        paths: request.paths ?? []
+                        paths: request.paths ?? [],
+                        sourceAuthorization: isTrustedLocalCaller ? .trustedLocal : .denied
                     )
                     let body = agentWorkspaceJSON(
                         AgentWorkspaceMutationResponse(
-                            workspace: agentWorkspaceItem(workspace, formatter: formatter)
+                            workspace: agentWorkspaceItem(
+                                workspace,
+                                formatter: formatter,
+                                includeSourceDetails: isTrustedLocalCaller
+                            )
                         ),
                         fallback: #"{"workspace":{}}"#
                     )
@@ -4615,15 +4639,32 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     )
                     return
                 }
+                if !isTrustedLocalCaller {
+                    reply(
+                        status: .forbidden,
+                        body: agentWorkspaceErrorJSON(
+                            code: "workspace_source_inspection_denied",
+                            message: "Workspace source paths can only be inspected by a trusted local caller."
+                        ),
+                        code: 403,
+                        errorMessage: "Workspace source inspection denied"
+                    )
+                    return
+                }
                 do {
                     let workspace = try AgentWorkspaceStore.attachPaths(
                         agentId: agentId,
                         workspaceId: workspaceId,
-                        paths: request.paths
+                        paths: request.paths,
+                        sourceAuthorization: .trustedLocal
                     )
                     let body = agentWorkspaceJSON(
                         AgentWorkspaceMutationResponse(
-                            workspace: agentWorkspaceItem(workspace, formatter: formatter)
+                            workspace: agentWorkspaceItem(
+                                workspace,
+                                formatter: formatter,
+                                includeSourceDetails: isTrustedLocalCaller
+                            )
                         ),
                         fallback: #"{"workspace":{}}"#
                     )
@@ -4666,7 +4707,8 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
     private func agentWorkspaceItem(
         _ workspace: AgentWorkspace,
-        formatter: ISO8601DateFormatter
+        formatter: ISO8601DateFormatter,
+        includeSourceDetails: Bool
     ) -> AgentWorkspaceItem {
         AgentWorkspaceItem(
             id: workspace.id.uuidString,
@@ -4677,14 +4719,16 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 AgentWorkspaceSourceItem(
                     id: source.id.uuidString,
                     kind: source.kind.rawValue,
-                    path: source.path,
+                    path: includeSourceDetails ? source.path : source.displayName,
                     display_name: source.displayName,
                     status: source.status.rawValue,
-                    byte_count: source.byteCount,
-                    item_count: source.itemCount,
-                    summary: source.summary,
-                    error: source.error,
-                    indexed_at: source.indexedAt.map { formatter.string(from: $0) }
+                    byte_count: includeSourceDetails ? source.byteCount : nil,
+                    item_count: includeSourceDetails ? source.itemCount : nil,
+                    summary: includeSourceDetails ? source.summary : nil,
+                    error: includeSourceDetails ? source.error : nil,
+                    indexed_at: includeSourceDetails
+                        ? source.indexedAt.map { formatter.string(from: $0) }
+                        : nil
                 )
             },
             created_at: formatter.string(from: workspace.createdAt),
