@@ -10,6 +10,15 @@
 import CryptoKit
 import Foundation
 
+// MARK: - PromptSectionID
+
+/// Stable IDs for sections that other proof and budget paths inspect by name.
+public enum PromptSectionID {
+    public static let platform = "platform"
+    public static let persona = "persona"
+    public static let memory = "memory"
+}
+
 // MARK: - PromptSection
 
 /// One logical block of the system prompt (e.g. base identity, sandbox, memory).
@@ -73,12 +82,12 @@ public struct PromptManifest: Sendable {
 
     /// Tokens from sections that are NOT the memory section.
     public var systemPromptTokens: Int {
-        sections.filter { $0.id != "memory" }.reduce(0) { $0 + $1.estimatedTokens }
+        sections.filter { $0.id != PromptSectionID.memory }.reduce(0) { $0 + $1.estimatedTokens }
     }
 
     /// Tokens from the memory section specifically.
     public var memoryTokens: Int {
-        section("memory")?.estimatedTokens ?? 0
+        section(PromptSectionID.memory)?.estimatedTokens ?? 0
     }
 
     public func section(_ id: String) -> PromptSection? {
@@ -126,13 +135,9 @@ public struct PromptManifest: Sendable {
     }
 
     public func systemPromptInjectionTrace(expectedPrompt: String) -> SystemPromptInjectionTrace {
-        let renderedPrompt = sections
-            .map { $0.content.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
         return systemPromptInjectionTrace(
             expectedPrompt: expectedPrompt,
-            renderedPrompt: renderedPrompt
+            renderedPrompt: PromptRenderer.render(sections)
         )
     }
 
@@ -154,7 +159,7 @@ public struct PromptManifest: Sendable {
             matchingSectionIds: matchingSectionIds,
             staticPrefixContainsExpectedPrompt: staticPrefixContent.contains(expected),
             renderedPromptContainsExpectedPrompt: renderedPrompt.contains(expected),
-            memorySectionContainsExpectedPrompt: section("memory")?.content.contains(expected) == true
+            memorySectionContainsExpectedPrompt: section(PromptSectionID.memory)?.content.contains(expected) == true
         )
     }
 }
@@ -184,7 +189,7 @@ public struct SystemPromptInjectionTrace: Sendable, Equatable {
     }
 
     public var personaSectionContainsExpectedPrompt: Bool {
-        matchingSectionIds.contains("persona")
+        matchingSectionIds.contains(PromptSectionID.persona)
     }
 
     public var passed: Bool {
@@ -218,6 +223,15 @@ public struct SystemPromptInjectionTrace: Sendable, Equatable {
             codes.append("present_in_memory_section")
         }
         return codes
+    }
+}
+
+enum PromptRenderer {
+    static func render(_ sections: [PromptSection]) -> String {
+        sections
+            .map { $0.content.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
     }
 }
 

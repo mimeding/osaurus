@@ -152,7 +152,7 @@ public struct RuntimeProofSystemPromptEvidence: Codable, Sendable, Equatable {
     }
 
     var personaSectionContainsExpectedPrompt: Bool {
-        matchingSectionIds.contains("persona")
+        matchingSectionIds.contains(PromptSectionID.persona)
     }
 
     var provesSourceTrace: Bool {

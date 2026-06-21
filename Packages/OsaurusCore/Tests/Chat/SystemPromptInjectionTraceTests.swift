@@ -37,6 +37,7 @@ struct SystemPromptInjectionTraceTests {
             renderedPrompt: composer.render()
         )
 
+        #expect(manifest.section(PromptSectionID.persona)?.content.contains(expectedPrompt) == true)
         #expect(trace.passed)
         #expect(trace.personaSectionContainsExpectedPrompt)
         #expect(trace.staticPrefixContainsExpectedPrompt)
@@ -45,13 +46,30 @@ struct SystemPromptInjectionTraceTests {
         #expect(trace.reasonCodes.contains("present_in_persona_section"))
     }
 
+    @Test("convenience trace overload uses composer render contract")
+    func convenienceTraceUsesComposerRenderContract() {
+        let expectedPrompt = "TRACE-RENDER-PATH-\(UUID().uuidString)"
+        var composer = SystemPromptComposer()
+        composer.append(.static(id: PromptSectionID.platform, label: "Platform", content: "platform"))
+        composer.append(.static(id: PromptSectionID.persona, label: "Persona", content: "\n\(expectedPrompt)\n"))
+
+        let explicitTrace = composer.manifest().systemPromptInjectionTrace(
+            expectedPrompt: expectedPrompt,
+            renderedPrompt: composer.render()
+        )
+        let convenienceTrace = composer.manifest().systemPromptInjectionTrace(expectedPrompt: expectedPrompt)
+
+        #expect(convenienceTrace == explicitTrace)
+        #expect(convenienceTrace.passed)
+    }
+
     @Test("memory-only prompt match does not prove system injection")
     func memoryOnlyPromptMatchDoesNotPass() {
         let expectedPrompt = "TRACE-MEMORY-ONLY-\(UUID().uuidString)"
         var composer = SystemPromptComposer()
         composer.append(
             .dynamic(
-                id: "memory",
+                id: PromptSectionID.memory,
                 label: "Memory",
                 content: "Remember this test sentinel: \(expectedPrompt)"
             )

@@ -27,7 +27,7 @@ struct RuntimeProofValidationTests {
             finishReason: "stop",
             systemPromptEvidence: RuntimeProofSystemPromptEvidence(
                 sourceTracePassed: true,
-                matchingSectionIds: ["persona"],
+                matchingSectionIds: [PromptSectionID.persona],
                 staticPrefixContainsExpectedPrompt: true,
                 renderedPromptContainsExpectedPrompt: true
             ),
@@ -155,7 +155,7 @@ struct RuntimeProofValidationTests {
             artifactPaths: ["/tmp/osaurus-proof/system-prompt.json"],
             systemPromptEvidence: RuntimeProofSystemPromptEvidence(
                 sourceTracePassed: true,
-                matchingSectionIds: ["persona"],
+                matchingSectionIds: [PromptSectionID.persona],
                 staticPrefixContainsExpectedPrompt: true,
                 renderedPromptContainsExpectedPrompt: true
             ),
