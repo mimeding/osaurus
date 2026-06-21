@@ -202,24 +202,32 @@ public struct CommunityPluginCatalogIndex: Sendable {
 
     public init(
         catalog: CommunityPluginCatalog,
+        items: [CommunityPluginBrowserItem]
+    ) {
+        self.catalog = catalog
+        self.items = items.sorted(by: Self.sortItems)
+    }
+
+    public init(
+        catalog: CommunityPluginCatalog,
         specs: [PluginSpec],
         installedVersionsByPluginId: [String: SemanticVersion] = [:],
         includeUncatalogedSpecs: Bool = true
     ) {
-        self.catalog = catalog
         let catalogById = catalog.entriesByPluginId
         let filteredSpecs = includeUncatalogedSpecs
             ? specs
             : specs.filter { catalogById[$0.plugin_id] != nil }
-        items = filteredSpecs
-            .map {
+        self.init(
+            catalog: catalog,
+            items: filteredSpecs.map {
                 CommunityPluginBrowserItem(
                     spec: $0,
                     catalogEntry: catalogById[$0.plugin_id],
                     installedVersion: installedVersionsByPluginId[$0.plugin_id]
                 )
             }
-            .sorted(by: Self.sortItems)
+        )
     }
 
     public var categories: [CommunityPluginCategory] {
@@ -242,7 +250,10 @@ public struct CommunityPluginCatalogIndex: Sendable {
     public func filtered(
         query: String = "",
         category: String? = nil,
-        installFilter: CommunityPluginInstallFilter = .all
+        installFilter: CommunityPluginInstallFilter = .all,
+        queryMatcher: @Sendable (_ normalizedQuery: String, _ candidate: String) -> Bool = { query, candidate in
+            candidate.contains(query)
+        }
     ) -> [CommunityPluginBrowserItem] {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let normalizedCategory = category.map { CommunityPluginBrowserItem.categoryKey(for: $0) }
@@ -250,7 +261,7 @@ public struct CommunityPluginCatalogIndex: Sendable {
             if let normalizedCategory, item.categoryKey != normalizedCategory { return false }
             if !matchesInstallFilter(item, installFilter: installFilter) { return false }
             guard !normalizedQuery.isEmpty else { return true }
-            return item.searchCandidates.contains { $0.contains(normalizedQuery) }
+            return item.searchCandidates.contains { queryMatcher(normalizedQuery, $0) }
         }
     }
 

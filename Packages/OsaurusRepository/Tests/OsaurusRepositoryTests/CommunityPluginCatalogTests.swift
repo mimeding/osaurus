@@ -86,6 +86,24 @@ final class CommunityPluginCatalogTests: XCTestCase {
         XCTAssertEqual(index.categories.map(\.id), ["productivity", "web", "registry"])
     }
 
+    func test_indexFilteringAllowsCustomQueryMatcher() {
+        let index = CommunityPluginCatalogIndex(
+            catalog: .empty,
+            specs: [
+                makeSpec(pluginId: "osaurus.browser", name: "Browser"),
+            ]
+        )
+
+        let matches = index.filtered(
+            query: "brwsr",
+            queryMatcher: { query, candidate in
+                query == "brwsr" && candidate == "browser"
+            }
+        )
+
+        XCTAssertEqual(matches.map(\.pluginId), ["osaurus.browser"])
+    }
+
     func test_installPreviewMarksInstallableUpdateAndInstalledStates() {
         let spec = makeSpec(pluginId: "osaurus.browser", name: "Browser", version: "2.0.0")
 

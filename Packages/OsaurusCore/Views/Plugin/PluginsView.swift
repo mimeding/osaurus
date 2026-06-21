@@ -846,33 +846,8 @@ struct PluginsView: View {
 
     // MARK: - Helpers
 
-    nonisolated private static func pluginMatchesQuery(_ plugin: PluginState, query: String) -> Bool {
-        guard !query.isEmpty else { return true }
-        let queryLower = query.lowercased()
-        let candidates = [
-            plugin.pluginId.lowercased(),
-            (plugin.name ?? "").lowercased(),
-            (plugin.pluginDescription ?? "").lowercased(),
-            plugin.catalogCategoryDisplayName.lowercased(),
-        ] + plugin.catalogTags.map {
-            $0.lowercased()
-        }
-        return candidates.contains { SearchService.fuzzyMatch(query: queryLower, in: $0) }
-    }
-
-    nonisolated private static func sortPluginsForBrowse(_ lhs: PluginState, _ rhs: PluginState) -> Bool {
-        let lhsRank = lhs.catalogEntry?.sort_rank ?? Int.max
-        let rhsRank = rhs.catalogEntry?.sort_rank ?? Int.max
-        if lhsRank != rhsRank { return lhsRank < rhsRank }
-        if lhs.isCatalogFeatured != rhs.isCatalogFeatured {
-            return lhs.isCatalogFeatured && !rhs.isCatalogFeatured
-        }
-        return lhs.displayName.lowercased() < rhs.displayName.lowercased()
-    }
-
-    nonisolated private static func categoryMatches(_ plugin: PluginState, category: String?) -> Bool {
-        guard let category else { return true }
-        return plugin.catalogCategoryKey == category
+    nonisolated private static func pluginBrowserQueryMatches(query: String, candidate: String) -> Bool {
+        SearchService.fuzzyMatch(query: query, in: candidate)
     }
 
     nonisolated private static func claudePluginMatchesQuery(
@@ -923,18 +898,30 @@ struct PluginsView: View {
         // the marketplace discovery grid so they aren't duplicated across tabs.
         let installedPluginIds = Set(currentClaudePlugins.map { $0.pluginId })
         let marketplaceRepo = claudeMarketplace.repo
+        let communityCatalog = repoService.communityCatalog
 
         let (browseResult, installedResult, claudeResult, marketplaceResult) =
             await Task.detached(priority: .userInitiated) {
-                let browse = currentPlugins
-                    .filter {
-                        Self.categoryMatches($0, category: nativeCategory)
-                            && Self.pluginMatchesQuery($0, query: query)
-                    }
-                    .sorted(by: Self.sortPluginsForBrowse)
+                let pluginsById = Dictionary(uniqueKeysWithValues: currentPlugins.map { ($0.pluginId, $0) })
+                let catalogIndex = CommunityPluginCatalogIndex(
+                    catalog: communityCatalog,
+                    items: currentPlugins.map(\.communityBrowserItem)
+                )
+                let browse = catalogIndex
+                    .filtered(
+                        query: query,
+                        category: nativeCategory,
+                        queryMatcher: Self.pluginBrowserQueryMatches
+                    )
+                    .compactMap { pluginsById[$0.pluginId] }
                 let installed =
-                    currentPlugins
-                    .filter { $0.isInstalled && Self.pluginMatchesQuery($0, query: query) }
+                    catalogIndex
+                    .filtered(
+                        query: query,
+                        installFilter: .installed,
+                        queryMatcher: Self.pluginBrowserQueryMatches
+                    )
+                    .compactMap { pluginsById[$0.pluginId] }
                     .sorted { $0.displayName < $1.displayName }
                 let claude =
                     currentClaudePlugins

@@ -63,6 +63,21 @@ struct PluginState: Identifiable, Equatable {
     var catalogTags: [String] {
         catalogEntry?.tags ?? []
     }
+
+    var communityBrowserItem: CommunityPluginBrowserItem {
+        CommunityPluginBrowserItem(
+            spec: PluginSpec(
+                plugin_id: pluginId,
+                name: name,
+                description: pluginDescription,
+                license: license,
+                authors: authors,
+                capabilities: capabilities
+            ),
+            catalogEntry: catalogEntry,
+            installedVersion: installedVersion
+        )
+    }
 }
 
 @MainActor
@@ -116,20 +131,10 @@ final class PluginRepositoryService: ObservableObject {
     // MARK: - Public API
 
     var communityCatalogCategories: [CommunityPluginCategory] {
-        let counts = Dictionary(grouping: plugins, by: \.catalogCategoryKey).mapValues(\.count)
-        return counts.map { key, count in
-            CommunityPluginCategory(
-                id: key,
-                displayName: CommunityPluginBrowserItem.displayName(forCategoryKey: key),
-                count: count
-            )
-        }
-        .sorted { lhs, rhs in
-            if lhs.id == "registry" { return false }
-            if rhs.id == "registry" { return true }
-            if lhs.count != rhs.count { return lhs.count > rhs.count }
-            return lhs.displayName.lowercased() < rhs.displayName.lowercased()
-        }
+        CommunityPluginCatalogIndex(
+            catalog: communityCatalog,
+            items: plugins.map(\.communityBrowserItem)
+        ).categories
     }
 
     /// Start the background refresh timer
