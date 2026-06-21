@@ -39,9 +39,17 @@ Each JSON row records:
 - `status` and `status_notes`
 
 Report status values are `pass`, `partial`, `failed`, and `unproven`.
-A successful generation row without positive token/s is `failed`; token/s is
-never silently omitted. Memory evidence is optional, but if a PID is supplied
-and RSS cannot be sampled, the row is `partial`.
+A successful generation row without positive token/s is `unproven` with a
+`no-metrics` status note; `success_rate` still reflects HTTP generation
+success, but summary status cannot pass until every row has positive token/s.
+Memory evidence is optional, but if a PID is supplied and RSS cannot be sampled,
+the row is `partial`.
+
+Run the benchmark report unit tests with:
+
+```bash
+make bench-models-test
+```
 
 ## Memory Sampling
 

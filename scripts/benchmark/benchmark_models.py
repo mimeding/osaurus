@@ -249,8 +249,8 @@ def classify_result(
         return STATUS_FAILED, notes
 
     if tokens_per_second is None or tokens_per_second <= 0:
-        notes.append("missing token/s")
-        return STATUS_FAILED, notes
+        notes.append("no-metrics: missing positive token/s")
+        return STATUS_UNPROVEN, notes
 
     if memory_requested and (memory_before is None or memory_after is None):
         notes.append("memory RSS sample unavailable")
@@ -561,12 +561,14 @@ def aggregate(results: List[SingleResult]) -> Dict[Tuple[str, str], Dict[str, An
         bytes_avg = sum(out_bytes) / len(out_bytes) if out_bytes else float("nan")
         if not items:
             aggregate_status = STATUS_UNPROVEN
+        elif status_counts[STATUS_PASS] == len(items):
+            aggregate_status = STATUS_PASS
         elif status_counts[STATUS_FAILED] == len(items):
             aggregate_status = STATUS_FAILED
-        elif status_counts[STATUS_FAILED] > 0 or status_counts[STATUS_PARTIAL] > 0:
-            aggregate_status = STATUS_PARTIAL
+        elif status_counts[STATUS_UNPROVEN] == len(items):
+            aggregate_status = STATUS_UNPROVEN
         else:
-            aggregate_status = STATUS_PASS
+            aggregate_status = STATUS_PARTIAL
 
         summary[key] = {
             "runs": len(items),

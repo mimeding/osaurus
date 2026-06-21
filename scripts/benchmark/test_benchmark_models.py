@@ -44,7 +44,7 @@ def make_result(
 
 
 class BenchmarkReportTests(unittest.TestCase):
-    def test_missing_token_rate_is_failed(self):
+    def test_missing_token_rate_is_unproven(self):
         status, notes = bench.classify_result(
             success=True,
             status_code=200,
@@ -56,8 +56,42 @@ class BenchmarkReportTests(unittest.TestCase):
             memory_after=None,
         )
 
-        self.assertEqual(status, bench.STATUS_FAILED)
-        self.assertIn("missing token/s", notes)
+        self.assertEqual(status, bench.STATUS_UNPROVEN)
+        self.assertIn("no-metrics: missing positive token/s", notes)
+
+    def test_unproven_metrics_keep_success_rate_but_not_pass_status(self):
+        result = make_result(
+            "osaurus",
+            "qwen3-coder",
+            0,
+            1,
+            bench.STATUS_UNPROVEN,
+            status_notes=["no-metrics: missing positive token/s"],
+        )
+        summary = bench.aggregate([result])
+        stats = summary[("osaurus", "qwen3-coder")]
+
+        self.assertEqual(stats["status"], bench.STATUS_UNPROVEN)
+        self.assertEqual(stats["success_rate"], 1.0)
+        self.assertEqual(stats["status_counts"][bench.STATUS_UNPROVEN], 1)
+
+    def test_mixed_pass_and_unproven_metrics_are_partial(self):
+        results = [
+            make_result("osaurus", "qwen3-coder", 0, 1, bench.STATUS_PASS, tokens_per_second=11.0),
+            make_result(
+                "osaurus",
+                "qwen3-coder",
+                1,
+                1,
+                bench.STATUS_UNPROVEN,
+                status_notes=["no-metrics: missing positive token/s"],
+            ),
+        ]
+        summary = bench.aggregate(results)
+        stats = summary[("osaurus", "qwen3-coder")]
+
+        self.assertEqual(stats["status"], bench.STATUS_PARTIAL)
+        self.assertEqual(stats["success_rate"], 1.0)
 
     def test_resolves_token_rate_from_completion_tokens(self):
         rate, source = bench.resolve_tokens_per_second(
@@ -72,7 +106,14 @@ class BenchmarkReportTests(unittest.TestCase):
     def test_report_rows_are_sorted_and_strict_json(self):
         results = [
             make_result("z-server", "model-b", 1, 2, bench.STATUS_PASS, tokens_per_second=11.0),
-            make_result("a-server", "model-a", 0, 1, bench.STATUS_FAILED, status_notes=["missing token/s"]),
+            make_result(
+                "a-server",
+                "model-a",
+                0,
+                1,
+                bench.STATUS_UNPROVEN,
+                status_notes=["no-metrics: missing positive token/s"],
+            ),
         ]
         summary = bench.aggregate(results)
         report = bench.build_benchmark_report(
@@ -90,8 +131,8 @@ class BenchmarkReportTests(unittest.TestCase):
         )
 
         self.assertEqual(report["rows"][0]["server"], "a-server")
-        self.assertEqual(report["rows"][0]["status"], bench.STATUS_FAILED)
-        self.assertEqual(report["summary"][0]["status"], bench.STATUS_FAILED)
+        self.assertEqual(report["rows"][0]["status"], bench.STATUS_UNPROVEN)
+        self.assertEqual(report["summary"][0]["status"], bench.STATUS_UNPROVEN)
         json.dumps(report, allow_nan=False)
 
     def test_markdown_includes_status_and_prompt_case(self):
@@ -100,8 +141,8 @@ class BenchmarkReportTests(unittest.TestCase):
             "qwen3-coder",
             0,
             1,
-            bench.STATUS_FAILED,
-            status_notes=["missing token/s"],
+            bench.STATUS_UNPROVEN,
+            status_notes=["no-metrics: missing positive token/s"],
         )
         summary = bench.aggregate([result])
         report = bench.build_benchmark_report(
@@ -117,8 +158,8 @@ class BenchmarkReportTests(unittest.TestCase):
         markdown = bench.format_benchmark_markdown(report)
 
         self.assertIn("prompt-0", markdown)
-        self.assertIn("failed", markdown)
-        self.assertIn("missing token/s", markdown)
+        self.assertIn("unproven", markdown)
+        self.assertIn("no-metrics: missing positive token/s", markdown)
 
 
 if __name__ == "__main__":

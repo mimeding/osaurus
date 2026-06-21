@@ -10,7 +10,7 @@ WORKSPACE := osaurus.xcworkspace
 DERIVED := build/DerivedData
 XCODEBUILD_FLAGS ?=
 
-.PHONY: help cli app install-cli serve status test ci-test clean bench-setup bench-ingest bench-ingest-chunks bench-run bench bench-models evals-prep evals evals-verbose evals-report evals-all evals-all-verbose evals-all-report evals-capture-screen evals-loop evals-matrix evals-diff evals-contribute evals-compat
+.PHONY: help cli app install-cli serve status test ci-test clean bench-setup bench-ingest bench-ingest-chunks bench-run bench bench-models bench-models-test evals-prep evals evals-verbose evals-report evals-all evals-all-verbose evals-all-report evals-capture-screen evals-loop evals-matrix evals-diff evals-contribute evals-compat
 
 help:
 	@echo "Targets:"
@@ -25,6 +25,7 @@ help:
 	@echo "  bench-run           Run LOCOMO benchmark only (skip ingestion)"
 	@echo "  bench               Full ingest + run LOCOMO benchmark"
 	@echo "  bench-models        Compare OpenAI-compatible servers and write benchmark reports"
+	@echo "  bench-models-test   Run benchmark report Python unit tests"
 	@echo "  evals               Run one OsaurusEvals suite (MODEL=, FILTER=, EVALS_SUITE=)"
 	@echo "  evals-verbose       Same as 'evals' plus per-case raw LLM response (debugging prompt iter)"
 	@echo "  evals-report        Same as 'evals' but also writes JSON to EVALS_OUT (build/evals.json)"
@@ -147,6 +148,10 @@ bench: bench-ingest bench-run
 bench-models:
 	@echo "Running model benchmark comparison reports…"
 	scripts/benchmark/run_bench.sh
+
+bench-models-test:
+	@echo "Running benchmark report Python tests…"
+	python3 scripts/benchmark/test_benchmark_models.py
 
 ## ── OsaurusEvals (off-CI behaviour evals) ────────────────────────
 # Override on the command line, e.g.
