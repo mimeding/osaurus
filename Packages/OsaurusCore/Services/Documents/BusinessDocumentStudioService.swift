@@ -667,15 +667,15 @@ public struct BusinessDocumentStudioService: Sendable {
         guard url.isFileURL else {
             throw BusinessDocumentStudioError.destinationIsNotFileURL(url)
         }
-        if !policy.allowOverwrite, FileManager.default.fileExists(atPath: url.path) {
-            throw BusinessDocumentStudioError.destinationAlreadyExists(url)
-        }
         if let allowedDirectory = policy.allowedDirectory {
             let root = allowedDirectory.standardizedFileURL.resolvingSymlinksInPath().path
             let parent = url.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path
             guard parent == root || parent.hasPrefix(root + "/") else {
                 throw BusinessDocumentStudioError.destinationOutsideAllowedDirectory(url)
             }
+        }
+        if !policy.allowOverwrite, FileManager.default.fileExists(atPath: url.path) {
+            throw BusinessDocumentStudioError.destinationAlreadyExists(url)
         }
     }
 

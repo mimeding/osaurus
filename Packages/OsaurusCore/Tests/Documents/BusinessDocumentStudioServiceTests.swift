@@ -197,6 +197,39 @@ struct BusinessDocumentStudioServiceTests {
         }
     }
 
+    @Test func outsideAllowedDestinationDoesNotDiscloseExistingTarget() async throws {
+        let service = BusinessDocumentStudioService(registry: DocumentFormatRegistry())
+        let document = Self.plainTextDocument()
+        let outputDirectory = try Self.temporaryDirectory()
+        let outsideDirectory = try Self.temporaryDirectory()
+        let existingOutside = outsideDirectory.appendingPathComponent("existing.txt")
+        let missingOutside = outsideDirectory.appendingPathComponent("missing.txt")
+        try "private".write(to: existingOutside, atomically: true, encoding: .utf8)
+        defer {
+            try? FileManager.default.removeItem(at: outputDirectory)
+            try? FileManager.default.removeItem(at: outsideDirectory)
+        }
+
+        for target in [existingOutside, missingOutside] {
+            do {
+                _ = try await service.export(
+                    document,
+                    as: "txt",
+                    to: target,
+                    policy: BusinessDocumentStudioExportPolicy(allowedDirectory: outputDirectory)
+                )
+                Issue.record("Expected outside destination to be rejected")
+            } catch BusinessDocumentStudioError.destinationOutsideAllowedDirectory(let url) {
+                #expect(url == target)
+            } catch {
+                Issue.record("Expected destinationOutsideAllowedDirectory, got \(error)")
+            }
+        }
+
+        #expect(try String(contentsOf: existingOutside, encoding: .utf8) == "private")
+        #expect(!FileManager.default.fileExists(atPath: missingOutside.path))
+    }
+
     @Test func inspectPDFWrapsPreviewAndMissingEmitterExportOption() throws {
         let service = BusinessDocumentStudioService(registry: DocumentFormatRegistry())
         let inspection = try service.inspect(Self.pdfDocument())
