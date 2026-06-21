@@ -22,7 +22,7 @@ import Testing
 
 @testable import OsaurusCore
 
-@Suite("ModelMediaCapabilities — MC/DC coverage")
+@Suite("ModelMediaCapabilities — MC/DC coverage", .serialized)
 struct ModelMediaCapabilitiesMCDCTests {
 
     // MARK: - D1: Nemotron-3 omni (audio + video + image)
