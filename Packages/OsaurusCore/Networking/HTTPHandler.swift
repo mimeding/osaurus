@@ -4267,9 +4267,9 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
         let requestBody = (head.method == .POST || head.method == .PUT || head.method == .PATCH)
             ? readRequestBody()
             : nil
-        let canManage = stateRef.value.authedAudience == nil || stateRef.value.authedScopeIsMaster
         let authedAudience = stateRef.value.authedAudience
         let hasGlobalScope = stateRef.value.authedScopeIsMaster
+        let canManage = isLoopbackConnection(context) || hasGlobalScope
 
         runRequestTask(priority: .userInitiated) {
             func sendJSON(status: HTTPResponseStatus, body: String) {
@@ -4320,8 +4320,12 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             if head.method == .GET, path == "/agents" {
                 let memoryCounts = Self.memoryCountsByAgentId()
                 let items = await MainActor.run {
-                    visibleAgents.map {
-                        Self.agentListItem(for: $0, memoryCounts: memoryCounts)
+                    visibleAgents.filter { !$0.isBuiltIn }.map {
+                        Self.agentListItem(
+                            for: $0,
+                            memoryCounts: memoryCounts,
+                            includeSensitiveConfiguration: false
+                        )
                     }
                 }
                 sendEncodable(status: .ok, value: AgentListResponse(agents: items))
@@ -4468,7 +4472,11 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     }
                 }
                 let item = await MainActor.run {
-                    Self.agentListItem(for: AgentManager.shared.agent(for: agent.id) ?? agent, memoryCounts: [:])
+                    Self.agentListItem(
+                        for: AgentManager.shared.agent(for: agent.id) ?? agent,
+                        memoryCounts: [:],
+                        includeSensitiveConfiguration: true
+                    )
                 }
                 sendEncodable(status: .created, value: AgentItemResponse(agent: item))
                 return
@@ -4497,7 +4505,11 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
             if head.method == .GET {
                 let item = await MainActor.run {
-                    Self.agentListItem(for: agent, memoryCounts: Self.memoryCountsByAgentId())
+                    Self.agentListItem(
+                        for: agent,
+                        memoryCounts: Self.memoryCountsByAgentId(),
+                        includeSensitiveConfiguration: true
+                    )
                 }
                 sendEncodable(status: .ok, value: AgentItemResponse(agent: item))
                 return
@@ -4536,7 +4548,11 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     if let value = request.creation_defaults { config.creationDefaults = value.domain }
                     DefaultAgentConfigurationStore.save(config)
                     NotificationCenter.default.post(name: .agentUpdated, object: Agent.defaultId)
-                    return Self.agentListItem(for: Agent.default, memoryCounts: [:])
+                    return Self.agentListItem(
+                        for: Agent.default,
+                        memoryCounts: [:],
+                        includeSensitiveConfiguration: true
+                    )
                 }
                 sendEncodable(status: .ok, value: AgentItemResponse(agent: item))
                 return
@@ -4574,7 +4590,11 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             }
             let item = await MainActor.run { () -> AgentListItem in
                 AgentManager.shared.update(agent)
-                return Self.agentListItem(for: AgentManager.shared.agent(for: agent.id) ?? agent, memoryCounts: [:])
+                return Self.agentListItem(
+                    for: AgentManager.shared.agent(for: agent.id) ?? agent,
+                    memoryCounts: [:],
+                    includeSensitiveConfiguration: true
+                )
             }
             sendEncodable(status: .ok, value: AgentItemResponse(agent: item))
         }
@@ -4650,7 +4670,8 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
     @MainActor
     private static func agentListItem(
         for agent: Agent,
-        memoryCounts: [String: Int]
+        memoryCounts: [String: Int],
+        includeSensitiveConfiguration: Bool
     ) -> AgentListItem {
         let formatter = ISO8601DateFormatter()
         let manager = AgentManager.shared
@@ -4665,7 +4686,9 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
             id: agent.id.uuidString,
             name: agent.name,
             description: agent.description,
-            system_prompt: manager.effectiveSystemPrompt(for: agent.id),
+            system_prompt: includeSensitiveConfiguration
+                ? manager.effectiveSystemPrompt(for: agent.id)
+                : nil,
             default_model: agent.id == Agent.defaultId ? defaultConfig?.defaultModel : agent.defaultModel,
             temperature: agent.id == Agent.defaultId ? defaultConfig?.temperature : agent.temperature,
             max_tokens: agent.id == Agent.defaultId ? defaultConfig?.maxTokens : agent.maxTokens,

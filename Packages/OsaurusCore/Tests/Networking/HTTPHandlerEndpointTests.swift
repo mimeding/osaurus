@@ -264,10 +264,60 @@ struct HTTPHandlerEndpointTests {
         }
     }
 
-    @Test func agents_get_exposesDefaultAgentConfigurationForLoopback() async throws {
+    @Test func agents_get_omitsBuiltInsAndSystemPromptsForLoopback() async throws {
         try await withIsolatedAgentState {
             DefaultAgentConfigurationStore.save(
                 DefaultAgentConfiguration(
+                    systemPrompt: "private default prompt",
+                    defaultModel: "global-chat-model",
+                    toolSelectionMode: .manual,
+                    manualToolNames: ["global_tool"],
+                    manualSkillNames: ["global_skill"],
+                    creationDefaults: AgentCreationDefaults(
+                        defaultModel: "global-create-model",
+                        temperature: 0.25,
+                        maxTokens: 128,
+                        toolSelectionMode: .manual,
+                        manualToolNames: ["global_tool"],
+                        manualSkillNames: ["global_skill"],
+                        autoSpeak: false,
+                        ttsVoice: "global-voice"
+                    )
+                )
+            )
+            let custom = Agent(
+                name: "Listable Agent",
+                description: "Custom agent",
+                systemPrompt: "private custom prompt",
+                defaultModel: "custom-model"
+            )
+            AgentManager.shared.add(custom)
+
+            let server = try await startServer()
+            defer { Task { await server.shutdown() } }
+
+            let (data, response) = try await jsonRequest("/agents", server: server)
+
+            #expect(response.statusCode == 200)
+            let decoded = try JSONDecoder().decode(AgentListEnvelope.self, from: data)
+            #expect(decoded.agents.allSatisfy { $0.id != Agent.defaultId.uuidString })
+            let listed = try #require(decoded.agents.first { $0.id == custom.id.uuidString })
+            #expect(listed.is_built_in == false)
+            #expect(listed.default_model == "custom-model")
+
+            let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let agents = try #require(obj?["agents"] as? [[String: Any]])
+            for agent in agents {
+                #expect(agent["system_prompt"] == nil)
+            }
+        }
+    }
+
+    @Test func agentDefault_get_exposesDefaultAgentConfigurationForLoopback() async throws {
+        try await withIsolatedAgentState {
+            DefaultAgentConfigurationStore.save(
+                DefaultAgentConfiguration(
+                    systemPrompt: "private default prompt",
                     defaultModel: "global-chat-model",
                     toolSelectionMode: .manual,
                     manualToolNames: ["global_tool"],
@@ -288,12 +338,13 @@ struct HTTPHandlerEndpointTests {
             let server = try await startServer()
             defer { Task { await server.shutdown() } }
 
-            let (data, response) = try await jsonRequest("/agents", server: server)
+            let (data, response) = try await jsonRequest("/agents/default", server: server)
 
             #expect(response.statusCode == 200)
-            let decoded = try JSONDecoder().decode(AgentListEnvelope.self, from: data)
-            let defaultAgent = try #require(decoded.agents.first { $0.id == Agent.defaultId.uuidString })
+            let defaultAgent = try JSONDecoder().decode(AgentItemEnvelope.self, from: data).agent
+            #expect(defaultAgent.id == Agent.defaultId.uuidString)
             #expect(defaultAgent.is_built_in == true)
+            #expect(defaultAgent.system_prompt == "private default prompt")
             #expect(defaultAgent.default_model == "global-chat-model")
             #expect(defaultAgent.tool_selection_mode == "manual")
             #expect(defaultAgent.manual_tool_names == ["global_tool"])
@@ -313,6 +364,48 @@ struct HTTPHandlerEndpointTests {
         let (_, response) = try await jsonRequest("/agents", server: server)
 
         #expect(response.statusCode == 401)
+    }
+
+    @Test func agents_api_deniesScopedKeyManagementWhenLoopbackTrustIsDisabled() async throws {
+        try await withIsolatedAgentState {
+            let agentAddress = try AgentKey.deriveAddress(masterKey: TestKeys.alicePrivateKey, index: 0)
+            let agentKey = AgentKey.derive(masterKey: TestKeys.alicePrivateKey, index: 0)
+            let scopedToken = try TokenBuilder.build(
+                privateKey: agentKey,
+                iss: agentAddress,
+                aud: agentAddress
+            )
+            let scopedAgent = Agent(
+                name: "Scoped Agent",
+                systemPrompt: "private scoped prompt",
+                agentAddress: agentAddress.lowercased()
+            )
+            AgentManager.shared.add(scopedAgent)
+
+            let server = try await startServer(
+                trustLoopback: false,
+                apiKeyValidator: .forAlice(agentAddress: agentAddress)
+            )
+            defer { Task { await server.shutdown() } }
+
+            let (listData, listResponse) = try await jsonRequest(
+                "/agents",
+                authorization: "Bearer \(scopedToken)",
+                server: server
+            )
+            #expect(listResponse.statusCode == 200)
+            let listed = try JSONDecoder().decode(AgentListEnvelope.self, from: listData).agents
+            #expect(listed.map(\.id) == [scopedAgent.id.uuidString])
+
+            let (_, createResponse) = try await jsonRequest(
+                "/agents",
+                method: "POST",
+                body: ["name": "Denied"],
+                authorization: "Bearer \(scopedToken)",
+                server: server
+            )
+            #expect(createResponse.statusCode == 403)
+        }
     }
 
     @Test func agents_post_appliesDefaultTeamAndRequestPrecedence() async throws {
@@ -495,7 +588,10 @@ struct HTTPHandlerEndpointTests {
         }
     }
 
-    private func startServer(trustLoopback: Bool = true) async throws -> TestServer {
+    private func startServer(
+        trustLoopback: Bool = true,
+        apiKeyValidator: APIKeyValidator = .empty
+    ) async throws -> TestServer {
         let config = ServerConfiguration.default
         let lease = await HTTPServerTestLock.shared.acquire()
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -508,7 +604,7 @@ struct HTTPHandlerEndpointTests {
                         channel.pipeline.addHandler(
                             HTTPHandler(
                                 configuration: config,
-                                apiKeyValidator: .empty,
+                                apiKeyValidator: apiKeyValidator,
                                 eventLoop: channel.eventLoop,
                                 trustLoopback: trustLoopback
                             )
@@ -547,6 +643,7 @@ struct HTTPHandlerEndpointTests {
     private struct AgentSummary: Decodable {
         let id: String
         let name: String
+        let system_prompt: String?
         let default_model: String?
         let temperature: Float?
         let max_tokens: Int?
@@ -602,10 +699,14 @@ struct HTTPHandlerEndpointTests {
         _ path: String,
         method: String = "GET",
         body: [String: Any]? = nil,
+        authorization: String? = nil,
         server: TestServer
     ) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: URL(string: "http://\(server.host):\(server.port)\(path)")!)
         request.httpMethod = method
+        if let authorization {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
