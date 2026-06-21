@@ -135,10 +135,14 @@ local billing ledger:
 
 Support export is metadata-only. It may include public wallet address,
 redacted signed-request diagnostics, usage rows, transaction rows, and local
-ledger metadata. It must not include prompts, assistant replies, tool arguments,
-tool results, private keys, bearer tokens, cookies, or raw wallet signatures.
-Wallet signatures are replaced with `<redacted>` and only a SHA-256 fingerprint
-of the signature is retained for local/server correlation.
+ledger metadata. Export never reads the Master Key or triggers biometric
+authentication just to derive the wallet address; it uses an existing
+non-prompting source such as signed-request diagnostics when available. When no
+such source exists, `walletAddressStatus` records that the address was
+unavailable without prompting. It must not include prompts, assistant replies,
+tool arguments, tool results, private keys, bearer tokens, cookies, or raw
+wallet signatures. Wallet signatures are replaced with `<redacted>` and only a
+SHA-256 fingerprint of the signature is retained for local/server correlation.
 
 ## Empty Stream Diagnostics
 

@@ -257,12 +257,19 @@ struct RouterSupportLedgerEntry: Codable, Equatable, Sendable {
     }
 }
 
+public enum RouterSupportWalletAddressStatus: String, Codable, Equatable, Sendable {
+    case available
+    case identityMissing = "identity_missing"
+    case unavailableWithoutPrompt = "unavailable_without_prompt"
+}
+
 struct RouterSupportExport: Codable, Equatable, Sendable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     let schemaVersion: Int
     let generatedAt: Date
     let walletAddress: String?
+    let walletAddressStatus: RouterSupportWalletAddressStatus
     let account: RouterAccountUsageSnapshot
     let signedRequestDiagnostics: [RouterSignedRequestDiagnostic]
     let usage: [RouterSupportUsageItem]
@@ -377,10 +384,19 @@ enum RouterAccountUsageCenter {
         ledgerEntries: [RouterBillingEntry],
         generatedAt: Date = Date()
     ) -> RouterSupportExport {
-        RouterSupportExport(
+        let resolvedWalletAddress = nonPromptingWalletAddress(
+            explicitWalletAddress: walletAddress,
+            signedDiagnostics: signedDiagnostics
+        )
+
+        return RouterSupportExport(
             schemaVersion: RouterSupportExport.schemaVersion,
             generatedAt: generatedAt,
-            walletAddress: walletAddress?.lowercased(),
+            walletAddress: resolvedWalletAddress,
+            walletAddressStatus: walletAddressStatus(
+                walletAddress: resolvedWalletAddress,
+                snapshot: snapshot
+            ),
             account: snapshot,
             signedRequestDiagnostics: signedDiagnostics,
             usage: usageItems.map(RouterSupportUsageItem.init),
@@ -389,8 +405,35 @@ enum RouterAccountUsageCenter {
             redaction: [
                 "Prompt text, response text, tool arguments, tool results, private keys, bearer tokens, cookies, and wallet signatures are not exported.",
                 "Signed request diagnostics include request shape, body hash, signed header names, and a signature fingerprint only.",
+                "Support export does not prompt for biometric authentication; walletAddress is populated only from non-prompting sources.",
             ]
         )
+    }
+
+    static func nonPromptingWalletAddress(
+        explicitWalletAddress: String?,
+        signedDiagnostics: [RouterSignedRequestDiagnostic]
+    ) -> String? {
+        if let explicit = normalizedWalletAddress(explicitWalletAddress) {
+            return explicit
+        }
+
+        return signedDiagnostics.lazy
+            .compactMap { normalizedWalletAddress($0.walletAddress) }
+            .first
+    }
+
+    static func walletAddressStatus(
+        walletAddress: String?,
+        snapshot: RouterAccountUsageSnapshot
+    ) -> RouterSupportWalletAddressStatus {
+        if normalizedWalletAddress(walletAddress) != nil {
+            return .available
+        }
+        if !snapshot.accountStatus.identityAvailable {
+            return .identityMissing
+        }
+        return .unavailableWithoutPrompt
     }
 
     static func redactedHeaderValue(headerName: String, value: String) -> String {
@@ -405,6 +448,13 @@ enum RouterAccountUsageCenter {
             return value.lowercased()
         }
         return value
+    }
+
+    private static func normalizedWalletAddress(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.lowercased()
     }
 
     private static func isSensitiveHeader(_ loweredName: String) -> Bool {

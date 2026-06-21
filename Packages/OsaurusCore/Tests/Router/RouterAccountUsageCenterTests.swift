@@ -148,8 +148,71 @@ struct RouterAccountUsageCenterTests {
         #expect(!payload.contains(#""prompt""#))
         #expect(payload.contains(RouterAccountUsageCenter.redactedValue))
         #expect(export.walletAddress == "0xabcdef")
+        #expect(export.walletAddressStatus == .available)
         #expect(export.usage.count == 1)
         #expect(export.ledgerEntries.count == 1)
+    }
+
+    @Test func supportExport_usesSignedDiagnosticWalletAddressWithoutPrompting() throws {
+        let url = try #require(URL(string: "https://router.osaurus.ai/credits/balance"))
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(" 0xABCDEF ", forHTTPHeaderField: "x-wallet-address")
+        request.setValue("1717171717", forHTTPHeaderField: "x-wallet-timestamp")
+        request.setValue("0x" + String(repeating: "c", count: 130), forHTTPHeaderField: "x-wallet-signature")
+        let diagnostic = RouterSignedRequestDiagnostic(request: request, body: Data())
+        let snapshot = RouterAccountUsageCenter.snapshot(
+            routerEnabled: true,
+            identityAvailable: true,
+            balance: OsaurusRouterBalanceResponse(balanceMicro: "7000000", frozen: false),
+            lastError: nil,
+            usageItems: [],
+            transactions: [],
+            ledgerEntries: []
+        )
+
+        let export = RouterAccountUsageCenter.supportExport(
+            walletAddress: nil,
+            snapshot: snapshot,
+            signedDiagnostics: [diagnostic],
+            usageItems: [],
+            transactions: [],
+            ledgerEntries: []
+        )
+
+        #expect(export.walletAddress == "0xabcdef")
+        #expect(export.walletAddressStatus == .available)
+    }
+
+    @Test func supportExport_recordsWalletAddressStatusWhenAddressUnavailableWithoutPrompt() throws {
+        let snapshot = RouterAccountUsageCenter.snapshot(
+            routerEnabled: true,
+            identityAvailable: true,
+            balance: OsaurusRouterBalanceResponse(balanceMicro: "7000000", frozen: false),
+            lastError: nil,
+            usageItems: [],
+            transactions: [],
+            ledgerEntries: []
+        )
+
+        let export = RouterAccountUsageCenter.supportExport(
+            walletAddress: nil,
+            snapshot: snapshot,
+            signedDiagnostics: [],
+            usageItems: [],
+            transactions: [],
+            ledgerEntries: []
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        let payload = String(decoding: try encoder.encode(export), as: UTF8.self)
+
+        #expect(export.walletAddress == nil)
+        #expect(export.walletAddressStatus == .unavailableWithoutPrompt)
+        #expect(payload.contains(#""walletAddressStatus":"unavailable_without_prompt""#))
+        #expect(export.redaction.contains { $0.contains("does not prompt for biometric authentication") })
     }
 
     private func usage(

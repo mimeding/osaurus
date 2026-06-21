@@ -123,11 +123,8 @@ final class RouterAccountUsageCenterViewModel: ObservableObject {
         defer { isExportingSupport = false }
 
         rebuildSnapshot()
-        let walletAddress = await Task.detached(priority: .userInitiated) {
-            Self.bestEffortWalletAddress()
-        }.value
         let export = RouterAccountUsageCenter.supportExport(
-            walletAddress: walletAddress,
+            walletAddress: nil,
             snapshot: snapshot,
             signedDiagnostics: signedDiagnostics,
             usageItems: accountService.usage,
@@ -172,15 +169,5 @@ final class RouterAccountUsageCenterViewModel: ObservableObject {
             transactions: accountService.transactions,
             ledgerEntries: ledgerEntries
         )
-    }
-
-    nonisolated private static func bestEffortWalletAddress() -> String? {
-        guard OsaurusIdentity.exists() else { return nil }
-        let context = OsaurusIdentityContext.biometric()
-        guard var masterKeyData = try? MasterKey.getPrivateKey(context: context) else {
-            return nil
-        }
-        defer { masterKeyData.zeroOut() }
-        return try? deriveOsaurusId(from: masterKeyData)
     }
 }

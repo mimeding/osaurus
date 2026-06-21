@@ -727,9 +727,8 @@ struct CreditsView: View {
         ledgerTotalCount = result.total
     }
 
-    /// Write a metadata-only diagnostics file via a save panel. Reads the public
-    /// wallet address best-effort (may trigger one biometric prompt); a failed
-    /// or declined read just omits the address, and the export still succeeds.
+    /// Write a metadata-only diagnostics file via a save panel. It does not
+    /// trigger biometric authentication only to derive wallet-address metadata.
     private func exportDiagnostics() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
@@ -747,10 +746,10 @@ struct CreditsView: View {
         isExportingDiagnostics = true
         defer { isExportingDiagnostics = false }
 
-        let address = await Task.detached(priority: .userInitiated) {
-            Self.bestEffortWalletAddress()
-        }.value
-        let diagnostics = RouterBillingLedger.shared.buildDiagnostics(walletAddress: address)
+        let diagnostics = RouterBillingLedger.shared.buildDiagnostics(
+            walletAddress: nil,
+            walletAddressStatus: OsaurusIdentity.existsCached() ? .unavailableWithoutPrompt : .identityMissing
+        )
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -765,20 +764,6 @@ struct CreditsView: View {
         } catch {
             diagnosticsMessage = error.localizedDescription
         }
-    }
-
-    /// Read the public Osaurus ID without forcing the flow to fail when it
-    /// isn't available (declined biometric, keychain-disabled test mode). The
-    /// address is the server's billing account id, so support can line up the
-    /// local ledger with server-side usage. Best-effort by design.
-    nonisolated private static func bestEffortWalletAddress() -> String? {
-        guard OsaurusIdentity.exists() else { return nil }
-        let context = OsaurusIdentityContext.biometric()
-        guard var masterKeyData = try? MasterKey.getPrivateKey(context: context) else {
-            return nil
-        }
-        defer { masterKeyData.zeroOut() }
-        return try? deriveOsaurusId(from: masterKeyData)
     }
 
 }
