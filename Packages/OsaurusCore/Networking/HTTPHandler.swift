@@ -576,6 +576,15 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                     method: method,
                     path: path
                 )
+            } else if head.method == .GET, path == "/admin/status" {
+                handleAdminStatusEndpoint(
+                    head: head,
+                    context: context,
+                    startTime: startTime,
+                    userAgent: userAgent,
+                    method: method,
+                    path: path
+                )
             } else if head.method == .GET, path == "/admin/cache-stats" {
                 handleCacheStatsEndpoint(
                     head: head,
@@ -7781,12 +7790,6 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
 
             let memoryConfig = MemoryConfigurationStore.load()
             let localModelScan: Any = ModelManager.localModelsScanDiagnosticJSONObject() as Any? ?? NSNull()
-            let loadedAccessKeys = APIKeyManager.shared.listKeysIfLoaded()
-            let authSummary: [String: Any] = Self.authStatusJSONObject(
-                configuration: logSelf.configuration,
-                loopbackTrusted: logSelf.trustLoopback,
-                loadedAccessKeys: loadedAccessKeys
-            )
             let obj: [String: Any] = [
                 "status": "healthy",
                 "timestamp": Date().ISO8601Format(),
@@ -7806,7 +7809,6 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 "local_model_scan": localModelScan,
                 "ram_feasibility": ramFeasibility,
                 "persistence": PersistenceHealth.shared.snapshot(),
-                "auth": authSummary,
             ]
 
             // A served /health means the process is alive and responsive —
@@ -7837,6 +7839,46 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 startTime: logStartTime
             )
         }
+    }
+
+    private func handleAdminStatusEndpoint(
+        head: HTTPRequestHead,
+        context: ChannelHandlerContext,
+        startTime: Date,
+        userAgent: String?,
+        method: String,
+        path: String
+    ) {
+        let loadedAccessKeys = APIKeyManager.shared.listKeysIfLoaded()
+        let obj: [String: Any] = [
+            "status": "ok",
+            "timestamp": Date().ISO8601Format(),
+            "auth": Self.authStatusJSONObject(
+                configuration: configuration,
+                loopbackTrusted: trustLoopback,
+                loadedAccessKeys: loadedAccessKeys
+            ),
+        ]
+        let data = try? JSONSerialization.data(withJSONObject: obj, options: .osaurusCanonical)
+        let body = data.flatMap { String(decoding: $0, as: UTF8.self) } ?? "{}"
+        var headers = [("Content-Type", "application/json; charset=utf-8")]
+        headers.append(contentsOf: stateRef.value.corsHeaders)
+        sendResponse(
+            context: context,
+            version: head.version,
+            status: .ok,
+            headers: headers,
+            body: body
+        )
+        logRequest(
+            method: method,
+            path: path,
+            userAgent: userAgent,
+            requestBody: nil,
+            responseBody: body,
+            responseStatus: 200,
+            startTime: startTime
+        )
     }
 
     static func authStatusJSONObject(

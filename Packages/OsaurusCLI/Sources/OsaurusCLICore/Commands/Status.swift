@@ -13,19 +13,25 @@ public struct StatusCommand: Command {
     public static func execute(args: [String]) async {
         let port = Configuration.resolveConfiguredPort() ?? 1337
 
-        guard let url = URL(string: "http://127.0.0.1:\(port)/health") else {
-            fputs("Invalid URL for health check\n", stderr)
+        guard
+            let healthURL = URL(string: "http://127.0.0.1:\(port)/health"),
+            let statusURL = URL(string: "http://127.0.0.1:\(port)/admin/status")
+        else {
+            fputs("Invalid URL for status check\n", stderr)
             exit(EXIT_FAILURE)
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 0.6
+        var healthRequest = URLRequest(url: healthURL)
+        healthRequest.httpMethod = "GET"
+        healthRequest.timeoutInterval = 0.6
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await URLSession.shared.data(for: healthRequest)
             if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                let payload = try? JSONDecoder().decode(StatusHealthPayload.self, from: data)
+                var statusRequest = URLRequest(url: statusURL)
+                statusRequest.httpMethod = "GET"
+                statusRequest.timeoutInterval = 0.6
+                let payload = try? await fetchStatusPayload(request: statusRequest)
                 print(formatRunningStatus(port: port, health: payload))
                 exit(EXIT_SUCCESS)
             } else {
@@ -36,6 +42,14 @@ public struct StatusCommand: Command {
             print("stopped")
             exit(EXIT_FAILURE)
         }
+    }
+
+    private static func fetchStatusPayload(request: URLRequest) async throws -> StatusHealthPayload? {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            return nil
+        }
+        return try JSONDecoder().decode(StatusHealthPayload.self, from: data)
     }
 
     static func formatRunningStatus(port: Int, health: StatusHealthPayload?) -> String {

@@ -55,15 +55,69 @@ struct HTTPAuthGateTests {
     }
 
     @Test func publicPath_health_returns200_withoutToken() async throws {
-        let server = try await startAuthTestServer(validator: .empty)
+        var config = ServerConfiguration.default
+        config.exposeToNetwork = true
+        config.localAuthPolicy = .alwaysAllow
+        let server = try await startAuthTestServer(
+            config: config,
+            validator: .empty,
+            trustLoopback: true
+        )
         defer { Task { await server.shutdown() } }
 
         let (data, resp) = try await URLSession.shared.data(
             from: URL(string: "http://\(server.host):\(server.port)/health")!
         )
         #expect((resp as? HTTPURLResponse)?.statusCode == 200)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(obj?["status"] as? String == "healthy")
+        #expect(obj?["auth"] == nil)
         let body = String(decoding: data, as: UTF8.self)
         #expect(body.contains("healthy"))
+        #expect(!body.contains("local_auth_policy"))
+        #expect(!body.contains("loopback_trusted"))
+        #expect(!body.contains("network_exposure"))
+        #expect(!body.contains("access_key_count"))
+    }
+
+    @Test func adminStatus_withValidBearerToken_returnsAuthDetails() async throws {
+        var config = ServerConfiguration.default
+        config.exposeToNetwork = true
+        config.localAuthPolicy = .alwaysAllow
+        let server = try await startAuthTestServer(
+            config: config,
+            validator: .forAlice(),
+            trustLoopback: true
+        )
+        defer { Task { await server.shutdown() } }
+
+        var request = URLRequest(
+            url: URL(string: "http://\(server.host):\(server.port)/admin/status")!
+        )
+        request.setValue("1", forHTTPHeaderField: HTTPHandler.relayOriginHeaderName)
+        request.authenticate()
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        #expect((resp as? HTTPURLResponse)?.statusCode == 200)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let auth = obj?["auth"] as? [String: Any]
+        #expect(auth?["local_auth_policy"] as? String == "always_allow")
+        #expect(auth?["loopback_trusted"] as? Bool == true)
+        #expect(auth?["network_exposure"] as? Bool == true)
+        #expect(auth?.keys.contains("access_keys_loaded") == true)
+    }
+
+    @Test func adminStatus_withoutToken_relayOrigin_returns401() async throws {
+        let server = try await startAuthTestServer(validator: .forAlice(), trustLoopback: true)
+        defer { Task { await server.shutdown() } }
+
+        var request = URLRequest(
+            url: URL(string: "http://\(server.host):\(server.port)/admin/status")!
+        )
+        request.setValue("1", forHTTPHeaderField: HTTPHandler.relayOriginHeaderName)
+
+        let (_, resp) = try await URLSession.shared.data(for: request)
+        #expect((resp as? HTTPURLResponse)?.statusCode == 401)
     }
 
     // MARK: - No Token → 401
@@ -266,11 +320,10 @@ private struct AuthTestServer {
 }
 
 private func startAuthTestServer(
+    config: ServerConfiguration = .default,
     validator: APIKeyValidator,
     trustLoopback: Bool = false
 ) async throws -> AuthTestServer {
-    let config = ServerConfiguration.default
-
     let lease = await HTTPServerTestLock.shared.acquire()
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     do {
