@@ -11,6 +11,42 @@ import Testing
 @testable import OsaurusCore
 
 struct ScheduleHistoryServiceTests {
+    @MainActor
+    @Test func summaryOffMainLoadsProviderAwayFromMainThread() async {
+        let schedule = Schedule(
+            id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            name: "Daily summary",
+            instructions: "Summarize",
+            agentId: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+            frequency: .daily(hour: 9, minute: 0)
+        )
+        let provider = ThreadCheckingAgentRunProvider()
+        let service = ScheduleHistoryService(agentRunProvider: provider)
+
+        let summary = await service.summaryOffMain(for: schedule, runLimit: 8)
+
+        #expect(summary.scheduleId == schedule.id)
+        #expect(provider.didRunOnMainThread == false)
+    }
+
+    @MainActor
+    @Test func summariesOffMainLoadsProviderAwayFromMainThread() async {
+        let schedule = Schedule(
+            id: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+            name: "Weekly report",
+            instructions: "Report",
+            agentId: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
+            frequency: .weekly(dayOfWeek: 2, hour: 9, minute: 0)
+        )
+        let provider = ThreadCheckingAgentRunProvider()
+        let service = ScheduleHistoryService(agentRunProvider: provider)
+
+        let summaries = await service.summariesOffMain(for: [schedule], runLimit: 8)
+
+        #expect(summaries[schedule.id]?.scheduleId == schedule.id)
+        #expect(provider.didRunOnMainThread == false)
+    }
+
     @Test func summaryMergesAgentRunErrorsWithLocalHistory() {
         let scheduleId = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
         let agentId = UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
@@ -123,6 +159,24 @@ struct ScheduleHistoryServiceTests {
 
         func runs(agentId: UUID, limit: Int) throws -> [AgentRunRecord] {
             Array(records.filter { $0.agentId == agentId }.prefix(limit))
+        }
+    }
+
+    private final class ThreadCheckingAgentRunProvider: ScheduleAgentRunProviding, @unchecked Sendable {
+        private let lock = NSLock()
+        private var observedMainThread: Bool?
+
+        var didRunOnMainThread: Bool? {
+            lock.lock()
+            defer { lock.unlock() }
+            return observedMainThread
+        }
+
+        func runs(agentId: UUID, limit: Int) throws -> [AgentRunRecord] {
+            lock.lock()
+            observedMainThread = Thread.isMainThread
+            lock.unlock()
+            return []
         }
     }
 }

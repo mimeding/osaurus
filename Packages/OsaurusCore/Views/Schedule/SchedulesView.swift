@@ -22,6 +22,7 @@ struct SchedulesView: View {
     @State private var editingSchedule: Schedule?
     @State private var historySchedule: Schedule?
     @State private var scheduleSummaries: [UUID: ScheduleAutomationSummary] = [:]
+    @State private var summaryLoadTask: Task<Void, Never>?
     @State private var hasAppeared = false
     @State private var successMessage: String?
 
@@ -74,7 +75,7 @@ struct SchedulesView: View {
                                 schedule in
                                 ScheduleCard(
                                     schedule: schedule,
-                                    summary: scheduleSummaries[schedule.id] ?? fallbackSummary(for: schedule),
+                                    summary: displaySummary(for: schedule),
                                     isRunning: scheduleManager.isRunning(schedule.id),
                                     animationDelay: Double(index) * 0.05,
                                     hasAppeared: hasAppeared,
@@ -166,7 +167,7 @@ struct SchedulesView: View {
         .sheet(item: $historySchedule) { schedule in
             ScheduleHistorySheet(
                 schedule: schedule,
-                summary: scheduleSummaries[schedule.id] ?? fallbackSummary(for: schedule),
+                summary: displaySummary(for: schedule),
                 onExport: {
                     exportSummary(for: schedule)
                 }
@@ -186,6 +187,10 @@ struct SchedulesView: View {
         .onReceive(NotificationCenter.default.publisher(for: .scheduleExecutionCompleted)) { _ in
             scheduleManager.refresh()
             reloadHistorySummaries()
+        }
+        .onDisappear {
+            summaryLoadTask?.cancel()
+            summaryLoadTask = nil
         }
     }
 
@@ -235,37 +240,79 @@ struct SchedulesView: View {
     }
 
     private func reloadHistorySummaries() {
-        scheduleSummaries = ScheduleHistoryService.shared.summaries(for: scheduleManager.schedules)
+        let schedules = scheduleManager.schedules
+        let scheduleIds = Set(schedules.map(\.id))
+        let now = Date()
+        var summaries = scheduleSummaries.filter { scheduleIds.contains($0.key) }
+        for schedule in schedules where summaries[schedule.id] == nil {
+            summaries[schedule.id] = placeholderSummary(for: schedule, asOf: now)
+        }
+        scheduleSummaries = summaries
+
+        summaryLoadTask?.cancel()
+        summaryLoadTask = Task { @MainActor in
+            let loadedSummaries = await ScheduleHistoryService.shared.summariesOffMain(
+                for: schedules,
+                runLimit: 8,
+                asOf: now
+            )
+            guard !Task.isCancelled else { return }
+            scheduleSummaries = loadedSummaries
+        }
     }
 
-    private func fallbackSummary(for schedule: Schedule) -> ScheduleAutomationSummary {
-        let now = Date()
+    private func displaySummary(for schedule: Schedule) -> ScheduleAutomationSummary {
+        scheduleSummaries[schedule.id] ?? placeholderSummary(for: schedule)
+    }
+
+    private func placeholderSummary(for schedule: Schedule, asOf now: Date = Date()) -> ScheduleAutomationSummary {
         let runs = Array(schedule.runHistory.prefix(8))
         return ScheduleAutomationSummary(
             scheduleId: schedule.id,
             generatedAt: now,
             nextRun: schedule.nextRunPreview(asOf: now),
             runs: runs,
-            lastError: ScheduleHistoryService.shared.summary(for: schedule, runLimit: 8, asOf: now).lastError
+            lastError: latestLocalError(in: runs)
         )
+    }
+
+    private func latestLocalError(in runs: [ScheduleRunHistoryEntry]) -> ScheduleLastErrorDiagnostic? {
+        for run in runs {
+            guard run.status == .failed || (run.status != .succeeded && run.errorMessage != nil),
+                let message = run.errorMessage,
+                !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { continue }
+
+            return ScheduleLastErrorDiagnostic(
+                runId: run.id,
+                occurredAt: run.endedAt ?? run.startedAt,
+                message: message,
+                status: run.status
+            )
+        }
+        return nil
     }
 
     private func exportSummary(for schedule: Schedule) {
         let service = ScheduleHistoryService.shared
-        let summary = service.summary(for: schedule, runLimit: Schedule.maxRunHistoryEntries)
-        let markdown = service.markdownSummary(for: schedule, summary: summary)
+        let filenameSummary = displaySummary(for: schedule)
 
         let panel = NSSavePanel()
         panel.title = L("Export")
         panel.prompt = L("Export")
-        panel.nameFieldStringValue = service.suggestedExportFilename(for: schedule, generatedAt: summary.generatedAt)
+        panel.nameFieldStringValue = service.suggestedExportFilename(for: schedule, generatedAt: filenameSummary.generatedAt)
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.canCreateDirectories = true
 
         Task { @MainActor in
             guard await panel.beginModal() == .OK, let url = panel.url else { return }
+            let summary = await service.summaryOffMain(for: schedule, runLimit: Schedule.maxRunHistoryEntries)
+            let markdown = service.markdownSummary(for: schedule, summary: summary)
             do {
-                try markdown.write(to: url, atomically: true, encoding: .utf8)
+                try await Task.detached(priority: .utility) {
+                    try markdown.write(to: url, atomically: true, encoding: .utf8)
+                }.value
+                scheduleSummaries[schedule.id] = summary
                 showSuccess("Exported \"\(schedule.name)\"")
             } catch {
                 showSuccess("Export failed: \(error.localizedDescription)")

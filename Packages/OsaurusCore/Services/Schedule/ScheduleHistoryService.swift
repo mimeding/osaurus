@@ -72,6 +72,16 @@ public struct ScheduleHistoryService: Sendable {
         })
     }
 
+    public func summariesOffMain(
+        for schedules: [Schedule],
+        runLimit: Int = 8,
+        asOf now: Date = Date()
+    ) async -> [UUID: ScheduleAutomationSummary] {
+        await Task.detached(priority: .utility) {
+            self.summaries(for: schedules, runLimit: runLimit, asOf: now)
+        }.value
+    }
+
     public func summary(
         for schedule: Schedule,
         runLimit: Int = 10,
@@ -87,6 +97,16 @@ public struct ScheduleHistoryService: Sendable {
             runs: runs,
             lastError: lastError
         )
+    }
+
+    public func summaryOffMain(
+        for schedule: Schedule,
+        runLimit: Int = 10,
+        asOf now: Date = Date()
+    ) async -> ScheduleAutomationSummary {
+        await Task.detached(priority: .utility) {
+            self.summary(for: schedule, runLimit: runLimit, asOf: now)
+        }.value
     }
 
     public func markdownSummary(for schedule: Schedule, summary: ScheduleAutomationSummary) -> String {
