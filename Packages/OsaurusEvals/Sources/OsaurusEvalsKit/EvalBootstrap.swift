@@ -96,20 +96,13 @@ public struct EvalBootstrapPlan: Sendable, Equatable {
         case .force:
             return EvalBootstrapPlan(loadInstalledPlugins: true, searchIndexScope: .empty)
         case .automatic:
-            // Auto-load installed native plugins when a selected case
-            // explicitly requires one (`fixtures.requirePlugins`, e.g. the
-            // capability_claims browser cases). Without this those cases skip
-            // as "missing plugins" even when the plugin is installed on disk.
-            // Plugin bootstrap (`EvalHostBootstrap.loadInstalledPlugins`) also
-            // brings up the search indices, so no extra index scope is needed.
-            // Suites with no plugin-required selected case keep avoiding the
-            // dlopen cost and only bring up the index lanes they need.
-            // `--bootstrap-plugins` (`.force`) still forces loading;
-            // `--no-bootstrap-plugins` (`.disabled`) opts out even when cases
-            // request plugins.
-            if suite.selectedCasesRequireInstalledPlugins(filter: filter) {
-                return EvalBootstrapPlan(loadInstalledPlugins: true, searchIndexScope: .empty)
-            }
+            // Automatic run mode keeps installed native plugins explicit:
+            // plugin-required cases skip unless the caller opts into
+            // `--bootstrap-plugins`. This avoids making ordinary eval runs
+            // depend on local plugin dylibs or a developer's host-app state.
+            // Callers with a narrower contract, such as PR report generation,
+            // may promote their effective preference to `.force` after
+            // inspecting the selected suite.
             return EvalBootstrapPlan(
                 loadInstalledPlugins: false,
                 searchIndexScope: suite.searchIndexBootstrapScopeWithoutPluginBootstrap(filter: filter)
@@ -429,10 +422,9 @@ public enum EvalBootstrap {
 
 public extension EvalSuite {
     /// True when any selected case explicitly requires an installed native
-    /// plugin (`fixtures.requirePlugins`). Drives the automatic plugin
-    /// bootstrap so plugin-gated cases (e.g. the capability_claims browser
-    /// cases) actually run instead of skipping as "missing plugins" when the
-    /// plugin is installed on disk.
+    /// plugin (`fixtures.requirePlugins`). Generic eval runs use this only to
+    /// decide which cases will skip without plugin bootstrap; narrower callers
+    /// can use it to opt into `.force` for their own evidence contract.
     func selectedCasesRequireInstalledPlugins(filter: String?) -> Bool {
         selectedCases(filter: filter).contains {
             !($0.fixtures.requirePlugins?.isEmpty ?? true)

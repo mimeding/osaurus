@@ -12,7 +12,7 @@ struct EvalReviewReportTests {
                     modelId: "foundation",
                     suite: "AgentLoop",
                     suitePath: "Suites/AgentLoop",
-                    outputPath: "build/evals/pr-report/reports/foundation/AgentLoop.json",
+                    outputPath: "build/evals/pr-report/reports/local/foundation/AgentLoop.json",
                     arguments: ["osaurus-evals", "run", "--suite", "Suites/AgentLoop"],
                     exitCode: 1
                 ),
@@ -133,12 +133,56 @@ struct EvalReviewReportTests {
         #expect(compareMarkdown.contains("changed-skip"))
     }
 
+    @Test func baselineComparisonKeepsRolesSeparateWhenModelIdsMatch() throws {
+        let baselineReports = [
+            input(
+                role: .local,
+                suite: "AgentLoop",
+                report: report(modelId: "foundation", rows: [("same-model-case", .passed, [])])
+            ),
+            input(
+                role: .frontier,
+                suite: "AgentLoop",
+                report: report(modelId: "foundation", rows: [("same-model-case", .passed, [])])
+            ),
+        ]
+        let currentReports = [
+            input(
+                role: .frontier,
+                suite: "AgentLoop",
+                report: report(modelId: "foundation", rows: [("same-model-case", .passed, [])])
+            ),
+            input(
+                role: .local,
+                suite: "AgentLoop",
+                report: report(modelId: "foundation", rows: [("same-model-case", .failed, ["local regressed"])])
+            ),
+        ]
+
+        let bundle = EvalReviewReportBuilder.build(
+            manifest: manifest(baselinePath: "build/evals/baseline"),
+            reports: currentReports,
+            baselineReports: baselineReports
+        )
+        let comparison = try #require(bundle.comparison)
+
+        #expect(comparison.regressions.count == 1)
+        #expect(comparison.regressions.first?.role == .local)
+        #expect(comparison.regressions.first?.modelId == "foundation")
+        #expect(comparison.regressions.first?.id == "same-model-case")
+        #expect(comparison.warnings.isEmpty)
+
+        let compareMarkdown = bundle.formatComparisonMarkdown()
+        #expect(compareMarkdown.contains("| Role | Model | Suite | Case | Baseline | Current | Notes |"))
+        #expect(compareMarkdown.contains("| local | foundation | AgentLoop | same-model-case | passed | failed | local regressed |"))
+    }
+
     @Test func missingReportProducesExplicitErroredSummaryRow() throws {
         let missing = EvalReviewReportBuilder.missingReport(
             role: .frontier,
             modelId: "openai/gpt-4o-mini",
             suite: EvalReviewSuiteRef(name: "AgentLoopFrontier", path: "Suites/AgentLoopFrontier"),
-            reportPath: "build/evals/pr-report/reports/openai_gpt-4o-mini/AgentLoopFrontier.json",
+            reportPath: "build/evals/pr-report/reports/frontier/openai_gpt-4o-mini/AgentLoopFrontier.json",
             note: "frontier report did not finish"
         )
         let bundle = EvalReviewReportBuilder.build(
@@ -170,6 +214,64 @@ struct EvalReviewReportTests {
         #expect(decoded.counts.errored == 1)
     }
 
+    @Test func reportPathSegmentSanitizesUnsafeModelIds() {
+        #expect(EvalReviewReportPaths.sanitizedSegment("openai/gpt-4o mini") == "openai_gpt-4o_mini")
+        #expect(EvalReviewReportPaths.sanitizedSegment("provider:model?x=1") == "provider_model_x_1")
+        #expect(EvalReviewReportPaths.sanitizedSegment("") == "model")
+        #expect(EvalReviewReportPaths.sanitizedSegment("..") == "model")
+    }
+
+    @Test func uniqueSuiteNameDisambiguatesRepeatedSuiteNames() {
+        var usedNames: [String: Int] = [:]
+
+        #expect(EvalReviewReportPaths.uniqueSuiteName("AgentLoop", usedNames: &usedNames) == "AgentLoop")
+        #expect(EvalReviewReportPaths.uniqueSuiteName("AgentLoop", usedNames: &usedNames) == "AgentLoop-2")
+        #expect(EvalReviewReportPaths.uniqueSuiteName("AgentLoop", usedNames: &usedNames) == "AgentLoop-3")
+        #expect(EvalReviewReportPaths.uniqueSuiteName("CapabilitySearch", usedNames: &usedNames) == "CapabilitySearch")
+    }
+
+    @Test func loadReportsRecursivelyInfersRoleFromReportPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("eval-review-from-reports-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let localURL = root
+            .appendingPathComponent("reports", isDirectory: true)
+            .appendingPathComponent("local", isDirectory: true)
+            .appendingPathComponent("foundation", isDirectory: true)
+            .appendingPathComponent("AgentLoop.json")
+        let frontierURL = root
+            .appendingPathComponent("reports", isDirectory: true)
+            .appendingPathComponent("frontier", isDirectory: true)
+            .appendingPathComponent("foundation", isDirectory: true)
+            .appendingPathComponent("AgentLoop.json")
+        try FileManager.default.createDirectory(
+            at: localURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: frontierURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try report(modelId: "foundation", rows: [("local-case", .passed, [])])
+            .toJSON(prettyPrinted: true)
+            .write(to: localURL)
+        try report(modelId: "foundation", rows: [("frontier-case", .passed, [])])
+            .toJSON(prettyPrinted: true)
+            .write(to: frontierURL)
+
+        let reports = try EvalReviewReportBuilder.loadReportsRecursively(from: root)
+            .sorted { lhs, rhs in lhs.role.rawValue < rhs.role.rawValue }
+
+        #expect(reports.map(\.role) == [.frontier, .local])
+        #expect(reports.map(\.suite) == ["AgentLoop", "AgentLoop"])
+        #expect(reports.map(\.report.modelId) == ["foundation", "foundation"])
+        #expect(
+            Set(reports.map { URL(fileURLWithPath: $0.reportPath).resolvingSymlinksInPath().path })
+                == Set([localURL, frontierURL].map { $0.resolvingSymlinksInPath().path })
+        )
+    }
+
     private func input(
         role: EvalReviewModelRole,
         suite: String,
@@ -179,7 +281,7 @@ struct EvalReviewReportTests {
             role: role,
             suite: suite,
             suitePath: "Suites/\(suite)",
-            reportPath: "build/evals/pr-report/reports/\(report.modelId)/\(suite).json",
+            reportPath: "build/evals/pr-report/reports/\(role.rawValue)/\(report.modelId)/\(suite).json",
             report: report
         )
     }

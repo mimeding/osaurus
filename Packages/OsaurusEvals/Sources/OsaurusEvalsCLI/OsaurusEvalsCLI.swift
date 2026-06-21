@@ -558,8 +558,8 @@ struct OsaurusEvalsCLI {
         /// happens before the first case can run. `nil` disables it.
         let startupTimeoutSeconds: Double?
         /// Controls native installed-plugin bootstrap. Automatic mode
-        /// loads plugins only when a suite requires them; capability-search
-        /// suites initialize indices without dlopen-ing local plugins.
+        /// keeps installed plugins explicit; capability-search suites
+        /// initialize indices without dlopen-ing local plugins.
         let pluginBootstrapPreference: EvalInstalledPluginBootstrapPreference
 
         static func parse(_ args: [String]) throws -> Options {
@@ -747,8 +747,7 @@ struct OsaurusEvalsCLI {
                                       when CI=true. Env override:
                                       OSAURUS_EVALS_STARTUP_TIMEOUT_SECONDS.
                 --bootstrap-plugins  Force installed native plugin loading
-                                      before the suite. Automatic mode loads
-                                      plugins only when a suite requires them.
+                                      before the suite.
                 --no-plugin-bootstrap
                                       Disable installed native plugin loading.
                                       Capability-search suites initialize only

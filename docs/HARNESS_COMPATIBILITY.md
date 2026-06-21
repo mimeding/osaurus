@@ -586,8 +586,8 @@ make evals-pr-report-baseline \
 ```
 
 The bundle writes `manifest.json`, `summary.md`, `summary.json`, raw
-`reports/<model>/<suite>.json`, and baseline `compare.md` / `compare.json` when
-`BASELINE_DIR` is supplied. Required default suites are `AgentLoop` and
+`reports/<role>/<model>/<suite>.json`, and baseline `compare.md` / `compare.json`
+when `BASELINE_DIR` is supplied. Required default suites are `AgentLoop` and
 `AgentLoopFrontier` for both local and frontier lanes. `SandboxFrontier` remains
 off by default because it needs sandbox host prerequisites.
 

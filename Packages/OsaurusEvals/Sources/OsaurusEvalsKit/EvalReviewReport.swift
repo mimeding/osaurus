@@ -238,7 +238,30 @@ public struct EvalReviewReportInput: Sendable {
     }
 }
 
+public enum EvalReviewReportPaths {
+    public static func sanitizedSegment(_ raw: String) -> String {
+        let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        let segment = raw.map { character -> Character in
+            allowed.contains(character) ? character : "_"
+        }
+        .reduce(into: "") { partial, character in
+            partial.append(character)
+        }
+        return segment.isEmpty || segment == "." || segment == ".." ? "model" : segment
+    }
+
+    public static func uniqueSuiteName(
+        _ base: String,
+        usedNames: inout [String: Int]
+    ) -> String {
+        let count = usedNames[base, default: 0]
+        usedNames[base] = count + 1
+        return count == 0 ? base : "\(base)-\(count + 1)"
+    }
+}
+
 public struct EvalReviewCaseDelta: Sendable, Codable, Equatable {
+    public let role: EvalReviewModelRole
     public let modelId: String
     public let suite: String
     public let id: String
@@ -248,6 +271,7 @@ public struct EvalReviewCaseDelta: Sendable, Codable, Equatable {
     public let currentNotes: [String]
 
     public init(baseline: EvalReviewCaseSnapshot?, current: EvalReviewCaseSnapshot?) {
+        role = current?.role ?? baseline?.role ?? .local
         modelId = current?.modelId ?? baseline?.modelId ?? "(unknown)"
         suite = current?.suite ?? baseline?.suite ?? "(unknown)"
         id = current?.id ?? baseline?.id ?? "(unknown)"
@@ -469,12 +493,12 @@ public struct EvalReviewReportBundle: Sendable, Codable, Equatable {
         lines.append("")
         lines.append("## \(title)")
         lines.append("")
-        lines.append("| Model | Suite | Case | Baseline | Current | Notes |")
-        lines.append("| --- | --- | --- | --- | --- | --- |")
+        lines.append("| Role | Model | Suite | Case | Baseline | Current | Notes |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
         for row in rows {
             let notes = row.currentNotes.isEmpty ? row.baselineNotes : row.currentNotes
             lines.append(
-                "| \(markdownCell(row.modelId)) | \(markdownCell(row.suite)) | "
+                "| \(row.role.rawValue) | \(markdownCell(row.modelId)) | \(markdownCell(row.suite)) | "
                     + "\(markdownCell(row.id)) | \(outcomeLabel(row.baselineOutcome)) | "
                     + "\(outcomeLabel(row.currentOutcome)) | "
                     + "\(markdownCell(notes.prefix(2).joined(separator: " / "))) |"
@@ -692,11 +716,11 @@ public enum EvalReviewReportBuilder {
         var warnings: [String] = []
         for input in reports {
             for row in input.report.cases {
-                let snapshot = EvalReviewCaseSnapshot(suite: input.suite, row: row)
+                let snapshot = EvalReviewCaseSnapshot(role: input.role, suite: input.suite, row: row)
                 let key = snapshot.key
                 if let existing = byKey[key] {
                     warnings.append(
-                        "duplicate case '\(snapshot.id)' for \(snapshot.modelId)/\(snapshot.suite); keeping \(existing.suite)"
+                        "duplicate case '\(snapshot.id)' for \(snapshot.role.rawValue)/\(snapshot.modelId)/\(snapshot.suite); keeping \(existing.role.rawValue)/\(existing.suite)"
                     )
                 } else {
                     byKey[key] = snapshot
@@ -733,15 +757,17 @@ public enum EvalReviewReportError: Error, LocalizedError, Equatable {
 }
 
 public struct EvalReviewCaseSnapshot: Sendable, Codable, Equatable {
+    public let role: EvalReviewModelRole
     public let modelId: String
     public let suite: String
     public let id: String
     public let outcome: EvalCaseOutcome
     public let notes: [String]
 
-    public var key: String { "\(modelId)\u{1F}\(suite)\u{1F}\(id)" }
+    public var key: String { "\(role.rawValue)\u{1F}\(modelId)\u{1F}\(suite)\u{1F}\(id)" }
 
-    public init(suite: String, row: EvalCaseReport) {
+    public init(role: EvalReviewModelRole, suite: String, row: EvalCaseReport) {
+        self.role = role
         modelId = row.modelId
         self.suite = suite
         id = row.id

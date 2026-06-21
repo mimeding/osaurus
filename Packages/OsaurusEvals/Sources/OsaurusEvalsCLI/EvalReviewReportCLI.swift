@@ -56,10 +56,15 @@ extension OsaurusEvalsCLI {
             cases: loadedSuites.flatMap(\.suite.cases),
             decodeFailures: loadedSuites.flatMap(\.suite.decodeFailures)
         )
+        try FileManager.default.createDirectory(at: opts.outDir, withIntermediateDirectories: true)
+        let pluginBootstrapPreference = effectiveEvalReviewPluginBootstrapPreference(
+            options: opts,
+            suite: combinedSuite
+        )
         let bootstrapPlan = EvalBootstrapPlan.make(
             suite: combinedSuite,
             filter: opts.filter,
-            preference: opts.pluginBootstrapPreference
+            preference: pluginBootstrapPreference
         )
         _ = EvalBootstrap.configureIsolatedSearchStorageIfNeeded(for: bootstrapPlan)
         let startupWatchdog =
@@ -98,11 +103,18 @@ extension OsaurusEvalsCLI {
         for model in models {
             let modelReportDir = opts.outDir
                 .appendingPathComponent("reports", isDirectory: true)
-                .appendingPathComponent(sanitizedPathSegment(model.rawModelId), isDirectory: true)
+                .appendingPathComponent(model.role.rawValue, isDirectory: true)
+                .appendingPathComponent(
+                    EvalReviewReportPaths.sanitizedSegment(model.rawModelId),
+                    isDirectory: true
+                )
             try FileManager.default.createDirectory(at: modelReportDir, withIntermediateDirectories: true)
 
             for item in loadedSuites {
-                let stableSuiteName = uniqueSuiteName(item.ref.name, usedNames: &usedSuiteNames)
+                let stableSuiteName = EvalReviewReportPaths.uniqueSuiteName(
+                    item.ref.name,
+                    usedNames: &usedSuiteNames
+                )
                 print("running \(model.role.rawValue) \(model.rawModelId) / \(stableSuiteName)...")
 
                 let report = await EvalRunner.run(
@@ -138,7 +150,7 @@ extension OsaurusEvalsCLI {
                             outPath: outURL.path,
                             filter: opts.filter,
                             startupTimeoutSeconds: opts.startupTimeoutSeconds,
-                            pluginBootstrapPreference: opts.pluginBootstrapPreference
+                            pluginBootstrapPreference: pluginBootstrapPreference
                         ),
                         exitCode: exitCode
                     )
@@ -220,11 +232,15 @@ extension OsaurusEvalsCLI {
         for input in reports {
             let modelDir = outDir
                 .appendingPathComponent("reports", isDirectory: true)
-                .appendingPathComponent(sanitizedPathSegment(input.report.modelId), isDirectory: true)
+                .appendingPathComponent(input.role.rawValue, isDirectory: true)
+                .appendingPathComponent(
+                    EvalReviewReportPaths.sanitizedSegment(input.report.modelId),
+                    isDirectory: true
+                )
             try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
             let modelKey = "\(input.role.rawValue)\u{1F}\(input.report.modelId)"
             var usedNames = usedNamesByModel[modelKey, default: [:]]
-            let suite = uniqueSuiteName(input.suite, usedNames: &usedNames)
+            let suite = EvalReviewReportPaths.uniqueSuiteName(input.suite, usedNames: &usedNames)
             usedNamesByModel[modelKey] = usedNames
             let outURL = modelDir.appendingPathComponent("\(suite).json")
             try input.report.toJSON(prettyPrinted: true).write(to: outURL)
@@ -369,12 +385,14 @@ extension OsaurusEvalsCLI {
                 --startup-timeout <s>      Startup bootstrap watchdog. Use 0 to disable.
                 --bootstrap-plugins        Force installed native plugin loading.
                 --no-plugin-bootstrap      Disable installed native plugin loading.
+                                           In automatic mode, report runs load installed
+                                           plugins only when selected cases require them.
 
             ARTIFACTS:
                 manifest.json
                 summary.md
                 summary.json
-                reports/<model>/<suite>.json
+                reports/<role>/<model>/<suite>.json
                 compare.md / compare.json when --baseline is supplied
 
             EXAMPLES:
@@ -534,15 +552,6 @@ extension OsaurusEvalsCLI {
         return name.isEmpty ? url.deletingLastPathComponent().lastPathComponent : name
     }
 
-    private static func uniqueSuiteName(
-        _ base: String,
-        usedNames: inout [String: Int]
-    ) -> String {
-        let count = usedNames[base, default: 0]
-        usedNames[base] = count + 1
-        return count == 0 ? base : "\(base)-\(count + 1)"
-    }
-
     private static func uniqueSuiteRefs(_ refs: [EvalReviewSuiteRef]) -> [EvalReviewSuiteRef] {
         var seen: Set<String> = []
         var result: [EvalReviewSuiteRef] = []
@@ -566,15 +575,6 @@ extension OsaurusEvalsCLI {
             result.append(ref)
         }
         return result
-    }
-
-    private static func sanitizedPathSegment(_ raw: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
-        let scalars = raw.unicodeScalars.map { scalar -> String in
-            allowed.contains(scalar) ? String(scalar) : "_"
-        }
-        let segment = scalars.joined()
-        return segment.isEmpty ? "model" : segment
     }
 
     private static func runArguments(
@@ -667,6 +667,16 @@ extension OsaurusEvalsCLI {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
         return formatter.string(from: Date())
+    }
+
+    private static func effectiveEvalReviewPluginBootstrapPreference(
+        options opts: EvalReviewReportOptions,
+        suite: EvalSuite
+    ) -> EvalInstalledPluginBootstrapPreference {
+        guard opts.pluginBootstrapPreference == .automatic else {
+            return opts.pluginBootstrapPreference
+        }
+        return suite.selectedCasesRequireInstalledPlugins(filter: opts.filter) ? .force : .automatic
     }
 }
 

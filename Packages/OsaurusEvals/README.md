@@ -74,10 +74,11 @@ loud warning if the embedder is missing.
 The `CapabilityClaims` browser cases additionally need the `osaurus.browser`
 native plugin installed. Because installing it mutates `~/.osaurus`, the prep
 step does it only when you opt in with `OSAURUS_EVALS_INSTALL_BROWSER=1`
-(`osaurus` CLI required); otherwise those cases skip as "missing plugins". When
-a selected case declares `fixtures.requirePlugins`, the runner now
-auto-bootstraps installed plugins (no `--bootstrap-plugins` needed); pass
-`--no-plugin-bootstrap` to force-skip them.
+(`osaurus` CLI required); otherwise those cases skip as "missing plugins".
+Generic eval runs keep installed plugins explicit; pass `--bootstrap-plugins`
+when you intentionally want plugin-required cases to run. The PR report command
+auto-loads installed plugins only for selected plugin-required cases, and
+`--no-plugin-bootstrap` still forces those cases to skip.
 
 Or call the CLI directly if you need flags the Makefile doesn't expose:
 
@@ -112,7 +113,7 @@ and frontier lanes. It writes `build/evals/pr-report/<timestamp>/` unless
 - `summary.md` — maintainer-readable totals, failures, skips, regressions, and
   the exact commands used.
 - `summary.json` — machine-readable aggregate summary.
-- `reports/<model>/<suite>.json` — raw `EvalReport` output for each lane.
+- `reports/<role>/<model>/<suite>.json` — raw `EvalReport` output for each lane.
 - `compare.md` / `compare.json` — baseline-vs-current diff when a baseline is
   supplied.
 
