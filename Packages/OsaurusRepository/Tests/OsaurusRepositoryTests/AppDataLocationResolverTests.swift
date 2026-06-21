@@ -58,7 +58,7 @@ final class AppDataLocationResolverTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: locations.cacheRoot.path))
     }
 
-    func testExistingHomeDotDirectoryKeepsDataAndConfigInLegacyRoot() throws {
+    func testExistingHomeDotDirectoryKeepsDataConfigAndCacheInLegacyRoot() throws {
         let fm = FileManager.default
         let dirs = platformDirectories()
         let legacy = dirs.homeDirectory.appendingPathComponent(".osaurus", isDirectory: true)
@@ -80,8 +80,50 @@ final class AppDataLocationResolverTests: XCTestCase {
             legacy.appendingPathComponent("config", isDirectory: true)
         )
         XCTAssertEqual(locations.config.source, .legacyHomeDotDirectory)
-        XCTAssertEqual(locations.cache.source, .standard)
+        XCTAssertEqual(
+            locations.cacheRoot,
+            legacy.appendingPathComponent("cache", isDirectory: true)
+        )
+        XCTAssertEqual(locations.cache.source, .legacyHomeDotDirectory)
+        XCTAssertEqual(locations.configSearchDirectories.first, locations.configRoot)
+        XCTAssertEqual(locations.cacheSearchDirectories.first, locations.cacheRoot)
         XCTAssertFalse(fm.fileExists(atPath: locations.standardDataRoot.path))
+        XCTAssertFalse(fm.fileExists(atPath: locations.cacheRoot.path))
+    }
+
+    func testExistingHomeDotDirectoryKeepsConfigAndCacheWhenStandardCandidatesExist() throws {
+        let fm = FileManager.default
+        let dirs = platformDirectories()
+        let legacy = dirs.homeDirectory.appendingPathComponent(".osaurus", isDirectory: true)
+        let standardConfig = dirs.applicationSupportDirectory!
+            .appendingPathComponent("Osaurus", isDirectory: true)
+            .appendingPathComponent("config", isDirectory: true)
+        let standardCache = dirs.cachesDirectory!.appendingPathComponent(
+            "Osaurus",
+            isDirectory: true
+        )
+        try fm.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try fm.createDirectory(at: standardConfig, withIntermediateDirectories: true)
+        try fm.createDirectory(at: standardCache, withIntermediateDirectories: true)
+
+        let locations = AppDataLocationResolver.resolve(
+            environment: [:],
+            fileManager: fm,
+            platformDirectories: dirs
+        )
+
+        XCTAssertEqual(locations.dataRoot, legacy)
+        XCTAssertEqual(locations.data.source, .legacyHomeDotDirectory)
+        XCTAssertEqual(
+            locations.configRoot,
+            legacy.appendingPathComponent("config", isDirectory: true)
+        )
+        XCTAssertEqual(locations.config.source, .legacyHomeDotDirectory)
+        XCTAssertEqual(
+            locations.cacheRoot,
+            legacy.appendingPathComponent("cache", isDirectory: true)
+        )
+        XCTAssertEqual(locations.cache.source, .legacyHomeDotDirectory)
     }
 
     func testExistingLegacyCacheFallsBackForCompatibility() throws {
@@ -156,7 +198,42 @@ final class AppDataLocationResolverTests: XCTestCase {
             retired.appendingPathComponent("config", isDirectory: true)
         )
         XCTAssertEqual(locations.config.source, .legacyApplicationSupport)
+        XCTAssertEqual(
+            locations.cacheRoot,
+            retired.appendingPathComponent("cache", isDirectory: true)
+        )
+        XCTAssertEqual(locations.cache.source, .legacyApplicationSupport)
         XCTAssertFalse(fm.fileExists(atPath: locations.standardDataRoot.path))
+    }
+
+    func testRetiredApplicationSupportKeepsCacheWhenStandardCacheExists() throws {
+        let fm = FileManager.default
+        let dirs = platformDirectories()
+        let retired = dirs.applicationSupportDirectory!.appendingPathComponent(
+            "com.dinoki.osaurus",
+            isDirectory: true
+        )
+        let standardCache = dirs.cachesDirectory!.appendingPathComponent(
+            "Osaurus",
+            isDirectory: true
+        )
+        try fm.createDirectory(at: retired, withIntermediateDirectories: true)
+        try fm.createDirectory(at: standardCache, withIntermediateDirectories: true)
+
+        let locations = AppDataLocationResolver.resolve(
+            environment: [:],
+            fileManager: fm,
+            platformDirectories: dirs
+        )
+
+        XCTAssertEqual(locations.dataRoot, retired)
+        XCTAssertEqual(locations.data.source, .legacyApplicationSupport)
+        XCTAssertEqual(
+            locations.cacheRoot,
+            retired.appendingPathComponent("cache", isDirectory: true)
+        )
+        XCTAssertEqual(locations.cache.source, .legacyApplicationSupport)
+        XCTAssertEqual(locations.cacheSearchDirectories.first, locations.cacheRoot)
     }
 
     func testEnvironmentOverrideCollapsesLocationsUnderTestRoot() throws {

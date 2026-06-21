@@ -44,6 +44,12 @@ struct RuntimePolicySourceTests {
         return String(block[revisionRange])
     }
 
+    private static func sourceMatches(_ pattern: String, in source: String) throws -> Bool {
+        let regex = try NSRegularExpression(pattern: pattern)
+        let range = NSRange(source.startIndex ..< source.endIndex, in: source)
+        return regex.firstMatch(in: source, range: range) != nil
+    }
+
     private static func swiftFiles(under relativePath: String) throws -> [URL] {
         let root = packageRoot().appendingPathComponent(relativePath)
         guard
@@ -2113,15 +2119,35 @@ struct RuntimePolicySourceTests {
         #expect(standards.contains("\"candidate_locations\""))
         #expect(standards.contains("\"standard_cache_root\""))
         #expect(standards.contains("\"spec_compliant\""))
-        #expect(
-            standards.contains(
-                "legacyApplicationSupportFolderName =\n        AppDataLocationResolver.legacyApplicationSupportFolderName"
-            )
+        let legacySupportConstantUsesResolver = try Self.sourceMatches(
+            #"legacyApplicationSupportFolderName\s*=\s*AppDataLocationResolver\.legacyApplicationSupportFolderName"#,
+            in: standards
         )
+        #expect(legacySupportConstantUsesResolver)
         #expect(!standards.contains("copyItem"))
         #expect(!standards.contains("moveItem"))
         #expect(!standards.contains("removeItem"))
         #expect(!standards.contains("createDirectory"))
+    }
+
+    @Test("dev proxy reader and writer use the resolved config root")
+    func devProxyReaderAndWriterUseResolvedConfigRoot() throws {
+        let httpHandler = try Self.source("Networking/HTTPHandler.swift")
+        let toolsDev = try Self.source(
+            "../OsaurusCLI/Sources/OsaurusCLICore/Commands/Tools/ToolsDev.swift"
+        )
+
+        let reader = try Self.functionBody(
+            "private static func loadDevProxyURL(for pluginId: String)",
+            in: httpHandler
+        )
+        #expect(
+            reader.contains("OsaurusPaths.config().appendingPathComponent(\"dev-proxy.json\")")
+        )
+        #expect(!reader.contains("OsaurusPaths.root().appendingPathComponent(\"config\""))
+
+        let writer = try Self.functionBody("static func devProxyConfigurationFile(", in: toolsDev)
+        #expect(writer.contains("locations.configRoot.appendingPathComponent(\"dev-proxy.json\")"))
     }
 
     @Test("ModelRuntime does not repair reasoning parser output")

@@ -45,4 +45,41 @@ final class ToolsDevTests: XCTestCase {
                 .appendingPathComponent("dev-proxy.json")
         )
     }
+
+    func testDevProxyConfigurationFileFollowsLegacyDataRootConfigFamily() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("osaurus-tools-dev-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let dirs = AppDataLocationResolver.PlatformDirectories(
+            homeDirectory: root.appendingPathComponent("home", isDirectory: true),
+            applicationSupportDirectory:
+                root.appendingPathComponent("Library/Application Support", isDirectory: true),
+            cachesDirectory: root.appendingPathComponent("Library/Caches", isDirectory: true),
+            xdgDataHome: root.appendingPathComponent("home/.local/share", isDirectory: true),
+            xdgConfigHome: root.appendingPathComponent("home/.config", isDirectory: true),
+            xdgCacheHome: root.appendingPathComponent("home/.cache", isDirectory: true)
+        )
+        let legacy = dirs.homeDirectory.appendingPathComponent(".osaurus", isDirectory: true)
+        let standardConfig = dirs.applicationSupportDirectory!
+            .appendingPathComponent("Osaurus", isDirectory: true)
+            .appendingPathComponent("config", isDirectory: true)
+        try fm.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try fm.createDirectory(at: standardConfig, withIntermediateDirectories: true)
+
+        let locations = AppDataLocationResolver.resolve(
+            environment: [:],
+            fileManager: fm,
+            platformDirectories: dirs
+        )
+        let file = ToolsDev.devProxyConfigurationFile(locations: locations)
+
+        XCTAssertEqual(
+            file,
+            legacy
+                .appendingPathComponent("config", isDirectory: true)
+                .appendingPathComponent("dev-proxy.json")
+        )
+    }
 }

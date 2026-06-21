@@ -20,7 +20,7 @@ struct StorageLocationStandardsTests {
     private func makeInputs(
         dataSource: AppDataLocationResolver.LocationSource = .standard,
         configSource: AppDataLocationResolver.LocationSource? = nil,
-        cacheSource: AppDataLocationResolver.LocationSource = .standard,
+        cacheSource: AppDataLocationResolver.LocationSource? = nil,
         supportPath: String? = "/Users/sam/Library/Application Support",
         standardDataPresent: Bool = false,
         standardConfigPresent: Bool = false,
@@ -43,6 +43,7 @@ struct StorageLocationStandardsTests {
         let legacyApplicationSupport = supportPath.map { "\($0)/com.dinoki.osaurus" }
 
         let resolvedConfigSource = configSource ?? dataSource
+        let resolvedCacheSource = cacheSource ?? dataSource
         let data = AppDataLocationResolver.ResolvedLocation(
             kind: .data,
             source: dataSource,
@@ -58,8 +59,8 @@ struct StorageLocationStandardsTests {
         )
         let cache = AppDataLocationResolver.ResolvedLocation(
             kind: .cache,
-            source: cacheSource,
-            url: url(pathForCache(source: cacheSource, standard: standardCache,
+            source: resolvedCacheSource,
+            url: url(pathForCache(source: resolvedCacheSource, standard: standardCache,
                                   legacyHome: legacyHome,
                                   legacyApplicationSupport: legacyApplicationSupport))
         )
@@ -155,6 +156,7 @@ struct StorageLocationStandardsTests {
             report.reasonCodes == [
                 "root_home_dot_directory_not_apple_spec",
                 "config_root_legacy_fallback",
+                "cache_root_legacy_fallback",
                 "migration_required_manual",
                 "models_root_home_visible_by_design",
             ]
@@ -181,6 +183,7 @@ struct StorageLocationStandardsTests {
                 "root_home_dot_directory_not_apple_spec",
                 "standard_location_available_legacy_active",
                 "config_root_legacy_fallback",
+                "cache_root_legacy_fallback",
                 "migration_required_manual",
             ]
         )
@@ -205,6 +208,7 @@ struct StorageLocationStandardsTests {
                 "data_root_legacy_application_support_fallback",
                 "legacy_application_support_root_present",
                 "config_root_legacy_fallback",
+                "cache_root_legacy_fallback",
                 "migration_required_manual",
             ]
         )
@@ -335,7 +339,7 @@ struct StorageLocationStandardsTests {
         #expect(json["classification"] as? String == "home_dot_directory")
         #expect(json["data_source"] as? String == "legacy_home_dot_directory")
         #expect(json["config_source"] as? String == "legacy_home_dot_directory")
-        #expect(json["cache_source"] as? String == "standard")
+        #expect(json["cache_source"] as? String == "legacy_home_dot_directory")
         #expect(json["migration_required"] as? Bool == true)
 
         let candidates = try #require(json["candidate_locations"] as? [[String: Any]])
@@ -369,7 +373,8 @@ struct StorageLocationStandardsTests {
         #expect(
             report.summary
                 == "data=legacy_home_dot_directory; config=legacy_home_dot_directory; "
-                + "cache=standard; needs-attention; migration=required; models_root=home_visible"
+                + "cache=legacy_home_dot_directory; needs-attention; migration=required; "
+                + "models_root=home_visible"
         )
         #expect(!report.summary.contains("\n"))
     }

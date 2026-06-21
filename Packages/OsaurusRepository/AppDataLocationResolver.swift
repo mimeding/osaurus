@@ -297,24 +297,45 @@ public enum AppDataLocationResolver {
             let legacyHomeCache = legacyHome.appendingPathComponent("cache", isDirectory: true)
             let legacySupportCache = legacySupport?.appendingPathComponent("cache", isDirectory: true)
 
-            if directoryExists(standardCache, fileManager: fm) {
-                return ResolvedLocation(kind: .cache, source: .standard, url: standardCache)
-            }
-            if directoryExists(legacyHomeCache, fileManager: fm) {
+            switch dataSource {
+            case .legacyHomeDotDirectory:
                 return ResolvedLocation(
                     kind: .cache,
                     source: .legacyHomeDotDirectory,
                     url: legacyHomeCache
                 )
-            }
-            if let legacySupportCache, directoryExists(legacySupportCache, fileManager: fm) {
+            case .legacyApplicationSupport:
                 return ResolvedLocation(
                     kind: .cache,
                     source: .legacyApplicationSupport,
-                    url: legacySupportCache
+                    url: legacySupportCache ?? standardCache
+                )
+            case .standard:
+                if directoryExists(standardCache, fileManager: fm) {
+                    return ResolvedLocation(kind: .cache, source: .standard, url: standardCache)
+                }
+                if directoryExists(legacyHomeCache, fileManager: fm) {
+                    return ResolvedLocation(
+                        kind: .cache,
+                        source: .legacyHomeDotDirectory,
+                        url: legacyHomeCache
+                    )
+                }
+                if let legacySupportCache, directoryExists(legacySupportCache, fileManager: fm) {
+                    return ResolvedLocation(
+                        kind: .cache,
+                        source: .legacyApplicationSupport,
+                        url: legacySupportCache
+                    )
+                }
+                return ResolvedLocation(kind: .cache, source: .standard, url: standardCache)
+            case .testOverride, .environmentOverride:
+                return ResolvedLocation(
+                    kind: .cache,
+                    source: dataSource,
+                    url: dataRoot.appendingPathComponent("cache", isDirectory: true)
                 )
             }
-            return ResolvedLocation(kind: .cache, source: .standard, url: standardCache)
         }()
 
         let data = ResolvedLocation(kind: .data, source: dataSource, url: dataRoot)

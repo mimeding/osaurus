@@ -279,7 +279,7 @@ Issue [#1422](https://github.com/osaurus-ai/osaurus/issues/1422) is right: the h
 |---|---|---|
 | App data | `~/Library/Application Support/Osaurus/` | `~/.osaurus/`, then `~/Library/Application Support/com.dinoki.osaurus/` when those already exist |
 | Config | `~/Library/Application Support/Osaurus/config/` | Matching legacy data root's `config/` directory |
-| Cache | `~/Library/Caches/Osaurus/` | Existing `~/.osaurus/cache/` or retired Application Support cache |
+| Cache | `~/Library/Caches/Osaurus/` | Matching legacy data root's `cache/` directory |
 | XDG fallback | `~/.local/share/osaurus/`, `~/.config/osaurus/`, `~/.cache/osaurus/` | Used only when Apple directory APIs are unavailable |
 | Model weights | `~/MLXModels/` (legacy `~/Documents/MLXModels/`, env override, or user-picked folder) | Separate decision — weights are user-managed and home-visible by design |
 
@@ -295,7 +295,7 @@ The resolver does **not** move user data automatically. Existing legacy roots re
 - Sandbox tooling and plugin/container trees can be many gigabytes; a silent move on upgrade is not acceptable.
 - If a standard root and a legacy root both exist, the resolver keeps the legacy root active to avoid switching away from existing user data. The diagnostic report surfaces this with `standard_location_available_legacy_active`.
 
-The contract is: paths resolve through `AppDataLocationResolver` via `OsaurusPaths` / `ToolsPaths`, the audit reports reality instead of hiding it, and no code should invent a storage root directly.
+The contract is: paths resolve through `AppDataLocationResolver` via `OsaurusPaths` / `ToolsPaths`, preserved legacy data roots keep their config/cache siblings, the audit reports reality instead of hiding it, and no code should invent a storage root directly.
 
 ---
 

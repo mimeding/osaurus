@@ -334,13 +334,17 @@ public enum StorageLocationStandards {
         }
 
         if isLegacy(locations.cache.source) {
+            let cacheReason =
+                locations.usesLegacyDataRoot
+                ? "to stay with the resolved legacy data root family."
+                : "because an existing cache directory was found."
             findings.append(
                 Finding(
                     code: .cacheRootLegacyFallback,
                     severity: .info,
                     message:
                         "Cache root \(locations.cacheRoot.path) is a legacy location "
-                        + "because an existing cache directory was found."
+                        + cacheReason
                 )
             )
         }
