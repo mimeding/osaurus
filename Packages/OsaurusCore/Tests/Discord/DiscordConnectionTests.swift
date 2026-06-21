@@ -29,6 +29,7 @@ struct DiscordConnectionTests {
             let saved = DiscordConnectionConfigurationStore.load()
             #expect(saved.configuredGuildIds == ["111111111111111111"])
             #expect(saved.defaultReadLimit == 100)
+            #expect(!DiscordConnectionConfiguration.isValidSnowflake("١١١١١١"))
 
             let disk = try String(
                 contentsOf: DiscordConnectionConfigurationStore.configurationFileURL(),
@@ -173,6 +174,29 @@ struct DiscordConnectionTests {
         }
     }
 
+    @Test func sendToolRejectsMessagesAboveDiscordUTF16Limit() async throws {
+        try await withIsolatedDiscordStores {
+            let fake = FakeDiscordAPIClient()
+            let service = DiscordConnectionService(client: fake)
+            try service.saveBotToken("discord-bot-token-super-secret")
+            try service.saveConfiguration(
+                DiscordConnectionConfiguration(
+                    writableChannelIds: ["333333333333333333"],
+                    writeEnabled: true
+                )
+            )
+            let tool = DiscordSendMessageTool(service: service)
+            let emojiMessage = String(repeating: "😀", count: 1001)
+
+            let result = try await tool.execute(
+                argumentsJSON: #"{"channel_id":"333333333333333333","content":"\#(emojiMessage)","confirm_send":true}"#
+            )
+
+            #expect(EnvelopeAssertions.failureKind(result) == "invalid_args")
+            #expect(await fake.sentMessageCount() == 0)
+        }
+    }
+
     @Test func agentChannelSendToolDispatchesThroughDiscordConnection() async throws {
         try await withIsolatedDiscordStores {
             let fake = FakeDiscordAPIClient()
@@ -291,11 +315,15 @@ struct DiscordConnectionTests {
         }
     }
 
-    @Test func agentChannelToolsAreDeniedOnExternalSurfacesAndNotBaselineBuiltIns() async throws {
+    @Test func nativeAgentChannelToolsAreDynamicButNotPluginOwned() async throws {
         let names = ToolRegistry.agentChannelToolNames.sorted()
-        let builtInNames = await MainActor.run {
-            ToolRegistry.shared.builtInToolNames
+        let (builtInNames, pluginNames) = await MainActor.run {
+            (
+                ToolRegistry.shared.builtInToolNames,
+                names.filter { ToolRegistry.shared.isPluginTool($0) }
+            )
         }
+        #expect(pluginNames.isEmpty)
 
         for name in names {
             #expect(ToolRegistry.externallyDeniedToolNames.contains(name))
@@ -313,6 +341,27 @@ struct DiscordConnectionTests {
 
         for name in ToolRegistry.discordToolNames {
             #expect(ToolRegistry.externallyDeniedToolNames.contains(name))
+        }
+    }
+
+    @Test func discordChannelIsConfiguredForWriteOnlySetups() async throws {
+        try await withIsolatedDiscordStores {
+            let service = DiscordConnectionService(client: FakeDiscordAPIClient())
+            try service.saveBotToken("discord-bot-token-super-secret")
+            try service.saveConfiguration(
+                DiscordConnectionConfiguration(
+                    writableChannelIds: ["333333333333333333"],
+                    writeEnabled: true
+                )
+            )
+
+            let channelService = AgentChannelConnectionService(discordService: service)
+            let discordRow = try #require(
+                channelService.listConnections().first { $0["id"] as? String == "discord" }
+            )
+
+            #expect(discordRow["configured"] as? Bool == true)
+            #expect(discordRow["credential_saved"] as? Bool == true)
         }
     }
 

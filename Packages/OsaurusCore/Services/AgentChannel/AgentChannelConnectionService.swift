@@ -315,8 +315,10 @@ final class AgentChannelConnectionService: @unchecked Sendable {
     private func discordConnectionDictionary() -> [String: Any] {
         var row = connectionDictionary(discordConnection())
         row["credential_saved"] = DiscordCredentialStore.hasBotToken()
+        let readRooms = row["read_room_allowlist"] as? [String] ?? []
+        let writeRooms = row["write_room_allowlist"] as? [String] ?? []
         row["configured"] = DiscordCredentialStore.hasBotToken()
-            && !(row["read_room_allowlist"] as? [String] ?? []).isEmpty
+            && (!readRooms.isEmpty || !writeRooms.isEmpty)
         return row
     }
 

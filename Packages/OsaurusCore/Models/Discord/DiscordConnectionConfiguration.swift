@@ -60,7 +60,7 @@ struct DiscordConnectionConfiguration: Codable, Equatable, Sendable {
     static func isValidSnowflake(_ id: String) -> Bool {
         let trimmed = normalizedId(id)
         guard (5 ... 32).contains(trimmed.count) else { return false }
-        return trimmed.allSatisfy(\.isNumber)
+        return trimmed.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
     static func clampReadLimit(_ value: Int) -> Int {

@@ -248,7 +248,7 @@ final class ToolRegistry: ObservableObject {
         }
 
         for tool in Self.agentChannelTools {
-            registerPluginTool(tool)
+            registerNativeDynamicTool(tool)
         }
     }
 
@@ -1224,6 +1224,33 @@ final class ToolRegistry: ObservableObject {
     }
 
     // MARK: - Plugin Tool Registration
+
+    /// Register a first-party native tool that should be loaded on demand
+    /// instead of joining the always-loaded built-in baseline. This is for
+    /// system-owned dynamic surfaces such as Agent Channels; plugin-owned tools
+    /// must use `registerPluginTool(_:)` so ownership diagnostics stay correct.
+    func registerNativeDynamicTool(_ tool: OsaurusTool) {
+        let firstTime =
+            toolsByName[tool.name] == nil
+            && !configuration.enabled.keys.contains(tool.name)
+        toolsByName[tool.name] = tool
+        sandboxToolNames.remove(tool.name)
+        builtInSandboxToolNames.remove(tool.name)
+        mcpToolNames.remove(tool.name)
+        pluginToolNames.remove(tool.name)
+        if firstTime {
+            setEnabled(true, for: tool.name)
+        }
+        Task {
+            await ToolIndexService.shared.onToolRegistered(
+                name: tool.name,
+                description: tool.description,
+                runtime: .native,
+                tokenCount: Self.estimateTokenCount(tool),
+                parameters: tool.parameters
+            )
+        }
+    }
 
     /// Register a tool from a native dylib plugin.
     /// Auto-enables the tool on first registration so it is immediately usable;

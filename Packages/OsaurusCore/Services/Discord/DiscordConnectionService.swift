@@ -428,7 +428,7 @@ final class DiscordConnectionService: @unchecked Sendable {
         guard !trimmed.isEmpty else {
             throw DiscordConnectionServiceError.emptyMessage
         }
-        guard trimmed.count <= 2000 else {
+        guard trimmed.utf16.count <= 2000 else {
             throw DiscordConnectionServiceError.messageTooLong
         }
         return trimmed
