@@ -28,7 +28,6 @@ enum RepositoryGlobalProxySettings {
                 return state.session
             }
 
-            state?.session.finishTasksAndInvalidate()
             let session = makeSession()
             state = SharedSessionState(proxyKey: key, session: session)
             return session
