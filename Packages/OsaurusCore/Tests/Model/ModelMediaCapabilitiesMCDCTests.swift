@@ -415,6 +415,89 @@ struct ModelMediaCapabilitiesMCDCTests {
         #expect(descriptor.audio.reason.contains("no audio input tensors"))
     }
 
+    @Test("Cached composer descriptor reuses bundle inspection until invalidated")
+    func cachedComposerDescriptor_reusesBundleInspectionUntilInvalidated() throws {
+        let audioBundle = try makeGemma4Bundle(supportsAudio: true)
+        let imageOnlyBundle = try makeGemma4Bundle(supportsAudio: false)
+        defer {
+            try? FileManager.default.removeItem(at: audioBundle)
+            try? FileManager.default.removeItem(at: imageOnlyBundle)
+            ModelMediaCapabilities.invalidateComposerDescriptorCache()
+        }
+
+        ModelMediaCapabilities.invalidateComposerDescriptorCache()
+        var providerCalls = 0
+
+        let first = ModelMediaCapabilities.cachedComposerDescriptor(
+            modelId: "OsaurusAI/Gemma-4-12B-it-MXFP4",
+            fallbackSupportsImages: false,
+            localDirectoryCacheKey: "local"
+        ) {
+            providerCalls += 1
+            return audioBundle
+        }
+
+        let second = ModelMediaCapabilities.cachedComposerDescriptor(
+            modelId: "OsaurusAI/Gemma-4-12B-it-MXFP4",
+            fallbackSupportsImages: false,
+            localDirectoryCacheKey: "local"
+        ) {
+            providerCalls += 1
+            return imageOnlyBundle
+        }
+
+        #expect(providerCalls == 1)
+        #expect(first == second)
+        #expect(second.capabilities.supportsAudio)
+
+        ModelMediaCapabilities.invalidateComposerDescriptorCache()
+        let afterInvalidation = ModelMediaCapabilities.cachedComposerDescriptor(
+            modelId: "OsaurusAI/Gemma-4-12B-it-MXFP4",
+            fallbackSupportsImages: false,
+            localDirectoryCacheKey: "local"
+        ) {
+            providerCalls += 1
+            return imageOnlyBundle
+        }
+
+        #expect(providerCalls == 2)
+        #expect(!afterInvalidation.capabilities.supportsAudio)
+    }
+
+    @Test("Cached composer descriptor rechecks when picker source changes")
+    func cachedComposerDescriptor_rechecksWhenPickerSourceChanges() throws {
+        let audioBundle = try makeGemma4Bundle(supportsAudio: true)
+        defer {
+            try? FileManager.default.removeItem(at: audioBundle)
+            ModelMediaCapabilities.invalidateComposerDescriptorCache()
+        }
+
+        ModelMediaCapabilities.invalidateComposerDescriptorCache()
+        var providerCalls = 0
+
+        let remoteDescriptor = ModelMediaCapabilities.cachedComposerDescriptor(
+            modelId: "OsaurusAI/Gemma-4-12B-it-MXFP4",
+            fallbackSupportsImages: false,
+            localDirectoryCacheKey: "remote-provider"
+        ) {
+            providerCalls += 1
+            return nil
+        }
+
+        let localDescriptor = ModelMediaCapabilities.cachedComposerDescriptor(
+            modelId: "OsaurusAI/Gemma-4-12B-it-MXFP4",
+            fallbackSupportsImages: false,
+            localDirectoryCacheKey: "local"
+        ) {
+            providerCalls += 1
+            return audioBundle
+        }
+
+        #expect(providerCalls == 2)
+        #expect(!remoteDescriptor.capabilities.supportsAudio)
+        #expect(localDescriptor.capabilities.supportsAudio)
+    }
+
     private func makeGemma4Bundle(supportsAudio: Bool) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("osaurus-media-cap-gemma4-\(UUID().uuidString)", isDirectory: true)

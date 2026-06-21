@@ -782,11 +782,13 @@ final class ChatSession: ObservableObject {
     }
 
     private func mediaDescriptor(for model: String?) -> ModelMediaCapabilities.Descriptor {
-        ModelMediaCapabilities.composerDescriptor(
+        ModelMediaCapabilities.cachedComposerDescriptor(
             modelId: model,
             fallbackSupportsImages: imageFallbackSupport(for: model),
-            localDirectory: localModelDirectory(for: model)
-        )
+            localDirectoryCacheKey: modelSourceCacheKey(for: model)
+        ) {
+            self.localModelDirectory(for: model)
+        }
     }
 
     private func imageFallbackSupport(for model: String?) -> Bool {
@@ -803,6 +805,11 @@ final class ChatSession: ObservableObject {
             guard case .local = option.source else { return nil }
         }
         return ModelManager.findInstalledMLXModel(named: model)?.localDirectory
+    }
+
+    private func modelSourceCacheKey(for model: String?) -> String? {
+        guard let model else { return nil }
+        return pickerItems.first(where: { $0.id == model })?.source.uniqueKey
     }
 
     /// Get the currently selected ModelPickerItem

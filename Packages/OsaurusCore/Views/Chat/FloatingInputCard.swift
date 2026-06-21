@@ -3226,11 +3226,13 @@ extension FloatingInputCard {
     /// substring/regex matcher; tests pin the boundary at
     /// `ModelMediaCapabilitiesMCDCTests`.
     private var mediaCapabilityDescriptor: ModelMediaCapabilities.Descriptor {
-        ModelMediaCapabilities.composerDescriptor(
+        ModelMediaCapabilities.cachedComposerDescriptor(
             modelId: selectedModel,
             fallbackSupportsImages: supportsImages,
-            localDirectory: selectedLocalModelDirectory
-        )
+            localDirectoryCacheKey: selectedModelSourceCacheKey
+        ) {
+            selectedLocalModelDirectory
+        }
     }
 
     private var mediaCapabilities: ModelMediaCapabilities.Capabilities {
@@ -3243,6 +3245,11 @@ extension FloatingInputCard {
             guard case .local = option.source else { return nil }
         }
         return ModelManager.findInstalledMLXModel(named: selectedModel)?.localDirectory
+    }
+
+    private var selectedModelSourceCacheKey: String? {
+        guard let selectedModel else { return nil }
+        return pickerItems.first(where: { $0.id == selectedModel })?.source.uniqueKey
     }
 
     /// UTTypes the drop zone advertises. `fileURL` stays enabled for

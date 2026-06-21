@@ -230,6 +230,7 @@ final class ModelManager: NSObject, ObservableObject {
         NotificationCenter.default.publisher(for: .localModelsChanged)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
+                ModelMediaCapabilities.invalidateComposerDescriptorCache()
                 self?.refreshDownloadStates()
             }
             .store(in: &cancellables)
@@ -1638,6 +1639,7 @@ extension ModelManager {
         localModelsCacheCondition.unlock()
         LocalReasoningCapability.invalidate()
         LocalGenerationDefaults.invalidate()
+        ModelMediaCapabilities.invalidateComposerDescriptorCache()
     }
 
     nonisolated static func localModelsScanDiagnosticJSONObject() -> [String: Any]? {

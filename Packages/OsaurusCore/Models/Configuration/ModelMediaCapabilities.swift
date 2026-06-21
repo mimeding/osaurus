@@ -335,6 +335,27 @@ public enum ModelMediaCapabilities {
         )
     }
 
+    /// Cached descriptor surface for SwiftUI composer hot paths. The miss path
+    /// accepts a provider so repeated body evaluations can return before
+    /// calling `ModelManager.findInstalledMLXModel` or reading bundle files.
+    static func cachedComposerDescriptor(
+        modelId: String?,
+        fallbackSupportsImages: Bool,
+        localDirectoryCacheKey: String?,
+        localDirectory: () -> URL?
+    ) -> Descriptor {
+        composerDescriptorCache.descriptor(
+            modelId: modelId,
+            fallbackSupportsImages: fallbackSupportsImages,
+            localDirectoryCacheKey: localDirectoryCacheKey,
+            localDirectory: localDirectory
+        )
+    }
+
+    static func invalidateComposerDescriptorCache() {
+        composerDescriptorCache.invalidate()
+    }
+
     private static func inspectedBundleCapabilities(
         modelId: String,
         localDirectory: URL?
@@ -564,6 +585,7 @@ public enum ModelMediaCapabilities {
     // compilation is slow enough under memory pressure to register as
     // a main-thread hang.
     private static let regexCache = RegexCache()
+    private static let composerDescriptorCache = ComposerDescriptorCache()
 
     private final class RegexCache: @unchecked Sendable {
         private var storage: [String: NSRegularExpression] = [:]
@@ -576,6 +598,65 @@ public enum ModelMediaCapabilities {
             guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
             storage[pattern] = re
             return re
+        }
+    }
+
+    private struct ComposerDescriptorCacheKey: Hashable {
+        let normalizedModelId: String
+        let fallbackSupportsImages: Bool
+        let localDirectoryCacheKey: String
+    }
+
+    private final class ComposerDescriptorCache: @unchecked Sendable {
+        private var storage: [ComposerDescriptorCacheKey: Descriptor] = [:]
+        private var generation: UInt64 = 0
+        private let lock = NSLock()
+
+        func descriptor(
+            modelId: String?,
+            fallbackSupportsImages: Bool,
+            localDirectoryCacheKey: String?,
+            localDirectory: () -> URL?
+        ) -> Descriptor {
+            let key = ComposerDescriptorCacheKey(
+                normalizedModelId: modelId?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                    ?? "",
+                fallbackSupportsImages: fallbackSupportsImages,
+                localDirectoryCacheKey: localDirectoryCacheKey ?? "none"
+            )
+
+            while true {
+                lock.lock()
+                let observedGeneration = generation
+                if let hit = storage[key] {
+                    lock.unlock()
+                    return hit
+                }
+                lock.unlock()
+
+                let descriptor = ModelMediaCapabilities.composerDescriptor(
+                    modelId: modelId,
+                    fallbackSupportsImages: fallbackSupportsImages,
+                    localDirectory: localDirectory()
+                )
+
+                lock.lock()
+                if generation == observedGeneration {
+                    storage[key] = descriptor
+                    lock.unlock()
+                    return descriptor
+                }
+                lock.unlock()
+            }
+        }
+
+        func invalidate() {
+            lock.lock()
+            generation &+= 1
+            storage.removeAll()
+            lock.unlock()
         }
     }
 }
