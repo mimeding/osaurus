@@ -113,6 +113,222 @@ struct DiscordConnectionTests {
         }
     }
 
+    @Test func agentChannelMessageStoreDeduplicatesProviderMessages() throws {
+        let store = AgentChannelMessageStore()
+        try store.openInMemory()
+        defer { store.close() }
+
+        let message = AgentChannelStoredMessage(
+            connectionId: "discord",
+            roomId: "222222222222222222",
+            providerMessageId: "9001",
+            direction: .inbound,
+            authorId: "555555555555555555",
+            authorName: "Mike",
+            content: "eval reports landed",
+            payloadJSON: #"{"id":"9001"}"#,
+            providerTimestamp: "2026-06-19T20:00:00.000000+00:00"
+        )
+
+        #expect(try store.recordMessages([message]) == 1)
+        #expect(try store.recordMessages([message]) == 0)
+        #expect(try store.messageCount(connectionId: "discord", roomId: "222222222222222222") == 1)
+
+        let rows = try store.recentMessages(
+            connectionId: "discord",
+            roomId: "222222222222222222",
+            limit: 10
+        )
+        #expect(rows.count == 1)
+        #expect(rows.first?.direction == .inbound)
+        #expect(rows.first?.payloadJSON.contains("9001") == true)
+    }
+
+    @Test func agentChannelMessageStorePrunesOldMessagesPerRoom() throws {
+        let store = AgentChannelMessageStore()
+        try store.openInMemory()
+        defer { store.close() }
+
+        let messages = (1 ... 3).map { index in
+            AgentChannelStoredMessage(
+                connectionId: "discord",
+                roomId: "222222222222222222",
+                providerMessageId: "900\(index)",
+                direction: .inbound,
+                content: "message \(index)",
+                receivedAt: Date(timeIntervalSince1970: Double(index))
+            )
+        }
+
+        #expect(try store.recordMessages(messages) == 3)
+        #expect(
+            try store.pruneMessages(
+                connectionId: "discord",
+                roomId: "222222222222222222",
+                maxRows: 2
+            ) == 1
+        )
+        let rows = try store.recentMessages(
+            connectionId: "discord",
+            roomId: "222222222222222222",
+            limit: 10
+        )
+        #expect(rows.map(\.providerMessageId) == ["9003", "9002"])
+    }
+
+    @Test func agentChannelMessageStoreSkipsInvalidProviderMessageKeys() throws {
+        let store = AgentChannelMessageStore()
+        try store.openInMemory()
+        defer { store.close() }
+
+        let invalid = AgentChannelStoredMessage(
+            connectionId: "discord",
+            roomId: "",
+            providerMessageId: "9001",
+            direction: .inbound,
+            content: "ignored"
+        )
+
+        #expect(try store.recordMessages([invalid]) == 0)
+        #expect(try store.messageCount() == 0)
+    }
+
+    @Test func agentChannelMessageStoreDeduplicatesReceiveEventsAndTracksCursor() throws {
+        let store = AgentChannelMessageStore()
+        try store.openInMemory()
+        defer { store.close() }
+
+        #expect(try store.markEventSeen(connectionId: "discord", providerEventId: "gateway-seq-42"))
+        #expect(try store.markEventSeen(connectionId: "discord", providerEventId: "gateway-seq-42") == false)
+        #expect(try store.isEventSeen(connectionId: "discord", providerEventId: "gateway-seq-42"))
+
+        try store.upsertCursor(
+            connectionId: "discord",
+            roomId: "222222222222222222",
+            cursor: "after-9001"
+        )
+        #expect(
+            try store.cursor(connectionId: "discord", roomId: "222222222222222222") == "after-9001"
+        )
+        #expect(try store.pruneSeenEvents(olderThan: Date().addingTimeInterval(1)) == 1)
+        #expect(try store.isEventSeen(connectionId: "discord", providerEventId: "gateway-seq-42") == false)
+    }
+
+    @Test func readChannelRecordsFetchedMessagesInAgentChannelStore() async throws {
+        try await withIsolatedDiscordStores {
+            let store = AgentChannelMessageStore()
+            try store.openInMemory()
+            defer { store.close() }
+
+            let fake = FakeDiscordAPIClient()
+            await fake.setMessages([
+                "222222222222222222": [
+                    .fixture(id: "9001", channelId: "222222222222222222", content: "eval reports landed"),
+                    .fixture(id: "9002", channelId: "222222222222222222", content: "review requested"),
+                ],
+            ])
+            let service = DiscordConnectionService(
+                client: fake,
+                messageStore: store,
+                recordMessageSnapshotsInline: true
+            )
+            try service.saveBotToken("discord-bot-token-super-secret")
+            try service.saveConfiguration(
+                DiscordConnectionConfiguration(
+                    readableChannelIds: ["222222222222222222"],
+                    defaultReadLimit: 2
+                )
+            )
+
+            _ = try await service.readChannel(channelId: "222222222222222222", limit: nil)
+            _ = try await service.readChannel(channelId: "222222222222222222", limit: nil)
+
+            #expect(try store.messageCount(connectionId: "discord", roomId: "222222222222222222") == 2)
+            let rows = try store.recentMessages(
+                connectionId: "discord",
+                roomId: "222222222222222222",
+                limit: 10
+            )
+            #expect(Set(rows.map(\.providerMessageId)) == ["9001", "9002"])
+            #expect(rows.allSatisfy { $0.direction == .inbound })
+        }
+    }
+
+    @Test func sendMessageRecordsOutboundMessageInAgentChannelStore() async throws {
+        try await withIsolatedDiscordStores {
+            let store = AgentChannelMessageStore()
+            try store.openInMemory()
+            defer { store.close() }
+
+            let fake = FakeDiscordAPIClient()
+            let service = DiscordConnectionService(
+                client: fake,
+                messageStore: store,
+                recordMessageSnapshotsInline: true
+            )
+            try service.saveBotToken("discord-bot-token-super-secret")
+            try service.saveConfiguration(
+                DiscordConnectionConfiguration(
+                    writableChannelIds: ["333333333333333333"],
+                    writeEnabled: true
+                )
+            )
+
+            _ = try await service.sendMessage(
+                channelId: "333333333333333333",
+                content: "Ship it",
+                confirmSend: true
+            )
+
+            let row = try #require(
+                try store.recentMessages(
+                    connectionId: "discord",
+                    roomId: "333333333333333333",
+                    limit: 1
+                ).first
+            )
+            #expect(row.providerMessageId == "sent-1")
+            #expect(row.direction == .outbound)
+            #expect(row.content == "Ship it")
+            #expect(!row.payloadJSON.localizedCaseInsensitiveContains("discord-bot-token-super-secret"))
+        }
+    }
+
+    @Test func searchMessagesRecordsScannedInboundMessagesInAgentChannelStore() async throws {
+        try await withIsolatedDiscordStores {
+            let store = AgentChannelMessageStore()
+            try store.openInMemory()
+            defer { store.close() }
+
+            let fake = FakeDiscordAPIClient()
+            await fake.setMessages([
+                "222222222222222222": [
+                    .fixture(id: "9001", channelId: "222222222222222222", content: "eval reports landed"),
+                    .fixture(id: "9002", channelId: "222222222222222222", content: "ordinary update"),
+                ],
+            ])
+            let service = DiscordConnectionService(
+                client: fake,
+                messageStore: store,
+                recordMessageSnapshotsInline: true
+            )
+            try service.saveBotToken("discord-bot-token-super-secret")
+            try service.saveConfiguration(
+                DiscordConnectionConfiguration(readableChannelIds: ["222222222222222222"])
+            )
+
+            let result = try await service.findRecentMessages(
+                query: "eval",
+                channelIds: ["222222222222222222"],
+                limitPerChannel: 10,
+                maxMatches: 10
+            )
+
+            #expect(result["match_count"] as? Int == 1)
+            #expect(try store.messageCount(connectionId: "discord", roomId: "222222222222222222") == 2)
+        }
+    }
+
     @Test func readToolRejectsChannelsOutsideReadAllowlist() async throws {
         try await withIsolatedDiscordStores {
             let service = DiscordConnectionService(client: FakeDiscordAPIClient())

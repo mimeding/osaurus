@@ -100,12 +100,23 @@ enum DiscordConnectionServiceError: LocalizedError, Equatable, Sendable {
 }
 
 final class DiscordConnectionService: @unchecked Sendable {
-    static let shared = DiscordConnectionService(client: DiscordAPIClient())
+    static let shared = DiscordConnectionService(
+        client: DiscordAPIClient(),
+        messageStore: AgentChannelMessageStore.shared
+    )
 
     private let client: DiscordAPIClientProtocol
+    private let messageStore: AgentChannelMessageStore?
+    private let recordMessageSnapshotsInline: Bool
 
-    init(client: DiscordAPIClientProtocol) {
+    init(
+        client: DiscordAPIClientProtocol,
+        messageStore: AgentChannelMessageStore? = nil,
+        recordMessageSnapshotsInline: Bool = false
+    ) {
         self.client = client
+        self.messageStore = messageStore
+        self.recordMessageSnapshotsInline = recordMessageSnapshotsInline
     }
 
     func configuration() -> DiscordConnectionConfiguration {
@@ -205,6 +216,16 @@ final class DiscordConnectionService: @unchecked Sendable {
         )
     }
 
+    func messageStoreDiagnostics() -> [String: Any] {
+        [
+            "enabled": messageStore != nil,
+            "open": messageStore?.isOpen ?? false,
+            "database_path": OsaurusPaths.agentChannelMessagesDatabaseFile().path,
+            "message_dedupe": "connection_id + room_id + provider_message_id",
+            "event_dedupe": "connection_id + provider_event_id",
+        ]
+    }
+
     func listServers() async throws -> [[String: Any]] {
         let token = try requireToken()
         let config = configuration()
@@ -265,6 +286,7 @@ final class DiscordConnectionService: @unchecked Sendable {
             token: token,
             limit: safeLimit
         )
+        recordMessages(messages, channelId: normalizedChannelId, direction: .inbound)
         return [
             "kind": "discord_recent_messages",
             "channel_id": normalizedChannelId,
@@ -310,6 +332,7 @@ final class DiscordConnectionService: @unchecked Sendable {
 
         for channelId in allowedChannels {
             let messages = try await client.messages(channelId: channelId, token: token, limit: safeLimit)
+            recordMessages(messages, channelId: channelId, direction: .inbound)
             for message in messages {
                 let haystack = "\(message.content) \(message.author.displayName) \(message.author.username)"
                     .lowercased()
@@ -361,6 +384,7 @@ final class DiscordConnectionService: @unchecked Sendable {
             content: trimmedContent,
             token: token
         )
+        recordMessages([message], channelId: normalizedChannelId, direction: .outbound)
         return [
             "kind": "discord_message_sent",
             "channel_id": normalizedChannelId,
@@ -436,6 +460,67 @@ final class DiscordConnectionService: @unchecked Sendable {
 
     private func redacted(_ error: Error, token: String) -> String {
         DiscordSecurity.redact(error.localizedDescription, token: token)
+    }
+
+    private func recordMessages(
+        _ messages: [DiscordMessage],
+        channelId: String,
+        direction: AgentChannelStoredMessageDirection
+    ) {
+        guard let messageStore, !messages.isEmpty else { return }
+        let rows = messages.map { message in
+            Self.storedMessage(
+                message,
+                channelId: channelId,
+                direction: direction
+            )
+        }
+        if recordMessageSnapshotsInline {
+            Self.persistMessages(rows, messageStore: messageStore)
+        } else {
+            Task.detached(priority: .utility) {
+                Self.persistMessages(rows, messageStore: messageStore)
+            }
+        }
+    }
+
+    private static func persistMessages(
+        _ rows: [AgentChannelStoredMessage],
+        messageStore: AgentChannelMessageStore
+    ) {
+        do {
+            try messageStore.openIfNeeded()
+            _ = try messageStore.recordMessages(rows)
+        } catch {
+            NSLog("[Discord] Failed to record Agent Channel messages: \(error.localizedDescription)")
+        }
+    }
+
+    private static func storedMessage(
+        _ message: DiscordMessage,
+        channelId: String,
+        direction: AgentChannelStoredMessageDirection
+    ) -> AgentChannelStoredMessage {
+        AgentChannelStoredMessage(
+            connectionId: "discord",
+            roomId: channelId,
+            providerMessageId: message.id,
+            direction: direction,
+            authorId: message.author.id,
+            authorName: message.author.displayName,
+            content: message.content,
+            payloadJSON: encodedPayload(message),
+            providerTimestamp: message.timestamp
+        )
+    }
+
+    private static func encodedPayload(_ message: DiscordMessage) -> String {
+        guard let data = try? JSONEncoder().encode(message),
+            let string = String(data: data, encoding: .utf8)
+        else {
+            return "{}"
+        }
+        return string
     }
 
     private static func messageDictionary(_ message: DiscordMessage) -> [String: Any] {

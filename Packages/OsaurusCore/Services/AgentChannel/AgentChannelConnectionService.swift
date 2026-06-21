@@ -58,6 +58,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                 payload["connection_id"] = connection.id
                 payload["kind"] = connection.kind.rawValue
                 payload["standard_actions"] = connection.supportedActions.map(\.rawValue)
+                payload["message_store"] = discordService.messageStoreDiagnostics()
                 return payload
             case .customHTTP:
                 return [
