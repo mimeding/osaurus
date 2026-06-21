@@ -249,8 +249,9 @@ struct HTTPHandlerEndpointTests {
             )
             #expect((resp as? HTTPURLResponse)?.statusCode == 200)
             let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            #expect(obj?["id"] as? String == hostAgentId.uuidString)
-            #expect(obj?["default_model"] as? String == "fake-metadata-model")
+            let metadata = obj?["agent"] as? [String: Any]
+            #expect(metadata?["id"] as? String == hostAgentId.uuidString)
+            #expect(metadata?["default_model"] as? String == "fake-metadata-model")
 
             // An address with no registry mapping still fails closed.
             let unknown = "0xdead000000000000000000000000000000000000"

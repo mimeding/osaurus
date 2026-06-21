@@ -4490,16 +4490,16 @@ final class HTTPHandler: ChannelInboundHandler, Sendable {
                 sendError(status: .badRequest, code: "invalid_agent_id", message: "Invalid agent UUID or address in path.")
                 return
             }
-            guard var agent = allAgents.first(where: { $0.id == targetId }) else {
-                sendError(status: .notFound, code: "agent_not_found", message: "No agent found for the given ID.")
-                return
-            }
             if let rejection = Self.agentScopeRejection(
                 forAgentId: targetId,
                 authedAudience: authedAudience,
                 authedScopeIsMaster: hasGlobalScope
             ) {
                 sendError(status: .forbidden, code: rejection.code, message: rejection.message)
+                return
+            }
+            guard var agent = allAgents.first(where: { $0.id == targetId }) else {
+                sendError(status: .notFound, code: "agent_not_found", message: "No agent found for the given ID.")
                 return
             }
 
