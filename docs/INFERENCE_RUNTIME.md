@@ -161,9 +161,10 @@ matrix runs and `--dry-run` now write these files under the artifact root:
 Dashboard cells are per-signal, not row promotion. A partial row can show
 `proven` token/s and `partial` cache evidence, while the row verdict remains
 `partial`. Cancellation stays `unproven` unless a live artifact records explicit
-cleanup checks such as cancelled-load unload or no-zombie-load evidence. Crash
-proof is tied to recorded post-run health/error artifacts; a failed row links
-the error artifact instead of hiding the failure. The #903 system-prompt and
+cleanup checks such as cancelled-load unload or no-zombie-load evidence; a
+`stop_status_cancelled` marker alone only proves cancellation was observed, not
+that cleanup completed. Crash proof is tied to recorded post-run health/error
+artifacts; a failed row links the error artifact instead of hiding the failure. The #903 system-prompt and
 #1163 Hy3/harmony schema rows are still injected as `unproven` until matching
 live artifacts exist.
 

@@ -207,6 +207,29 @@ def test_resilience_evidence_records_token_cache_marker_cancellation_and_crash_l
         assert "full-kv" in report["issue_coverage"]["#1228"]["rows"]
 
 
+def test_cancellation_stop_status_alone_is_not_cleanup_proof() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = pathlib.Path(temp)
+        payload = base_payload()
+        payload["checks"]["stop_status_cancelled"] = True
+        summary = matrix_summary(root, "cancel-observed", payload)
+        manifest = [
+            {
+                "id": "cancel-observed",
+                "model": "model",
+                "family": "gemma4",
+                "priority": "required",
+                "required_cancellation_evidence": ["cold_load_cleanup"],
+            }
+        ]
+
+        report = run_classifier(root, manifest, summary)
+        evidence = report["rows"][0]["resilience_evidence"]["cancellation"]
+
+        assert evidence["verdict"] == "partial", evidence
+        assert "cleanup proof is missing" in evidence["summary"]
+
+
 def test_renderer_writes_runtime_resilience_dashboard() -> None:
     with tempfile.TemporaryDirectory() as temp:
         root = pathlib.Path(temp)
@@ -286,6 +309,7 @@ def main() -> int:
     test_vl_row_without_media_payload_is_not_proven()
     test_unreadable_row_is_unproven()
     test_resilience_evidence_records_token_cache_marker_cancellation_and_crash_links()
+    test_cancellation_stop_status_alone_is_not_cleanup_proof()
     test_renderer_writes_runtime_resilience_dashboard()
     test_family_runner_dry_run_writes_dashboard_artifacts()
     print("runtime proof classifier tests passed")

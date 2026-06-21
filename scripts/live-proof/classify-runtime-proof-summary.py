@@ -51,6 +51,17 @@ CANCELLATION_CHECKS = (
     "stop_status_cancelled",
 )
 
+CANCELLATION_CLEANUP_CHECKS = (
+    "cancellation_cleaned_up",
+    "cancelled_load_unloaded",
+    "cancelled_generation_finished",
+    "no_zombie_load",
+)
+
+CANCELLATION_OBSERVATION_CHECKS = (
+    "stop_status_cancelled",
+)
+
 
 def load_json(path: pathlib.Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -361,18 +372,25 @@ def cancellation_signal(
     present = required or bool(explicit) or any(name in row_checks for name in CANCELLATION_CHECKS)
     if not present:
         return signal_record("unproven", "no cancellation cleanup proof was recorded for this row", paths)
-    failures = [name for name in CANCELLATION_CHECKS if row_checks.get(name) is False]
+    failures = [name for name in CANCELLATION_CLEANUP_CHECKS if row_checks.get(name) is False]
     if failures:
         return signal_record(
             "failed" if row_failed else "partial",
             "cancellation cleanup checks failed: " + ", ".join(failures),
             paths,
         )
-    passed = [name for name in CANCELLATION_CHECKS if row_checks.get(name) is True]
+    passed = [name for name in CANCELLATION_CLEANUP_CHECKS if row_checks.get(name) is True]
     if passed:
         return signal_record(
             "proven",
             "cancellation cleanup checks passed: " + ", ".join(passed),
+            paths,
+        )
+    observed = [name for name in CANCELLATION_OBSERVATION_CHECKS if row_checks.get(name) is True]
+    if observed:
+        return signal_record(
+            "failed" if row_failed else "partial",
+            "cancellation was observed but cleanup proof is missing: " + ", ".join(observed),
             paths,
         )
     messages = blockers_for_requirement(blockers, "cancellation")
