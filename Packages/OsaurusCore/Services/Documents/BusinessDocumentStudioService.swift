@@ -430,10 +430,11 @@ public struct BusinessDocumentStudioService: Sendable {
         policy: BusinessDocumentStudioExportPolicy = .standard
     ) async throws -> BusinessDocumentStudioExportResult {
         let normalizedTarget = targetFormatId.trimmedLowercased
-        try validateDestination(url, targetFormatId: normalizedTarget, policy: policy)
+        try validateDestination(url, policy: policy)
 
         switch normalizedTarget {
         case "csv", "tsv":
+            try rejectTextExportPackageTarget(url)
             let delimiter: CSVDelimiter = normalizedTarget == "tsv" ? .tab : .comma
             let result = try await CSVTableWorkflowService.export(document, to: url, delimiter: delimiter)
             return BusinessDocumentStudioExportResult(
@@ -445,6 +446,7 @@ public struct BusinessDocumentStudioService: Sendable {
             )
 
         case "xlsx":
+            try validateStructuredPackageTarget(url, targetFormatId: normalizedTarget)
             let result = try await WorkbookWorkflowService.export(document, to: url, registry: registry)
             return BusinessDocumentStudioExportResult(
                 url: result.url,
@@ -466,6 +468,7 @@ public struct BusinessDocumentStudioService: Sendable {
                     targetFormatId: normalizedTarget
                 )
             }
+            try validateEmitterPackageTarget(url, targetFormatId: emitter.formatId.trimmedLowercased)
             do {
                 try await emitter.emit(document, to: url)
                 return BusinessDocumentStudioExportResult(
@@ -659,7 +662,6 @@ public struct BusinessDocumentStudioService: Sendable {
 
     private func validateDestination(
         _ url: URL,
-        targetFormatId: String,
         policy: BusinessDocumentStudioExportPolicy
     ) throws {
         guard url.isFileURL else {
@@ -675,6 +677,20 @@ public struct BusinessDocumentStudioService: Sendable {
                 throw BusinessDocumentStudioError.destinationOutsideAllowedDirectory(url)
             }
         }
+    }
+
+    private func rejectTextExportPackageTarget(_ url: URL) throws {
+        let extensionName = url.pathExtension.lowercased()
+        guard Self.structuredPackageExtensions.contains(extensionName) else {
+            return
+        }
+        throw BusinessDocumentStudioError.unsafeTextPackageTarget(fileExtension: extensionName)
+    }
+
+    private func validateStructuredPackageTarget(
+        _ url: URL,
+        targetFormatId: String
+    ) throws {
         let extensionName = url.pathExtension.lowercased()
         guard Self.structuredPackageExtensions.contains(extensionName) else { return }
         guard let allowedExtensions = Self.structuredTargetExtensions[targetFormatId] else {
@@ -688,11 +704,22 @@ public struct BusinessDocumentStudioService: Sendable {
         }
     }
 
+    private func validateEmitterPackageTarget(
+        _ url: URL,
+        targetFormatId: String
+    ) throws {
+        guard Self.structuredTargetExtensions[targetFormatId] != nil else {
+            return
+        }
+        try validateStructuredPackageTarget(url, targetFormatId: targetFormatId)
+    }
+
     private func exportTextFallback(
         _ document: StructuredDocument,
         to url: URL,
         policy: BusinessDocumentStudioExportPolicy
     ) throws -> BusinessDocumentStudioExportResult {
+        try rejectTextExportPackageTarget(url)
         let data = Data(document.textFallback.utf8)
         guard data.count <= policy.maxTextExportUTF8Bytes else {
             throw BusinessDocumentStudioError.textExportTooLarge(

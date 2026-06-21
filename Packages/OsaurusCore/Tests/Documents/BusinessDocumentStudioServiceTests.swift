@@ -138,6 +138,27 @@ struct BusinessDocumentStudioServiceTests {
         }
     }
 
+    @Test func exportRegisteredEmitterCanOwnStructuredPackageExtension() async throws {
+        let registry = DocumentFormatRegistry()
+        registry.register(emitter: StubPackageEmitter(formatId: "pptm"))
+        let service = BusinessDocumentStudioService(registry: registry)
+        let document = Self.pdfDocument()
+        let outputDirectory = try Self.temporaryDirectory()
+        let target = outputDirectory.appendingPathComponent("slides.pptm")
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let result = try await service.export(
+            document,
+            as: "pptm",
+            to: target,
+            policy: BusinessDocumentStudioExportPolicy(allowedDirectory: outputDirectory)
+        )
+
+        #expect(result.targetFormatId == "pptm")
+        #expect(result.bytesWritten > 0)
+        #expect(try String(contentsOf: target, encoding: .utf8) == "emitted:pptm")
+    }
+
     @Test func exportTextFallbackRejectsPackageTargetsAndDirectoryEscape() async throws {
         let service = BusinessDocumentStudioService(registry: DocumentFormatRegistry())
         let document = Self.plainTextDocument()
@@ -332,5 +353,17 @@ struct BusinessDocumentStudioServiceTests {
                 ]
             )
         )
+    }
+}
+
+private struct StubPackageEmitter: DocumentFormatEmitter {
+    let formatId: String
+
+    func canEmit(_ document: StructuredDocument) -> Bool {
+        true
+    }
+
+    func emit(_ document: StructuredDocument, to url: URL) async throws {
+        try Data("emitted:\(formatId)".utf8).write(to: url, options: .atomic)
     }
 }
