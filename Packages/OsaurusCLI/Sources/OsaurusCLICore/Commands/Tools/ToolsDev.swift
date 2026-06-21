@@ -14,8 +14,8 @@
 import Foundation
 import OsaurusRepository
 
-private nonisolated(unsafe) var devProxyConfigFile: URL?
-private nonisolated(unsafe) var signalSource: DispatchSourceSignal?
+nonisolated(unsafe) private var devProxyConfigFile: URL?
+nonisolated(unsafe) private var signalSource: DispatchSourceSignal?
 
 public struct ToolsDev {
 
@@ -194,7 +194,7 @@ public struct ToolsDev {
                     at: pluginDir,
                     includingPropertiesForKeys: nil,
                     options: .skipsHiddenFiles
-                ).filter(\.hasDirectoryPath).first
+                ).first { $0.hasDirectoryPath }
             }
             guard let dir = versionDir else { return nil }
 
@@ -370,8 +370,7 @@ public struct ToolsDev {
 
         for case let url as URL in enumerator {
             if let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-                let mtime = values.contentModificationDate, mtime > latest
-            {
+                let mtime = values.contentModificationDate, mtime > latest {
                 latest = mtime
             }
         }
@@ -385,8 +384,7 @@ public struct ToolsDev {
         for name in companions {
             let url = cwd.appendingPathComponent(name)
             if let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-                let mtime = values.contentModificationDate, mtime > latest
-            {
+                let mtime = values.contentModificationDate, mtime > latest {
                 latest = mtime
             }
         }
@@ -408,16 +406,23 @@ public struct ToolsDev {
 
     private static func setupWebProxy(pluginId: String, webProxyURL: String?) {
         guard let proxy = webProxyURL else { return }
-        let configDir = ToolsPaths.root().appendingPathComponent("config", isDirectory: true)
+        let configFile = devProxyConfigurationFile()
+        let configDir = configFile.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
         let devConfig: [String: Any] = [
             "plugin_id": pluginId,
             "web_proxy": proxy,
         ]
         let data = try? JSONSerialization.data(withJSONObject: devConfig, options: .prettyPrinted)
-        let configFile = configDir.appendingPathComponent("dev-proxy.json")
         try? data?.write(to: configFile)
         devProxyConfigFile = configFile
+    }
+
+    static func devProxyConfigurationFile(
+        locations: AppDataLocationResolver.ResolvedLocations =
+            AppDataLocationResolver.resolve(overrideRoot: ToolsPaths.overrideRoot)
+    ) -> URL {
+        locations.configRoot.appendingPathComponent("dev-proxy.json")
     }
 
     private static func setupSignalHandler() {

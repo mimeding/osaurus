@@ -92,7 +92,7 @@ Browsers can't add the `X-Osaurus-Agent-Id` header to top-level navigation. Use 
 
 ### Does the dev proxy work with Vite HMR?
 
-Yes. The proxy now forwards the original method, headers, and body — POSTs, HMR pings, fetch calls all flow through. Set `~/Library/Application Support/Osaurus/Config/dev-proxy.json` per [ROUTES_AND_WEB.md#dev-proxy](ROUTES_AND_WEB.md#dev-proxy).
+Yes. The proxy now forwards the original method, headers, and body — POSTs, HMR pings, fetch calls all flow through. Set `dev-proxy.json` in the resolved Osaurus config directory per [ROUTES_AND_WEB.md#dev-proxy](ROUTES_AND_WEB.md#dev-proxy).
 
 ### Are paths case-sensitive?
 

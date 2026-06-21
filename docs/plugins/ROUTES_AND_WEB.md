@@ -210,7 +210,8 @@ http://127.0.0.1:1338/plugins/dev.example.MyPlugin/ui?osr_agent=<agent_uuid>
 
 During development you often want to run a Vite / Next.js / webpack dev server with HMR rather than rebuilding the plugin every time the UI changes.
 
-Create `~/Library/Application Support/Osaurus/Config/dev-proxy.json`:
+Create `dev-proxy.json` in the resolved Osaurus config directory, such as
+`~/Library/Application Support/Osaurus/config/dev-proxy.json` on macOS:
 
 ```json
 {

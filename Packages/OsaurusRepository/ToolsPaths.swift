@@ -18,6 +18,11 @@ public enum ToolsPaths {
         AppDataLocationResolver.resolve(overrideRoot: overrideRoot).dataRoot
     }
 
+    /// Configuration directory resolved from the shared app-data resolver.
+    public static func configRootDirectory() -> URL {
+        AppDataLocationResolver.resolve(overrideRoot: overrideRoot).configRoot
+    }
+
     /// Tools directory (plugins)
     public static func toolsRootDirectory() -> URL {
         root().appendingPathComponent("Tools", isDirectory: true)
