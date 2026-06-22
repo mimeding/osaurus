@@ -1,10 +1,40 @@
 # Computer Use Evidence Pack
 
 This pack maps CI-safe evidence for the contract documented in
-`docs/COMPUTER_USE.md`. It is a local evidence map only; it does not create a
-report store.
+`docs/COMPUTER_USE.md`. The canonical local runner writes an ignored evidence
+bundle under `build/computer-use-evidence/`, including command logs,
+`manifest.json`, `summary.md`, git metadata, and timing for each proof step.
+
+## Canonical local runner
+
+```bash
+make computer-use-evidence
+```
+
+The default lane runs:
+
+- `git diff --check`
+- `ComputerUseEvidencePackTests`
+- the full `ComputerUse` Swift test filter
+
+Generated artifacts stay local because `build/` is gitignored. To include the
+model-dependent OsaurusEvals ComputerUse suite:
+
+```bash
+RUN_EVALS=1 MODEL=foundation make computer-use-evidence
+```
+
+Useful overrides:
+
+```bash
+OUT_DIR=build/computer-use-evidence/manual RUN_EVALS=1 make computer-use-evidence
+STRICT=0 make computer-use-evidence
+```
 
 ## Focused commands
+
+The runner above executes the deterministic commands for you. Equivalent manual
+commands are:
 
 ```bash
 swift test --package-path Packages/OsaurusCore --filter ComputerUseEvidencePackTests
