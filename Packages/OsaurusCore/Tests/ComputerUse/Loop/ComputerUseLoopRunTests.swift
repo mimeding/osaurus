@@ -15,6 +15,7 @@
 //   • a provider recovering from a rejection using the transcript feedback.
 //
 
+import AppKit
 import Foundation
 import XCTest
 
@@ -53,8 +54,15 @@ final class ComputerUseLoopRunTests: XCTestCase {
         provider: @escaping AgentStepProvider,
         gate: ComputerUseGating = HardwiredGate(),
         confirm: @escaping @Sendable (ActionPreview) async -> Bool = { _ in true },
+        requestCloudVisionConsent: @escaping @Sendable () async -> CloudVisionConsentChoice = {
+            .deny
+        },
+        persistCloudVisionConsent: @escaping @Sendable (CloudVisionConsentChoice) async -> Void = {
+            _ in
+        },
         interrupt: InterruptToken = InterruptToken(),
-        limits: RunLimits = RunLimits(wallClockSeconds: 30)
+        limits: RunLimits = RunLimits(wallClockSeconds: 30),
+        vision: VisionContext = .none
     ) async -> ComputerUseRunResult {
         await ComputerUseLoop.run(
             goal: "test goal",
@@ -64,7 +72,10 @@ final class ComputerUseLoopRunTests: XCTestCase {
             feed: SubagentFeed(toolCallId: "t", kindId: "computer_use", title: "test goal"),
             interrupt: interrupt,
             confirm: confirm,
+            requestCloudVisionConsent: requestCloudVisionConsent,
+            persistCloudVisionConsent: persistCloudVisionConsent,
             limits: limits,
+            vision: vision,
             sessionId: "cu-test",
             nextAction: provider
         )
@@ -425,7 +436,11 @@ final class ComputerUseLoopRunTests: XCTestCase {
 
     /// A driver that serves an empty AX snapshot first, then a populated one —
     /// the Electron / custom-drawn-UI shape the empty-AX escalation targets.
-    private func emptyThenPopulated(screenRecording: Bool, pid: Int32 = 4242) -> MockMacDriver {
+    private func emptyThenPopulated(
+        screenRecording: Bool,
+        pid: Int32 = 4242,
+        image: CUImage = CUImage(base64: "", mimeType: "image/png", width: 1, height: 1)
+    ) -> MockMacDriver {
         let window = CUWindowSummary(id: 1, title: "Main", focused: true, x: 0, y: 0, w: 800, h: 600)
         let empty = CUSnapshot(
             snapshotId: 1,
@@ -447,7 +462,7 @@ final class ComputerUseLoopRunTests: XCTestCase {
             truncated: false,
             windows: [window],
             elements: [el("send", "button", "Send")],
-            image: CUImage(base64: "", mimeType: "image/png", width: 1, height: 1)
+            image: image
         )
         return MockMacDriver(
             availability: MacDriverAvailability(
@@ -486,6 +501,62 @@ final class ComputerUseLoopRunTests: XCTestCase {
             "No Screen Recording means there is no tier to escalate an empty view to"
         )
     }
+
+    func testCloudVisionAllowOnceStaysScopedToCurrentRun() async {
+        let recorder = ConsentPersistenceRecorder()
+        let d = emptyThenPopulated(
+            screenRecording: true,
+            image: renderLoopCUImage(text: "Visible account number 1234")
+        )
+        let result = await run(
+            d,
+            provider: ComputerUseLoop.scriptedProvider([AgentAction(verb: .done, reason: "ok")]),
+            requestCloudVisionConsent: { .allowOnce },
+            persistCloudVisionConsent: { choice in await recorder.record(choice) },
+            vision: VisionContext(
+                modelAcceptsImages: true,
+                modelIsLocal: false,
+                cloudConsent: false,
+                cloudScrubMode: .allText
+            )
+        )
+
+        XCTAssertTrue(result.outcome.isSuccess)
+        XCTAssertTrue(result.metrics.cloudVisionConsentPrompted)
+        XCTAssertTrue(result.metrics.cloudVisionConsentGranted)
+        XCTAssertFalse(result.metrics.cloudVisionConsentPersistent)
+        XCTAssertTrue(result.metrics.cloudVisionUsed)
+        let choices = await recorder.choices()
+        XCTAssertEqual(choices, [])
+    }
+
+    func testCloudVisionAllowAlwaysUsesPersistentGrantHook() async {
+        let recorder = ConsentPersistenceRecorder()
+        let d = emptyThenPopulated(
+            screenRecording: true,
+            image: renderLoopCUImage(text: "Visible account number 1234")
+        )
+        let result = await run(
+            d,
+            provider: ComputerUseLoop.scriptedProvider([AgentAction(verb: .done, reason: "ok")]),
+            requestCloudVisionConsent: { .allowAlways },
+            persistCloudVisionConsent: { choice in await recorder.record(choice) },
+            vision: VisionContext(
+                modelAcceptsImages: true,
+                modelIsLocal: false,
+                cloudConsent: false,
+                cloudScrubMode: .allText
+            )
+        )
+
+        XCTAssertTrue(result.outcome.isSuccess)
+        XCTAssertTrue(result.metrics.cloudVisionConsentPrompted)
+        XCTAssertTrue(result.metrics.cloudVisionConsentGranted)
+        XCTAssertTrue(result.metrics.cloudVisionConsentPersistent)
+        XCTAssertTrue(result.metrics.cloudVisionUsed)
+        let choices = await recorder.choices()
+        XCTAssertEqual(choices, [.allowAlways])
+    }
 }
 
 // MARK: - Robustness test support
@@ -498,6 +569,53 @@ private actor AttemptCounter {
         value += 1
         return value
     }
+}
+
+private actor ConsentPersistenceRecorder {
+    private var recorded: [CloudVisionConsentChoice] = []
+
+    func record(_ choice: CloudVisionConsentChoice) {
+        recorded.append(choice)
+    }
+
+    func choices() -> [CloudVisionConsentChoice] {
+        recorded
+    }
+}
+
+private func renderLoopCUImage(text: String) -> CUImage {
+    let size = CGSize(width: 640, height: 140)
+    let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: Int(size.width),
+        pixelsHigh: Int(size.height),
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    )!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSColor.white.setFill()
+    NSRect(origin: .zero, size: size).fill()
+    let attrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 34),
+        .foregroundColor: NSColor.black,
+    ]
+    (text as NSString).draw(at: CGPoint(x: 20, y: 50), withAttributes: attrs)
+    NSGraphicsContext.restoreGraphicsState()
+
+    let cg = rep.cgImage!
+    let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])!
+    return CUImage(
+        base64: png.base64EncodedString(),
+        mimeType: "image/png",
+        width: cg.width,
+        height: cg.height
+    )
 }
 
 private struct TestInferenceError: Error {}

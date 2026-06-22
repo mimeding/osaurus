@@ -406,6 +406,29 @@ struct FeatureTelemetryEventTests {
         #expect(rec.events[2].props["source"] as? String == "dispatch")
     }
 
+    @Test func computerUseRun_carries_coarse_cloudVisionConsentScope() {
+        let (service, rec, cleanup) = makeRecordingService()
+        defer { cleanup() }
+
+        var metrics = ComputerUseRunMetrics()
+        metrics.maxTier = .som
+        metrics.cloudVisionUsed = true
+        metrics.cloudVisionConsentPrompted = true
+        metrics.cloudVisionConsentGranted = true
+        metrics.cloudVisionConsentPersistent = false
+
+        FeatureTelemetry.computerUseRun(metrics, outcome: "done", service: service)
+
+        let event = rec.events[0]
+        #expect(event.name == "computer_use_run")
+        #expect(event.props["cloud_vision_used"] as? Bool == true)
+        #expect(event.props["cloud_vision_consent_prompted"] as? Bool == true)
+        #expect(event.props["cloud_vision_consent_granted"] as? Bool == true)
+        #expect(event.props["cloud_vision_consent_scope"] as? String == "run")
+        #expect(event.props["outcome"] as? String == "done")
+        #expect(event.props["max_tier"] as? String == "som")
+    }
+
     // MARK: - Hardware RAM bucket (attached to every event)
 
     /// Every emitted event must carry the coarse `total_memory_gb` bucket so
