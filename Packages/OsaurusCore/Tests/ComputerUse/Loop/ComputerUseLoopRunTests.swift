@@ -167,6 +167,51 @@ final class ComputerUseLoopRunTests: XCTestCase {
         XCTAssertTrue(clicks.isEmpty, "An unresolved target must never reach the driver")
     }
 
+    func testAmbiguousDescribeReturnsCandidateMarksWithoutEscalating() async {
+        let d = driver([
+            el("reply-all", "button", "Reply all"),
+            el("reply-sender", "button", "Reply sender"),
+        ])
+        let provider: AgentStepProvider = { input in
+            if input.lastToolResult?.localizedCaseInsensitiveContains("ambiguous target") ?? false {
+                return ModelActionCall(
+                    id: "pick-mark",
+                    arguments: AgentAction(
+                        verb: .click,
+                        target: AgentTarget(mark: 2),
+                        note: "click reply sender"
+                    ).argumentsJSON()
+                )
+            }
+            if input.lastToolResult?.localizedCaseInsensitiveContains("action succeeded") ?? false {
+                return ModelActionCall(
+                    id: "done",
+                    arguments: AgentAction(verb: .done, reason: "resolved ambiguity").argumentsJSON()
+                )
+            }
+            return ModelActionCall(
+                id: "ambiguous",
+                arguments: AgentAction(
+                    verb: .click,
+                    target: AgentTarget(describe: "reply"),
+                    note: "ambiguous reply"
+                ).argumentsJSON()
+            )
+        }
+
+        let result = await run(d, provider: provider, limits: RunLimits(maxSteps: 6, wallClockSeconds: 30))
+
+        XCTAssertTrue(result.outcome.isSuccess, "Expected recovery via mark; got \(result.outcome)")
+        XCTAssertEqual(result.metrics.ambiguousTargets, 1)
+        XCTAssertEqual(result.metrics.maxTier, .ax, "Ambiguity should ask for a mark, not escalate capture")
+        let clicks = await d.elementActions
+        XCTAssertEqual(clicks.count, 1, "Only the disambiguated click should reach the driver")
+        guard case let .click(id, _, _) = clicks.first else {
+            return XCTFail("Expected a click; got \(clicks)")
+        }
+        XCTAssertEqual(id, "reply-sender")
+    }
+
     // MARK: - Cancellation
 
     func testInterruptTerminatesAsInterrupted() async {

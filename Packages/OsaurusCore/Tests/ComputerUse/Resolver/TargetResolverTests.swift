@@ -5,8 +5,9 @@
 //  The one place mark→id resolution + staleness handling lives. These cover
 //  the three outcomes the loop's retry/escalation policy keys off:
 //   • resolved   — a confident unique element (by mark, then describe),
+//   • ambiguous  — multiple visible candidates; the model must choose a mark,
 //   • reobserve  — probably exists but this view can't pin it (out-of-range
-//                  mark, stale mark, ambiguous/zero describe), and
+//                  mark, stale mark, zero describe), and
 //   • deadEnd    — unusable as given (empty target).
 //
 //  Pure + model-free: build a view/snapshot in memory and resolve against it.
@@ -43,17 +44,31 @@ final class TargetResolverTests: XCTestCase {
     private func assertResolved(
         _ res: TargetResolution,
         id expected: String,
+        strategy: TargetResolutionStrategy? = nil,
+        minimumConfidence: Double? = nil,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        guard case .resolved(let elementId, _) = res else {
+        guard case .resolved(let elementId, _, let evidence) = res else {
             return XCTFail("Expected resolved \(expected); got \(res)", file: file, line: line)
         }
         XCTAssertEqual(elementId, expected, file: file, line: line)
+        if let strategy {
+            XCTAssertEqual(evidence.strategy, strategy, file: file, line: line)
+        }
+        if let minimumConfidence {
+            XCTAssertGreaterThanOrEqual(evidence.confidence, minimumConfidence, file: file, line: line)
+        }
+        XCTAssertFalse(evidence.matchedMarks.isEmpty, file: file, line: line)
     }
 
     private func reobserveReason(_ res: TargetResolution) -> String? {
         if case .reobserve(let r) = res { return r }
+        return nil
+    }
+
+    private func ambiguousCandidates(_ res: TargetResolution) -> [TargetResolutionCandidate]? {
+        if case .ambiguous(_, let candidates) = res { return candidates }
         return nil
     }
 
@@ -66,8 +81,18 @@ final class TargetResolverTests: XCTestCase {
 
     func testResolvesByMark() {
         let (view, snap) = make([el("a", "button", "Go"), el("b", "textfield", "Search")])
-        assertResolved(TargetResolver.resolve(AgentTarget(mark: 1), view: view, snapshot: snap), id: "a")
-        assertResolved(TargetResolver.resolve(AgentTarget(mark: 2), view: view, snapshot: snap), id: "b")
+        assertResolved(
+            TargetResolver.resolve(AgentTarget(mark: 1), view: view, snapshot: snap),
+            id: "a",
+            strategy: .mark,
+            minimumConfidence: 1.0
+        )
+        assertResolved(
+            TargetResolver.resolve(AgentTarget(mark: 2), view: view, snapshot: snap),
+            id: "b",
+            strategy: .mark,
+            minimumConfidence: 1.0
+        )
     }
 
     func testOutOfRangeMarkReobserves() {
@@ -115,7 +140,9 @@ final class TargetResolverTests: XCTestCase {
         let (view, snap) = make([el("a", "button", "Go"), el("b", "textfield", "Search")])
         assertResolved(
             TargetResolver.resolve(AgentTarget(describe: "Search"), view: view, snapshot: snap),
-            id: "b"
+            id: "b",
+            strategy: .exactLabel,
+            minimumConfidence: 0.95
         )
     }
 
@@ -124,20 +151,34 @@ final class TargetResolverTests: XCTestCase {
         let (view, snap) = make([el("a", "button", "Save"), el("b", "button", "Save As")])
         assertResolved(
             TargetResolver.resolve(AgentTarget(describe: "Save"), view: view, snapshot: snap),
-            id: "a"
+            id: "a",
+            strategy: .exactLabel
         )
     }
 
-    func testAmbiguousDescribeReobserves() {
+    func testAmbiguousDescribeReturnsCandidates() {
         let (view, snap) = make([
             el("a", "button", "Reply to all"),
             el("b", "button", "Reply to sender"),
         ])
-        let reason = reobserveReason(
-            TargetResolver.resolve(AgentTarget(describe: "reply"), view: view, snapshot: snap)
+        let result = TargetResolver.resolve(AgentTarget(describe: "reply"), view: view, snapshot: snap)
+        guard case .ambiguous(let reason, let candidates) = result else {
+            return XCTFail("Expected ambiguity; got \(result)")
+        }
+        XCTAssertTrue(reason.localizedCaseInsensitiveContains("matches 2"), "got: \(reason)")
+        XCTAssertEqual(candidates.map(\.mark), [1, 2])
+        XCTAssertTrue(candidates.allSatisfy { $0.confidence > 0 })
+    }
+
+    func testDuplicateExactLabelsAreAmbiguous() {
+        let (view, snap) = make([
+            el("a", "button", "Delete"),
+            el("b", "button", "Delete"),
+        ])
+        let candidates = ambiguousCandidates(
+            TargetResolver.resolve(AgentTarget(describe: "Delete"), view: view, snapshot: snap)
         )
-        XCTAssertNotNil(reason)
-        XCTAssertTrue(reason?.localizedCaseInsensitiveContains("matches 2") ?? false, "got: \(reason ?? "nil")")
+        XCTAssertEqual(candidates?.map(\.mark), [1, 2])
     }
 
     func testZeroMatchDescribeReobserves() {
