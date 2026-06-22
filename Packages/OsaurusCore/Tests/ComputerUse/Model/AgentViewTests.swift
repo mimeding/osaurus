@@ -152,4 +152,38 @@ final class AgentViewTests: XCTestCase {
         )
         XCTAssertTrue(next.renderForModel().contains("* ["), "Changed elements should render a `*` marker")
     }
+
+    func testSecureFieldValueNeverRendersForModel() {
+        let secret = "hunter2-never-render"
+        let view = AgentView.build(
+            from: snapshot([
+                el("pw", "securetextfield", "Password", value: secret),
+                el("token", "AXSecureTextField", "API token", value: "sk-secret"),
+            ]),
+            previous: nil
+        )
+
+        let render = view.renderForModel()
+        XCTAssertEqual(view.item(mark: 1)?.value, nil)
+        XCTAssertEqual(view.item(mark: 2)?.value, nil)
+        XCTAssertTrue(render.contains("Password"))
+        XCTAssertTrue(render.contains("API token"))
+        XCTAssertFalse(render.contains(secret))
+        XCTAssertFalse(render.contains("sk-secret"))
+    }
+
+    func testSecureFieldValueChangesDoNotCreateModelDelta() {
+        let prev = AgentView.build(
+            from: snapshot([el("pw", "securefield", "Password", value: "old-secret")]),
+            previous: nil
+        )
+        let next = AgentView.build(
+            from: snapshot([el("pw", "securefield", "Password", value: "new-secret")], id: 2),
+            previous: prev
+        )
+
+        XCTAssertFalse(next.item(mark: 1)?.changed ?? true)
+        XCTAssertFalse(next.hasChanges)
+        XCTAssertFalse(next.renderForModel().contains("new-secret"))
+    }
 }
