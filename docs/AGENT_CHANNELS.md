@@ -19,6 +19,25 @@ The model-facing tools use these standard verbs through `agent_channel_*`
 tools. Provider-specific adapters translate the standard action into the
 provider API. Discord is the first executable adapter.
 
+Each connection also reports provider-neutral action policy metadata in
+`agent_channel_list_connections` and `agent_channel_diagnostics`:
+
+- `effect` is one of `read_only`, `draft`, `confirmed_write`,
+  `relay_receive`, or `unsupported_configured_only`.
+- `status` is one of `available`, `unavailable`, `configured_only`,
+  `unsupported`, or `disabled`.
+- `requires_confirmation` is true for provider write actions that must receive
+  `confirm_send: true`.
+- `dedupe_key`, `idempotency_required`, and `constraints` explain the
+  confirmation, allowlist, and duplicate-suppression contract an adapter must
+  honor.
+
+Relay receive is reported separately as `relay_receive_policy` because there is
+not yet a model-facing receive tool. The standard relay policy requires a
+stable provider event id, acknowledges duplicates without dispatching the same
+event again, persists a normalized external message snapshot, and treats cursor
+updates as optional.
+
 ## Configuration
 
 Non-secret channel definitions live in `agent-channels.json`. Secrets should be
@@ -126,12 +145,18 @@ plugin pattern:
 
 1. Verify the provider secret/signature before parsing user-visible content.
 2. Build a stable provider event id, such as a Telegram update id, Discord
-   gateway sequence/event id, or Slack event id.
-3. Call `markEventSeen(connectionId:providerEventId:)` before dispatch. A
-   `false` result means the event was already processed and should be
-   acknowledged without another agent dispatch.
-4. Store the normalized message snapshot with `recordMessages(_:)`.
-5. Update the room cursor when the provider exposes one.
+   message snowflake id, or Slack event id. Do not use session-scoped sequence
+   numbers that can change when a provider replays the same logical message.
+3. Call `recordReceiveEvent(connectionId:providerEventId:message:cursor:)`.
+   A result with `shouldDispatch == false` means the event was already
+   processed and should be acknowledged without another agent dispatch.
+4. Dispatch only the normalized stored snapshot as untrusted external data.
+5. Preserve the cursor returned by the provider when one exists.
+
+The helper performs the event dedupe insert, normalized inbound message
+snapshot write, per-room pruning, and optional cursor update in one transaction.
+Adapters should not dispatch before this call succeeds because the
+`provider_event_id` is the durable idempotency key.
 
 This PR does not add a live Discord receive relay. It adds the durable message
 and duplicate-filtering foundation that a relay, webhook receiver, Slack

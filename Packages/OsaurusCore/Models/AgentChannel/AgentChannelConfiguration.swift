@@ -25,6 +25,153 @@ enum AgentChannelAction: String, Codable, CaseIterable, Sendable {
     case replyThread = "reply_thread"
 }
 
+enum AgentChannelActionEffect: String, Codable, CaseIterable, Sendable {
+    case readOnly = "read_only"
+    case draft
+    case confirmedWrite = "confirmed_write"
+    case relayReceive = "relay_receive"
+    case unsupportedConfiguredOnly = "unsupported_configured_only"
+}
+
+enum AgentChannelActionStatus: String, Codable, CaseIterable, Sendable {
+    case available
+    case unavailable
+    case configuredOnly = "configured_only"
+    case unsupported
+    case disabled
+}
+
+struct AgentChannelActionPolicy: Equatable, Sendable {
+    var action: AgentChannelAction
+    var effect: AgentChannelActionEffect
+    var status: AgentChannelActionStatus
+    var reason: String?
+    var requiresConfirmation: Bool
+    var dedupeKey: String?
+    var idempotencyRequired: Bool
+    var constraints: [String]
+
+    init(
+        action: AgentChannelAction,
+        effect: AgentChannelActionEffect,
+        status: AgentChannelActionStatus,
+        reason: String? = nil,
+        requiresConfirmation: Bool = false,
+        dedupeKey: String? = nil,
+        idempotencyRequired: Bool = false,
+        constraints: [String] = []
+    ) {
+        self.action = action
+        self.effect = effect
+        self.status = status
+        self.reason = reason
+        self.requiresConfirmation = requiresConfirmation
+        self.dedupeKey = dedupeKey
+        self.idempotencyRequired = idempotencyRequired
+        self.constraints = constraints
+    }
+
+    var dictionary: [String: Any] {
+        var row: [String: Any] = [
+            "action": action.rawValue,
+            "effect": effect.rawValue,
+            "status": status.rawValue,
+            "requires_confirmation": requiresConfirmation,
+            "idempotency_required": idempotencyRequired,
+            "constraints": constraints,
+        ]
+        if let reason {
+            row["reason"] = reason
+        }
+        if let dedupeKey {
+            row["dedupe_key"] = dedupeKey
+        }
+        return row
+    }
+}
+
+struct AgentChannelRelayReceivePolicy: Equatable, Sendable {
+    var effect: AgentChannelActionEffect
+    var status: AgentChannelActionStatus
+    var reason: String?
+    var providerEventIdRequired: Bool
+    var duplicateBehavior: String
+    var snapshotPersistence: String
+    var cursorUpdate: String
+
+    init(
+        status: AgentChannelActionStatus,
+        reason: String? = nil,
+        providerEventIdRequired: Bool = true,
+        duplicateBehavior: String = "acknowledge_without_dispatch",
+        snapshotPersistence: String = "normalized_external_message_snapshot",
+        cursorUpdate: String = "optional"
+    ) {
+        self.effect = .relayReceive
+        self.status = status
+        self.reason = reason
+        self.providerEventIdRequired = providerEventIdRequired
+        self.duplicateBehavior = duplicateBehavior
+        self.snapshotPersistence = snapshotPersistence
+        self.cursorUpdate = cursorUpdate
+    }
+
+    var dictionary: [String: Any] {
+        var row: [String: Any] = [
+            "effect": effect.rawValue,
+            "status": status.rawValue,
+            "provider_event_id_required": providerEventIdRequired,
+            "dedupe_key": "connection_id + provider_event_id",
+            "duplicate_behavior": duplicateBehavior,
+            "snapshot_persistence": snapshotPersistence,
+            "cursor_update": cursorUpdate,
+        ]
+        if let reason {
+            row["reason"] = reason
+        }
+        return row
+    }
+}
+
+extension AgentChannelAction {
+    var baseEffect: AgentChannelActionEffect {
+        switch self {
+        case .diagnostics, .listSpaces, .listRooms, .readMessages, .searchMessages:
+            return .readOnly
+        case .draftMessage:
+            return .draft
+        case .sendMessage, .replyThread:
+            return .confirmedWrite
+        }
+    }
+
+    var requiresSendConfirmation: Bool {
+        switch self {
+        case .sendMessage, .replyThread:
+            return true
+        case .diagnostics, .listSpaces, .listRooms, .readMessages, .searchMessages, .draftMessage:
+            return false
+        }
+    }
+
+    var providerNeutralConstraints: [String] {
+        switch self {
+        case .diagnostics:
+            return ["redact_secrets"]
+        case .listSpaces:
+            return ["provider_credentials"]
+        case .listRooms:
+            return ["provider_credentials", "space_allowlist"]
+        case .readMessages, .searchMessages:
+            return ["provider_credentials", "read_room_allowlist"]
+        case .draftMessage:
+            return ["write_room_allowlist", "no_provider_write"]
+        case .sendMessage, .replyThread:
+            return ["write_enabled", "write_room_allowlist", "confirm_send_true"]
+        }
+    }
+}
+
 struct AgentChannelSecretReference: Codable, Equatable, Sendable {
     var name: String
     var keychainId: String
