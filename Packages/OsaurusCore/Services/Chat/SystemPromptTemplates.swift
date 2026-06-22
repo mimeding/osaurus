@@ -140,13 +140,23 @@ public enum SystemPromptTemplates {
     /// Durable per-agent workspace summaries. These are dynamic because
     /// workspace source metadata can change between turns, and the model
     /// should see current state without invalidating the static prompt prefix.
-    public static func agentWorkspaces(_ summary: AgentWorkspacePromptSummary) -> String {
+    public static func agentWorkspaces(
+        _ summary: AgentWorkspacePromptSummary,
+        descriptor: ContextSourceDescriptor
+    ) -> String {
         guard !summary.workspaces.isEmpty else { return "" }
 
         var lines: [String] = [
             "## Agent workspaces",
             "",
-            "These workspaces are durable background context for this agent.",
+            "Context source: \(descriptor.kind.rawValue)",
+            "Owner: \(descriptor.owner.rawValue)",
+            "Provenance: \(descriptor.provenance)",
+            "Injection slot: \(descriptor.injectionSlot.rawValue)",
+            "Dedupe key: \(descriptor.dedupeKey)",
+            "Privacy path: \(descriptor.privacyPath.rawValue)",
+            "",
+            "Boundary: these are durable knowledge-base summaries attached to this agent. They are not memory (conversation-derived recall in the latest user message), not the Agent DB (agent-authored tables), not the working directory or sandbox filesystem (live execution context), and not screen context (current-window awareness). Use this section for orientation and source discovery only.",
         ]
         if summary.canReadSources {
             lines.append("Use the summaries for orientation, and inspect the source path before quoting details.")

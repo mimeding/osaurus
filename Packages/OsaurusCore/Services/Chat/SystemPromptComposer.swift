@@ -713,15 +713,25 @@ public struct SystemPromptComposer: Sendable {
         // framing, but emitted LATER as dynamic sections (after the static
         // prefix break) so a schema change, package install, or new secret
         // mid-session stays fresh without rewriting the cached KV prefix.
-        var agentWorkspacesSection: String?
-        var agentDBSchemaSection: String?
-        var sandboxStateSection: String?
+        var dynamicContextSections: [ContextSourcePromptSection] = []
 
         if let workspaceSummary = AgentWorkspaceStore.promptSummary(
             agentId: agentId,
             canReadSources: !effectiveToolsOff && resolvedNames.contains("file_read")
         ) {
-            agentWorkspacesSection = SystemPromptTemplates.agentWorkspaces(workspaceSummary)
+            let descriptor = ContextSourceCoordinator.agentWorkspace(agentId: agentId)
+            let section = SystemPromptTemplates.agentWorkspaces(
+                workspaceSummary,
+                descriptor: descriptor
+            )
+            dynamicContextSections.append(
+                ContextSourcePromptSection(
+                    id: "agentWorkspaces",
+                    label: L("Agent Workspaces"),
+                    descriptor: descriptor,
+                    content: section
+                )
+            )
         }
 
         // ── Statics ──────────────────────────────────────────────────
@@ -787,7 +797,15 @@ public struct SystemPromptComposer: Sendable {
             )
             let snapshotText = Self.renderSchemaSnapshot(agentId: agentId)
             if !snapshotText.isEmpty {
-                agentDBSchemaSection = snapshotText
+                let descriptor = ContextSourceCoordinator.agentDatabase(agentId: agentId)
+                dynamicContextSections.append(
+                    ContextSourcePromptSection(
+                        id: "agentDBSchema",
+                        label: L("Agent DB Schema"),
+                        descriptor: descriptor,
+                        content: snapshotText
+                    )
+                )
             }
         }
 
@@ -970,7 +988,15 @@ public struct SystemPromptComposer: Sendable {
                 installedPackages: installedPackages
             )
             if !state.isEmpty {
-                sandboxStateSection = state
+                let descriptor = ContextSourceCoordinator.sandboxLocal(agentId: agentId)
+                dynamicContextSections.append(
+                    ContextSourcePromptSection(
+                        id: "sandboxState",
+                        label: L("Sandbox State"),
+                        descriptor: descriptor,
+                        content: state
+                    )
+                )
             }
             // Combined mode: a read-only host workspace rides alongside
             // the sandbox. Append the read-only workspace section + the
@@ -1117,36 +1143,20 @@ public struct SystemPromptComposer: Sendable {
         // ── Dynamics ─────────────────────────────────────────────────
 
         // Agent workspaces, Agent DB schema snapshot, and live sandbox state
-        // (installed packages
-        // / configured secrets). Both derive from mid-session-mutable state,
-        // so they sit AFTER the static prefix break: they update freely turn
-        // to turn (the model always sees current state) without invalidating
-        // the cached KV prefix. The framing for each lives in its static
-        // counterpart above (`agentDB` / `sandbox`).
-        if let agentWorkspacesSection {
+        // derive from mid-session-mutable state, so they sit AFTER the static
+        // prefix break: they update freely turn to turn (the model always sees
+        // current state) without invalidating the cached KV prefix. The
+        // coordinator keeps their source identities distinct and deduped before
+        // they reach the manifest.
+        for section in ContextSourceCoordinator.coordinatedPromptSections(
+            dynamicContextSections,
+            slot: .systemPromptDynamic
+        ) {
             composer.append(
                 .dynamic(
-                    id: "agentWorkspaces",
-                    label: L("Agent Workspaces"),
-                    content: agentWorkspacesSection
-                )
-            )
-        }
-        if let agentDBSchemaSection {
-            composer.append(
-                .dynamic(
-                    id: "agentDBSchema",
-                    label: L("Agent DB Schema"),
-                    content: agentDBSchemaSection
-                )
-            )
-        }
-        if let sandboxStateSection {
-            composer.append(
-                .dynamic(
-                    id: "sandboxState",
-                    label: L("Sandbox State"),
-                    content: sandboxStateSection
+                    id: section.id,
+                    label: section.label,
+                    content: section.content
                 )
             )
         }

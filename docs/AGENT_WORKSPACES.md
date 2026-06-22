@@ -17,6 +17,33 @@ Workspaces are orientation context, not a vector index or retrieval engine. If
 source-reading tools are available, the agent is instructed to inspect the
 source path before quoting details.
 
+## Context Source Boundary
+
+Workspace knowledge is coordinated with the other Osaurus context sources before
+it reaches the prompt. The contract is intentionally explicit so workspace/KB
+summaries do not overlap with memory, the Agent DB, live filesystem context, or
+screen awareness.
+
+| Source kind | Owner | Provenance | Injection slot | Dedupe key | Privacy path | Precedence |
+|---|---|---|---|---|---|---:|
+| `memory` | Agent | Conversation-derived memory selected by the relevance gate | Latest user-message prefix | `agent:<id>:memory` | Local user message | 10 |
+| `screen` | User | Frozen on-screen text snapshot for the current turn | Latest user-message prefix | `screen:current-turn` | Privacy-filtered user message | 20 |
+| `hostWorkspace` | User | Live selected folder tree, manifests, project context, and git status | Static system prompt | `host-workspace:<root>` | Local system prompt | 60 |
+| `agentWorkspace` | Agent | Durable workspace metadata and bounded source summaries attached to the agent | Dynamic system prompt | `agent:<id>:agent-workspaces` | Local system prompt | 100 |
+| `agentDatabase` | Agent | Live per-agent SQLite schema and agent-authored tables | Dynamic system prompt | `agent:<id>:agent-db` | Local system prompt | 110 |
+| `sandboxLocal` | Runtime | Live sandbox runtime state such as installed packages and configured secret names | Dynamic system prompt | `agent:<id>:sandbox-state` | Local system prompt | 120 |
+
+The workspace/KB lane has a distinct role:
+
+- It is durable source orientation selected by the user for a custom agent.
+- It is not memory; memory is distilled from conversations and prepended to the
+  latest user message only when relevant.
+- It is not the Agent DB; the Agent DB is mutable agent-owned structured state.
+- It is not folder or sandbox context; those describe the live execution
+  filesystem and tools for the current chat.
+- It is not screen context; screen context is a frozen current-turn snapshot
+  that follows the screen privacy-filter path.
+
 ## HTTP API
 
 List workspaces:
