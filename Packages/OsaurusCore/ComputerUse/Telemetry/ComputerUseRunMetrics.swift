@@ -45,6 +45,9 @@ public struct ComputerUseRunMetrics: Sendable, Equatable {
     public var cloudVisionUsed = false
     /// Effect-class distribution of gated actions.
     public var effectCounts: [EffectClass: Int] = [:]
+    /// Text-input route distribution. This stays local/full-fidelity; shipped
+    /// telemetry deliberately avoids per-route action detail.
+    public var textInputRoutes: [CUTextInputRoute: Int] = [:]
 
     public init() {}
 
@@ -69,6 +72,10 @@ public struct ComputerUseRunMetrics: Sendable, Equatable {
 
     public mutating func recordEffect(_ effect: EffectClass) {
         effectCounts[effect, default: 0] += 1
+    }
+
+    public mutating func recordTextInputRoute(_ route: CUTextInputRoute) {
+        textInputRoutes[route, default: 0] += 1
     }
 
     public mutating func raiseTier(to tier: CaptureTier) {
