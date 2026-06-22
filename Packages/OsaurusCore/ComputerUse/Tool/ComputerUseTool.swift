@@ -185,6 +185,11 @@ final class ComputerUseTool: OsaurusTool, PermissionedTool, @unchecked Sendable 
             )
         }
         let policySummary = ComputerUseTool.policySummary(policy: policy, ceiling: ceiling)
+        let contextPreflight = ComputerUseContextPreflight(
+            policy: policy,
+            ceiling: ceiling,
+            modelIsLocal: vision.modelIsLocal
+        )
 
         // Limits: honour an explicit `max_steps`, clamped to a sane range.
         var limits = RunLimits()
@@ -230,6 +235,7 @@ final class ComputerUseTool: OsaurusTool, PermissionedTool, @unchecked Sendable 
             limits: limits,
             policySummary: policySummary,
             vision: vision,
+            contextPreflight: contextPreflight,
             sessionId: sessionId
         )
 
