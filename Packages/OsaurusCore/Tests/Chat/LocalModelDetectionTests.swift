@@ -195,8 +195,8 @@ struct LocalModelDetectionTests {
 
                 session.selectedModel = "Gemma-4-12B-it-MXFP4"
                 #expect(session.selectedModelSupportsImages)
-                #expect(session.selectedModelSupportsAudio)
-                #expect(session.selectedModelMediaDescriptor.audio.status == .supported)
+                #expect(!session.selectedModelSupportsAudio)
+                #expect(session.selectedModelMediaDescriptor.audio.status == .partial)
 
                 session.selectedModel = "Gemma-4-26B-A4B-it-MXFP4"
                 #expect(session.selectedModelSupportsImages)

@@ -136,13 +136,13 @@ struct MLXServiceRuntimePolicyTests {
             Issue.record("Gemma4 audio must stay rejected when bundle facts are unavailable.")
         } catch let error as MLXService.RuntimePolicyError {
             let description = error.errorDescription ?? ""
-            #expect(description.contains("Gemma4 audio is enabled per-bundle"))
+            #expect(description.contains("Gemma4 audio remains blocked"))
         } catch {
             Issue.record("Unexpected error type: \(error)")
         }
     }
 
-    @Test func modelCapabilityAllowsGemma4AudioWhenBundleFactsProveIt() throws {
+    @Test func modelCapabilityRejectsGemma4AudioEvenWhenBundleHasPartialEvidence() throws {
         let bundle = try Self.makeGemma4AudioBundle()
         defer { try? FileManager.default.removeItem(at: bundle) }
 
@@ -155,15 +155,24 @@ struct MLXServiceRuntimePolicyTests {
             ]
         )
 
-        try MLXService.validateRuntimePolicy(
-            modelName: "gemma-4-12b-it-mxfp4",
-            modelId: "OsaurusAI/Gemma-4-12B-it-MXFP4",
-            messages: [message],
-            parameters: GenerationParameters(temperature: nil, maxTokens: 16),
-            tools: [],
-            runtime: VMLXServerRuntimeSettings(),
-            modelDirectory: bundle
-        )
+        do {
+            try MLXService.validateRuntimePolicy(
+                modelName: "gemma-4-12b-it-mxfp4",
+                modelId: "OsaurusAI/Gemma-4-12B-it-MXFP4",
+                messages: [message],
+                parameters: GenerationParameters(temperature: nil, maxTokens: 16),
+                tools: [],
+                runtime: VMLXServerRuntimeSettings(),
+                modelDirectory: bundle
+            )
+            Issue.record("Gemma4 audio must remain blocked until live Osaurus/vMLX proof exists.")
+        } catch let error as MLXService.RuntimePolicyError {
+            let description = error.errorDescription ?? ""
+            #expect(description.contains("audio tensor markers"))
+            #expect(description.contains("blocked"))
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
     }
 
     @Test func policyRejectsKnownBadZayaVLJANGTQKDiagnosticArtifact() {

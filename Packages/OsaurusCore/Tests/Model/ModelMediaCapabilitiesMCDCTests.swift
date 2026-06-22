@@ -339,7 +339,7 @@ struct ModelMediaCapabilitiesMCDCTests {
         #expect(descriptor.image.status == .supported)
         #expect(descriptor.audio.status == .unproven)
         #expect(!descriptor.audio.isUsable)
-        #expect(descriptor.rejectionMessage(for: .audio).contains("Gemma4 audio is enabled per-bundle"))
+        #expect(descriptor.rejectionMessage(for: .audio).contains("Gemma4 audio remains blocked"))
     }
 
     @Test("Descriptor keeps Nemotron Omni audio supported")
@@ -381,8 +381,8 @@ struct ModelMediaCapabilitiesMCDCTests {
         )
     }
 
-    @Test("Composer descriptor upgrades Gemma4 audio from installed bundle facts")
-    func composerDescriptor_usesInstalledGemma4AudioFacts() throws {
+    @Test("Composer descriptor reports Gemma4 audio tensor evidence as partial/blocked")
+    func composerDescriptor_reportsInstalledGemma4AudioFactsAsPartial() throws {
         let bundle = try makeGemma4Bundle(supportsAudio: true)
         defer { try? FileManager.default.removeItem(at: bundle) }
 
@@ -393,9 +393,28 @@ struct ModelMediaCapabilitiesMCDCTests {
         )
 
         #expect(descriptor.capabilities.supportsImage)
-        #expect(descriptor.capabilities.supportsAudio)
-        #expect(descriptor.audio.status == .supported)
-        #expect(descriptor.audio.reason.contains("bundle config"))
+        #expect(!descriptor.capabilities.supportsAudio)
+        #expect(descriptor.audio.status == .partial)
+        #expect(!descriptor.audio.isUsable)
+        #expect(descriptor.audio.reason.contains("audio tensor markers"))
+        #expect(descriptor.audio.reason.contains("blocked"))
+    }
+
+    @Test("Composer descriptor reports Gemma4 audio_config-only bundles as partial/blocked")
+    func composerDescriptor_reportsGemma4AudioConfigOnlyAsPartial() throws {
+        let bundle = try makeGemma4Bundle(supportsAudio: false, audioConfigOnly: true)
+        defer { try? FileManager.default.removeItem(at: bundle) }
+
+        let descriptor = ModelMediaCapabilities.composerDescriptor(
+            modelId: "OsaurusAI/Gemma-4-E2B-it-MXFP4",
+            fallbackSupportsImages: false,
+            localDirectory: bundle
+        )
+
+        #expect(descriptor.capabilities == .imageOnly)
+        #expect(descriptor.audio.status == .partial)
+        #expect(!descriptor.audio.isUsable)
+        #expect(descriptor.audio.reason.contains("audio_config"))
     }
 
     @Test("Composer descriptor reports installed Gemma4 bundles without audio tensors as unsupported")
@@ -448,7 +467,8 @@ struct ModelMediaCapabilitiesMCDCTests {
 
         #expect(providerCalls == 1)
         #expect(first == second)
-        #expect(second.capabilities.supportsAudio)
+        #expect(!second.capabilities.supportsAudio)
+        #expect(second.audio.status == .partial)
 
         ModelMediaCapabilities.invalidateComposerDescriptorCache()
         let afterInvalidation = ModelMediaCapabilities.cachedComposerDescriptor(
@@ -462,6 +482,7 @@ struct ModelMediaCapabilitiesMCDCTests {
 
         #expect(providerCalls == 2)
         #expect(!afterInvalidation.capabilities.supportsAudio)
+        #expect(afterInvalidation.audio.status == .unsupported)
     }
 
     @Test("Cached composer descriptor rechecks when picker source changes")
@@ -495,18 +516,26 @@ struct ModelMediaCapabilitiesMCDCTests {
 
         #expect(providerCalls == 2)
         #expect(!remoteDescriptor.capabilities.supportsAudio)
-        #expect(localDescriptor.capabilities.supportsAudio)
+        #expect(remoteDescriptor.audio.status == .unproven)
+        #expect(!localDescriptor.capabilities.supportsAudio)
+        #expect(localDescriptor.audio.status == .partial)
     }
 
-    private func makeGemma4Bundle(supportsAudio: Bool) throws -> URL {
+    private func makeGemma4Bundle(
+        supportsAudio: Bool,
+        audioConfigOnly: Bool = false
+    ) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("osaurus-media-cap-gemma4-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let config: [String: Any] = [
+        var config: [String: Any] = [
             "model_type": "gemma4",
             "vision_config": ["image_size": 896],
         ]
+        if audioConfigOnly {
+            config["audio_config"] = ["model_type": "gemma4_audio"]
+        }
         let configData = try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
         try configData.write(to: directory.appendingPathComponent("config.json"))
 

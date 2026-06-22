@@ -17,9 +17,8 @@ this:
 | Loaded model | Drop zone accepts | File picker shows |
 |---|---|---|
 | Nemotron-3-Nano-Omni (any quant tier) | image + audio + video | image + docs + audio + video |
-| Installed Gemma 4 bundles with audio tensors in the weight map | image + audio | image + docs + audio |
 | Qwen 2/2.5/3 VL, Qwen 3.5/3.6 MoE VL, Holo3 VL, SmolVLM 2 | image + video | image + docs + video |
-| Image-only VLMs (PaliGemma, Idefics3, FastVLM, Pixtral standalone, GLM OCR, LFM2-VL, Gemma 3, Gemma 4 bundles without audio tensors, Mistral 3/3.5/4) | image | image + docs |
+| Image-only VLMs (PaliGemma, Idefics3, FastVLM, Pixtral standalone, GLM OCR, LFM2-VL, Gemma 3, Gemma 4, Mistral 3/3.5/4) | image | image + docs |
 | Dense LLMs (gpt-oss, Laguna, MiniMax text, Kimi, etc.) | (no media) | docs |
 
 When a user drops a file the current model can't consume, the host
@@ -39,15 +38,16 @@ Pinned to the regex/substring matcher in
 - Any future bundle whose id matches regex `nemotron-3-nano-omni|nemotron[_-]h[_-]omni`
 - Locally-installed bundles with a `config_omni.json` sidecar — `from(directory:modelId:)` reads this directly
 
-### Audio + image (installed bundle proof required)
+### Gemma 4 audio diagnostics (partial/blocked)
 
-- Gemma 4 checkpoints whose installed `model.safetensors.index.json`
-  contains `embed_audio.embedding_projection`, or single-file bundles
-  whose `config.json` includes a non-null `audio_config`.
-- Name-only Gemma 4 detection remains proof-required for audio so the
-  composer does not advertise audio before it can inspect the local
-  checkpoint. Installed 26B-A4B / 31B-style bundles without
-  `embed_audio` or `audio_tower` are image-only and produce a typed
+- Gemma 4 checkpoints remain image-only for attachment acceptance.
+- If an installed Gemma 4 bundle exposes `embed_audio` / `audio_tower`
+  markers, Osaurus reports audio as `partial` and keeps the audio picker/drop
+  path blocked until live Osaurus/vMLX runtime proof exists.
+- If a single-file bundle exposes only `audio_config`, Osaurus reports audio as
+  `partial` but still blocks audio input because the weight map cannot prove
+  the tensors.
+- Installed Gemma 4 bundles without audio markers produce a typed
   unsupported-audio rejection.
 
 ### Image + video (no audio)
@@ -62,8 +62,7 @@ Pinned to the regex/substring matcher in
 - PaliGemma, Idefics 3, FastVLM, Llava-Qwen2
 - Pixtral standalone (NOT the Mistral 3 wrapper — that's matched separately)
 - GLM-OCR, LFM2-VL
-- Gemma 3, plus Gemma 4 name-only detection and installed Gemma 4
-  bundles that do not prove audio tensors.
+- Gemma 3 and Gemma 4.
 - Mistral 3 / Mistral 3.5 (image only via Pixtral wrapper) — regex `mistral[-_](3|medium-3)`
 - Mistral 4 VL — regex `mistral[-_]?4.*[-_]vl`
 
@@ -84,7 +83,7 @@ text, Laguna, Cascade-2 text, etc.)
 
 ## 3. Format extensions accepted
 
-### Audio (Nemotron-3-Nano-Omni + proven Gemma 4 bundles)
+### Audio (Nemotron-3-Nano-Omni)
 
 | Extension | UTType bucket | vmlx canonicalization |
 |---|---|---|
@@ -283,7 +282,8 @@ print(caps.summary)
 
 print(descriptor.audio.status.rawValue)
 // → "supported"  (Nemotron Omni)
-// → "unproven"   (Gemma4 VLM audio before live proof)
+// → "partial"    (installed Gemma4 bundle has audio markers but remains blocked)
+// → "unproven"   (Gemma4 VLM audio before bundle inspection/live proof)
 // → "unsupported" (text/image/video-only families)
 ```
 
@@ -300,8 +300,8 @@ This reads `config_omni.json` + `config.json` directly, so
 ambiguous IDs that the regex can't disambiguate (e.g. some
 community-renamed bundles) resolve correctly via the on-disk config.
 For chat composer gating, use `composerDescriptor(modelId:fallbackSupportsImages:localDirectory:)`
-so installed Gemma 4 bundles can upgrade audio from local bundle facts while
-name-only Gemma 4 stays proof-required.
+so installed Gemma 4 bundles report partial/blocked audio evidence from local
+bundle facts while name-only Gemma 4 stays proof-required.
 
 ---
 
@@ -310,9 +310,9 @@ name-only Gemma 4 stays proof-required.
 | Layer | Test file | Cases |
 |---|---|---|
 | Capability detection (regex/substring + modality status) | `Tests/Model/ModelMediaCapabilitiesMCDCTests.swift` | MC/DC-shaped + descriptor cases |
-| Chat composer model switching + installed bundle proof | `Tests/Chat/LocalModelDetectionTests.swift` | Gemma 4 audio-capable and no-audio bundle fixtures |
+| Chat composer model switching + installed bundle proof | `Tests/Chat/LocalModelDetectionTests.swift` | Gemma 4 partial-audio and no-audio bundle fixtures |
 | Audio file classification | `Tests/Documents/DocumentParserShimTests.swift` | native audio extension normalization + picker buckets |
-| Local runtime media policy | `Tests/Service/MLXServiceRuntimePolicyTests.swift` | audio blocked for unsupported models and allowed for proven Gemma 4 bundles |
+| Local runtime media policy | `Tests/Service/MLXServiceRuntimePolicyTests.swift` | audio blocked for unsupported models and Gemma 4 partial-audio bundles |
 | API content-part round-trip | `Tests/Model/MultimodalContentPartTests.swift` | 9 |
 | Data URL materialization audit fix | `Tests/Model/MaterializeMediaDataUrlMCDCTests.swift` | 11 MC/DC |
 | Hybrid-cache substring matcher | `Tests/Service/IsKnownHybridModelMCDCTests.swift` | 14 MC/DC |
