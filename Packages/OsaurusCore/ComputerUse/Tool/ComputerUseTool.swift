@@ -155,22 +155,29 @@ final class ComputerUseTool: OsaurusTool, PermissionedTool, @unchecked Sendable 
         // snapshot so a mid-run settings edit can't change the rules under the
         // running loop.
         let resolved = await MainActor.run {
-            () -> (model: String?, ceiling: AutonomyCeiling?, policy: AutonomyPolicy, vision: VisionContext) in
+            () -> (
+                model: String?,
+                modelIsLocal: Bool,
+                ceiling: AutonomyCeiling?,
+                policy: AutonomyPolicy,
+                vision: VisionContext
+            ) in
             let model = AgentManager.shared.effectiveModel(for: agentId)
             let ceiling = AgentManager.shared.agent(for: agentId)?.settings.computerUseCeiling
             let policy = ComputerUsePolicyStore.load()
+            let modelIsLocal = model.map { ComputerUseModelPrivacy.isOnDeviceModel($0) } ?? false
             let vision: VisionContext
             if let model, !model.isEmpty {
                 vision = VisionContext(
                     modelAcceptsImages: ComputerUseTool.modelAcceptsImages(model),
-                    modelIsLocal: ModelManager.findInstalledModel(named: model) != nil,
+                    modelIsLocal: modelIsLocal,
                     cloudConsent: CloudVisionConsent.shared.isGranted,
                     cloudScrubMode: CloudVisionConsent.shared.scrubMode
                 )
             } else {
                 vision = .none
             }
-            return (model, ceiling, policy, vision)
+            return (model, modelIsLocal, ceiling, policy, vision)
         }
         let ceiling = resolved.ceiling
         let policy = resolved.policy
@@ -183,6 +190,9 @@ final class ComputerUseTool: OsaurusTool, PermissionedTool, @unchecked Sendable 
                 tool: name,
                 retryable: false
             )
+        }
+        guard resolved.modelIsLocal else {
+            return ComputerUseModelPrivacy.remoteModelFailureEnvelope(modelId: modelId, tool: name)
         }
         let policySummary = ComputerUseTool.policySummary(policy: policy, ceiling: ceiling)
 
