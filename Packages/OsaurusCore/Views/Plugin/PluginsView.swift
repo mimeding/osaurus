@@ -1136,6 +1136,10 @@ private struct PluginCard: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                if let reason = unavailableReasonText {
+                    unavailableReasonRow(reason)
+                }
+
                 Spacer(minLength: 0)
 
                 // Compact stats row
@@ -1326,6 +1330,15 @@ private struct PluginCard: View {
                             Image(systemName: "arrow.down.circle.fill")
                         }
                     }
+                } else if !plugin.isInstalled, let reason = unavailableReasonText {
+                    Button {} label: {
+                        Label {
+                            Text(reason)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                        }
+                    }
+                    .disabled(true)
                 }
                 if plugin.isInstalled, let onUninstall {
                     Divider()
@@ -1358,6 +1371,34 @@ private struct PluginCard: View {
     }
 
     // MARK: - Stats
+
+    private var unavailableReasonText: String? {
+        guard !plugin.isInstalled,
+            plugin.installPreview?.canInstall == false
+        else { return nil }
+        return plugin.installPreview?.primaryBlockingMessage?.message
+    }
+
+    private func unavailableReasonRow(_ reason: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.red)
+                .frame(width: 12)
+            Text(reason)
+                .font(.system(size: 11))
+                .foregroundColor(theme.secondaryText)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.red.opacity(0.07))
+        )
+        .help(reason)
+    }
 
     private func statItem(icon: String, text: String) -> some View {
         HStack(spacing: 3) {
@@ -1743,7 +1784,11 @@ private struct PluginDetailView: View {
                         .frame(width: 100, height: 36)
                 } else if plugin.hasUpdate {
                     if plugin.installPreview?.canInstall == false {
-                        disabledPrimaryAction(title: "Unavailable", icon: "exclamationmark.triangle.fill")
+                        disabledPrimaryAction(
+                            title: "Unavailable",
+                            icon: "exclamationmark.triangle.fill",
+                            help: plugin.installPreview?.primaryBlockingMessage?.message
+                        )
                     } else {
                         Button {
                             Task {
@@ -1763,7 +1808,11 @@ private struct PluginDetailView: View {
                     }
                 } else if !plugin.isInstalled {
                     if plugin.installPreview?.canInstall == false {
-                        disabledPrimaryAction(title: "Unavailable", icon: "exclamationmark.triangle.fill")
+                        disabledPrimaryAction(
+                            title: "Unavailable",
+                            icon: "exclamationmark.triangle.fill",
+                            help: plugin.installPreview?.primaryBlockingMessage?.message
+                        )
                     } else {
                         Button {
                             Task {
@@ -1828,7 +1877,7 @@ private struct PluginDetailView: View {
         .foregroundColor(color)
     }
 
-    private func disabledPrimaryAction(title: String, icon: String) -> some View {
+    private func disabledPrimaryAction(title: String, icon: String, help: String? = nil) -> some View {
         HStack(spacing: 5) {
             Image(systemName: icon).font(.system(size: 12))
             Text(LocalizedStringKey(title), bundle: .module)
@@ -1838,6 +1887,7 @@ private struct PluginDetailView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 8).fill(theme.tertiaryBackground))
+        .help(help ?? title)
     }
 
     // MARK: - Error Section

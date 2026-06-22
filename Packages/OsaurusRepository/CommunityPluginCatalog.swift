@@ -303,6 +303,21 @@ public enum PluginInstallPreviewState: String, Equatable, Sendable {
     case unavailable
 }
 
+public enum CommunityPluginTrustState: String, Equatable, Sendable {
+    case trustedCatalog
+    case registryOnly
+    case reviewRequired
+}
+
+public enum PluginInstallPreviewFailureReason: String, Equatable, Sendable {
+    case catalogReviewRequired
+    case missingRegistryRelease
+    case incompatiblePlatform
+    case missingArtifactSignature
+    case missingRegistrySigningKey
+    case archiveTooLarge
+}
+
 public enum PluginInstallPreviewSeverity: String, Equatable, Sendable {
     case info
     case warning
@@ -312,10 +327,16 @@ public enum PluginInstallPreviewSeverity: String, Equatable, Sendable {
 public struct PluginInstallPreviewMessage: Equatable, Sendable {
     public let severity: PluginInstallPreviewSeverity
     public let message: String
+    public let failureReason: PluginInstallPreviewFailureReason?
 
-    public init(severity: PluginInstallPreviewSeverity, message: String) {
+    public init(
+        severity: PluginInstallPreviewSeverity,
+        message: String,
+        failureReason: PluginInstallPreviewFailureReason? = nil
+    ) {
         self.severity = severity
         self.message = message
+        self.failureReason = failureReason
     }
 }
 
@@ -333,10 +354,16 @@ public struct PluginInstallPreview: Equatable, Sendable {
     public let installNote: String?
     public let toolCount: Int
     public let skillCount: Int
+    public let trustState: CommunityPluginTrustState
+    public let failureReasons: [PluginInstallPreviewFailureReason]
     public let messages: [PluginInstallPreviewMessage]
 
     public var canInstall: Bool {
         state == .installable || state == .updateAvailable
+    }
+
+    public var primaryBlockingMessage: PluginInstallPreviewMessage? {
+        messages.first { $0.severity == .blocking }
     }
 
     public init(
@@ -355,15 +382,44 @@ public struct PluginInstallPreview: Equatable, Sendable {
         installNote = catalogEntry?.install_note
         toolCount = spec.capabilities?.tools?.count ?? 0
         skillCount = spec.capabilities?.skills?.count ?? 0
+        trustState = Self.resolveTrustState(catalogEntry)
 
         var previewMessages: [PluginInstallPreviewMessage] = []
-        if catalogEntry?.trust?.trusted == true {
+        var previewFailureReasons: [PluginInstallPreviewFailureReason] = []
+        Self.appendTrustMessages(
+            for: trustState,
+            messages: &previewMessages,
+            failureReasons: &previewFailureReasons
+        )
+
+        guard trustState != .reviewRequired else {
+            targetVersion = nil
+            artifactURL = nil
+            artifactSize = nil
+            releaseNotes = nil
+            messages = previewMessages
+            failureReasons = previewFailureReasons
+            state = .unavailable
+            return
+        }
+
+        guard !spec.versions.isEmpty else {
+            targetVersion = nil
+            artifactURL = nil
+            artifactSize = nil
+            releaseNotes = nil
+            previewFailureReasons.append(.missingRegistryRelease)
             previewMessages.append(
                 PluginInstallPreviewMessage(
-                    severity: .info,
-                    message: "Listed by the trusted community catalog."
+                    severity: .blocking,
+                    message: "No signed release is published in the trusted registry yet.",
+                    failureReason: .missingRegistryRelease
                 )
             )
+            messages = previewMessages
+            failureReasons = previewFailureReasons
+            state = .unavailable
+            return
         }
 
         do {
@@ -378,27 +434,45 @@ public struct PluginInstallPreview: Equatable, Sendable {
             artifactSize = resolution.artifact.size
             releaseNotes = resolution.version.notes
 
-            if resolution.artifact.minisign == nil || spec.public_keys?["minisign"] == nil {
+            if resolution.artifact.minisign == nil {
+                previewFailureReasons.append(.missingArtifactSignature)
                 previewMessages.append(
                     PluginInstallPreviewMessage(
                         severity: .blocking,
-                        message: "A signed release is required before this plugin can be installed."
+                        message: "The selected release is missing its minisign signature.",
+                        failureReason: .missingArtifactSignature
                     )
                 )
+            }
+            if spec.public_keys?["minisign"] == nil {
+                previewFailureReasons.append(.missingRegistrySigningKey)
+                previewMessages.append(
+                    PluginInstallPreviewMessage(
+                        severity: .blocking,
+                        message: "The registry spec is missing the minisign public key.",
+                        failureReason: .missingRegistrySigningKey
+                    )
+                )
+            }
+            if !previewFailureReasons.isEmpty {
                 messages = previewMessages
+                failureReasons = previewFailureReasons
                 state = .unavailable
                 return
             }
 
             if let size = resolution.artifact.size,
                 Int64(size) > PluginInstallManager.maximumArtifactArchiveBytes {
+                previewFailureReasons.append(.archiveTooLarge)
                 previewMessages.append(
                     PluginInstallPreviewMessage(
                         severity: .blocking,
-                        message: "The release archive exceeds the installer size limit."
+                        message: "The release archive exceeds the installer size limit.",
+                        failureReason: .archiveTooLarge
                     )
                 )
                 messages = previewMessages
+                failureReasons = previewFailureReasons
                 state = .unavailable
                 return
             }
@@ -413,19 +487,100 @@ public struct PluginInstallPreview: Equatable, Sendable {
                 state = .installable
             }
             messages = previewMessages
+            failureReasons = previewFailureReasons
         } catch {
             targetVersion = nil
             artifactURL = nil
             artifactSize = nil
             releaseNotes = nil
+            previewFailureReasons.append(.incompatiblePlatform)
             previewMessages.append(
                 PluginInstallPreviewMessage(
                     severity: .blocking,
-                    message: "No compatible macOS arm64 release is available."
+                    message: "No compatible macOS arm64 release is available.",
+                    failureReason: .incompatiblePlatform
                 )
             )
             messages = previewMessages
+            failureReasons = previewFailureReasons
             state = .unavailable
+        }
+    }
+
+    public init(
+        catalogEntry: CommunityPluginCatalogEntry,
+        installedVersion: SemanticVersion? = nil
+    ) {
+        pluginId = catalogEntry.plugin_id
+        displayName = catalogEntry.name ?? catalogEntry.plugin_id
+        self.installedVersion = installedVersion
+        targetVersion = nil
+        artifactURL = nil
+        artifactSize = nil
+        releaseNotes = nil
+        category = catalogEntry.category
+        tags = catalogEntry.tags
+        installNote = catalogEntry.install_note
+        toolCount = 0
+        skillCount = 0
+        trustState = Self.resolveTrustState(catalogEntry)
+
+        var previewMessages: [PluginInstallPreviewMessage] = []
+        var previewFailureReasons: [PluginInstallPreviewFailureReason] = []
+        Self.appendTrustMessages(
+            for: trustState,
+            messages: &previewMessages,
+            failureReasons: &previewFailureReasons
+        )
+        previewFailureReasons.append(.missingRegistryRelease)
+        previewMessages.append(
+            PluginInstallPreviewMessage(
+                severity: .blocking,
+                message: "Registry metadata is unavailable. Refresh the repository before installing.",
+                failureReason: .missingRegistryRelease
+            )
+        )
+        messages = previewMessages
+        failureReasons = previewFailureReasons
+        state = .unavailable
+    }
+
+    private static func resolveTrustState(
+        _ catalogEntry: CommunityPluginCatalogEntry?
+    ) -> CommunityPluginTrustState {
+        guard let catalogEntry else { return .registryOnly }
+        return catalogEntry.trust?.trusted == true ? .trustedCatalog : .reviewRequired
+    }
+
+    private static func appendTrustMessages(
+        for trustState: CommunityPluginTrustState,
+        messages: inout [PluginInstallPreviewMessage],
+        failureReasons: inout [PluginInstallPreviewFailureReason]
+    ) {
+        switch trustState {
+        case .trustedCatalog:
+            messages.append(
+                PluginInstallPreviewMessage(
+                    severity: .info,
+                    message: "Listed by the trusted community catalog."
+                )
+            )
+        case .registryOnly:
+            messages.append(
+                PluginInstallPreviewMessage(
+                    severity: .warning,
+                    message: "Available from the signed registry but not listed in the bundled community catalog."
+                )
+            )
+        case .reviewRequired:
+            failureReasons.append(.catalogReviewRequired)
+            messages.append(
+                PluginInstallPreviewMessage(
+                    severity: .blocking,
+                    message: "Catalog trust review is incomplete, so install is disabled.",
+                    failureReason: .catalogReviewRequired
+                )
+            )
         }
     }
 }

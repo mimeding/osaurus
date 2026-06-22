@@ -379,7 +379,10 @@ final class PluginRepositoryService: ObservableObject {
             license: nil,
             capabilities: nil,
             catalogEntry: entry,
-            installPreview: nil,
+            installPreview: PluginInstallPreview(
+                catalogEntry: entry,
+                installedVersion: installedVersion
+            ),
             installedVersion: installedVersion,
             loadError: PluginManager.shared.loadError(for: entry.plugin_id)
         )

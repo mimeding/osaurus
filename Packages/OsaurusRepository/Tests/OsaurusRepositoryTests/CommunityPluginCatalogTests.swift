@@ -119,32 +119,118 @@ final class CommunityPluginCatalogTests: XCTestCase {
         XCTAssertFalse(installed.canInstall)
     }
 
-    func test_installPreviewBlocksUnsignedOrIncompatibleArtifacts() {
-        let unsigned = makeSpec(
-            pluginId: "osaurus.unsigned",
-            name: "Unsigned",
-            publicKeys: nil,
-            minisign: nil
+    func test_installPreviewRecordsCatalogTrustState() {
+        let trustedEntry = CommunityPluginCatalogEntry(
+            plugin_id: "osaurus.trusted",
+            name: "Trusted",
+            trust: CommunityPluginTrust(trusted: true, source: "fixture")
         )
+        let untrustedEntry = CommunityPluginCatalogEntry(
+            plugin_id: "osaurus.review",
+            name: "Needs Review",
+            trust: CommunityPluginTrust(trusted: false, source: "fixture")
+        )
+
+        let trustedPreview = PluginInstallPreview(
+            spec: makeSpec(pluginId: "osaurus.trusted", name: "Trusted"),
+            catalogEntry: trustedEntry
+        )
+        let registryOnlyPreview = PluginInstallPreview(
+            spec: makeSpec(pluginId: "osaurus.registry", name: "Registry Only")
+        )
+        let untrustedPreview = PluginInstallPreview(
+            spec: makeSpec(pluginId: "osaurus.review", name: "Needs Review"),
+            catalogEntry: untrustedEntry
+        )
+
+        XCTAssertEqual(trustedPreview.trustState, .trustedCatalog)
+        XCTAssertTrue(trustedPreview.canInstall)
+        XCTAssertEqual(registryOnlyPreview.trustState, .registryOnly)
+        XCTAssertTrue(registryOnlyPreview.canInstall)
+        XCTAssertEqual(untrustedPreview.trustState, .reviewRequired)
+        XCTAssertEqual(untrustedPreview.state, .unavailable)
+        XCTAssertFalse(untrustedPreview.canInstall)
+        XCTAssertEqual(untrustedPreview.failureReasons, [.catalogReviewRequired])
+    }
+
+    func test_installPreviewBlocksIncompatiblePlugin() {
         let incompatible = makeSpec(
             pluginId: "osaurus.linux",
             name: "Linux Only",
             artifactOS: "linux"
         )
 
-        let unsignedPreview = PluginInstallPreview(spec: unsigned)
         let incompatiblePreview = PluginInstallPreview(spec: incompatible)
-
-        XCTAssertEqual(unsignedPreview.state, .unavailable)
-        XCTAssertFalse(unsignedPreview.canInstall)
-        XCTAssertTrue(unsignedPreview.messages.contains { $0.severity == .blocking })
 
         XCTAssertEqual(incompatiblePreview.state, .unavailable)
         XCTAssertFalse(incompatiblePreview.canInstall)
-        XCTAssertTrue(
-            incompatiblePreview.messages.contains {
-                $0.message == "No compatible macOS arm64 release is available."
-            }
+        XCTAssertEqual(incompatiblePreview.failureReasons, [.incompatiblePlatform])
+        XCTAssertEqual(
+            incompatiblePreview.primaryBlockingMessage?.message,
+            "No compatible macOS arm64 release is available."
+        )
+    }
+
+    func test_installPreviewBlocksMissingReleaseAndSignature() {
+        let missingRelease = makeSpec(
+            pluginId: "osaurus.no-release",
+            name: "No Release",
+            versions: []
+        )
+        let missingSignature = makeSpec(
+            pluginId: "osaurus.unsigned",
+            name: "Unsigned",
+            publicKeys: nil,
+            minisign: nil
+        )
+
+        let missingReleasePreview = PluginInstallPreview(spec: missingRelease)
+        let missingSignaturePreview = PluginInstallPreview(spec: missingSignature)
+
+        XCTAssertEqual(missingReleasePreview.state, .unavailable)
+        XCTAssertFalse(missingReleasePreview.canInstall)
+        XCTAssertEqual(missingReleasePreview.failureReasons, [.missingRegistryRelease])
+
+        XCTAssertEqual(missingSignaturePreview.state, .unavailable)
+        XCTAssertFalse(missingSignaturePreview.canInstall)
+        XCTAssertEqual(
+            missingSignaturePreview.failureReasons,
+            [.missingArtifactSignature, .missingRegistrySigningKey]
+        )
+    }
+
+    func test_catalogOnlyPreviewDisablesInstallActionUntilRegistryRefresh() {
+        let entry = CommunityPluginCatalogEntry(
+            plugin_id: "osaurus.catalog-only",
+            name: "Catalog Only",
+            trust: CommunityPluginTrust(trusted: true, source: "fixture")
+        )
+
+        let preview = PluginInstallPreview(catalogEntry: entry)
+
+        XCTAssertEqual(preview.state, .unavailable)
+        XCTAssertFalse(preview.canInstall)
+        XCTAssertEqual(preview.failureReasons, [.missingRegistryRelease])
+        XCTAssertEqual(
+            preview.primaryBlockingMessage?.message,
+            "Registry metadata is unavailable. Refresh the repository before installing."
+        )
+    }
+
+    func test_primaryBlockingMessageProvidesFailureReasonForRendering() {
+        let preview = PluginInstallPreview(
+            spec: makeSpec(
+                pluginId: "osaurus.unsigned",
+                name: "Unsigned",
+                minisign: nil
+            )
+        )
+
+        XCTAssertEqual(preview.primaryBlockingMessage?.severity, .blocking)
+        XCTAssertEqual(preview.primaryBlockingMessage?.failureReason, .missingArtifactSignature)
+        XCTAssertEqual(
+            preview.primaryBlockingMessage?.message,
+            "The selected release is missing its minisign signature."
         )
     }
 
@@ -154,7 +240,8 @@ final class CommunityPluginCatalogTests: XCTestCase {
         version: String = "1.0.0",
         publicKeys: [String: String]? = ["minisign": "trusted-public-key"],
         minisign: MinisignInfo? = MinisignInfo(signature: "trusted-signature", key_id: nil),
-        artifactOS: String = "macos"
+        artifactOS: String = "macos",
+        versions: [PluginVersionEntry]? = nil
     ) -> PluginSpec {
         PluginSpec(
             plugin_id: pluginId,
@@ -170,7 +257,7 @@ final class CommunityPluginCatalogTests: XCTestCase {
                     ),
                 ]
             ),
-            versions: [
+            versions: versions ?? [
                 PluginVersionEntry(
                     version: sv(version),
                     release_date: "2026-06-18",
