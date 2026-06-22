@@ -9,6 +9,7 @@
 //  exercised by the opt-in eval suite, not here.
 //
 
+import CoreGraphics
 import Foundation
 import XCTest
 
@@ -59,6 +60,65 @@ final class MacDriverCaptureModeTests: XCTestCase {
 
     func testCaptureTierMapsAllCases() throws {
         XCTAssertEqual(Set(CaptureTier.allCases), [.ax, .som, .vision])
+    }
+}
+
+final class SOMOverlayRendererTests: XCTestCase {
+    func testPublicMarksAreDerivedFromSnapshotIdsInMarkOrder() throws {
+        let firstFrame = CGRect(x: 10, y: 20, width: 30, height: 40)
+        let secondFrame = CGRect(x: 50, y: 60, width: 70, height: 80)
+        let marks = SOMOverlayRenderer.publicMarks(from: [
+            (id: "s9-2", frame: secondFrame),
+            (id: "not-a-snapshot-id", frame: CGRect(x: 1, y: 1, width: 1, height: 1)),
+            (id: "s9-1", frame: firstFrame),
+        ])
+
+        XCTAssertEqual(marks.map(\.mark), [1, 2])
+        XCTAssertEqual(marks.map(\.frame), [firstFrame, secondFrame])
+    }
+
+    func testOverlayLabelIsOnlyThePublicMark() throws {
+        let label = SOMOverlayRenderer.label(for: 42)
+        XCTAssertEqual(label, "42")
+        XCTAssertFalse(label.contains("s42"))
+        XCTAssertFalse(label.contains("-"))
+        XCTAssertFalse(label.localizedCaseInsensitiveContains("button"))
+    }
+
+    func testOverlayKeepsImageDimensions() throws {
+        let image = try makeSolidImage(width: 160, height: 120)
+        let overlaid = try XCTUnwrap(
+            SOMOverlayRenderer.overlay(
+                on: image,
+                marks: [
+                    SOMOverlayMark(
+                        mark: 1,
+                        frame: CGRect(x: 10, y: 10, width: 40, height: 30)
+                    )
+                ],
+                captureOrigin: .zero
+            )
+        )
+
+        XCTAssertEqual(overlaid.width, image.width)
+        XCTAssertEqual(overlaid.height, image.height)
+    }
+
+    private func makeSolidImage(width: Int, height: Int) throws -> CGImage {
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return try XCTUnwrap(context.makeImage())
     }
 }
 

@@ -102,9 +102,8 @@ func buildCapture(
         var opts = ScreenshotOptions()
         opts.pid = pid
         if let wid = windowId { opts.windowId = CGWindowID(wid) }
-        // SOM annotation reuses the existing element-id overlay; the agent
-        // gets both the numeric index in `elements[]` and the visual id label
-        // burned onto the image.
+        // SOM annotation burns the same public numeric mark shown in
+        // `elements[]` onto the image. Internal AX ids stay out of pixels.
         opts.annotate = (mode == .som)
         imageContent = await ScreenshotController.shared.capture(options: opts)
     }
