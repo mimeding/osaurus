@@ -38,3 +38,34 @@ Metadata is redacted before it reaches the registry. Sensitive keys such as API
 keys, authorization headers, passwords, private keys, credentials, and token
 fields are replaced with `<redacted>`. Values that look like common bearer,
 OpenAI, GitHub, or Slack-style secrets are also replaced.
+
+## Provider and Runtime Producers
+
+Provider and runtime evidence should enter new surfaces through the registry,
+not through a separate report store or dashboard. The narrow adapter for the
+existing evidence shapes is `ProviderRuntimeEvidenceDescriptorProducer`:
+
+- `providerDiagnosticsDescriptor(from:artifactPath:)` accepts the existing
+  `ProviderDiagnosticReport` used by remote-provider and MCP diagnostics. It
+  maps row severities into registry counts: `ok` rows are passed, `warning`
+  rows are warnings, and `blocked` rows are blocked.
+- `runtimeProofDescriptor(from:artifactPath:)` accepts an existing
+  `RuntimeProofClassificationReport` from the live-proof classifier. It uses
+  `RuntimeProofMatrixReporter.matrixRows(from:)` so schema-only required rows
+  that have no live artifact remain visible as unproven/blocked registry rows.
+
+Both adapters are read-only projections over existing artifacts. They register
+the artifact path supplied by the producer, preserve missing artifacts as
+`unavailable` rows through `EvidenceReportRegistryService`, and rely on the
+registry metadata redactor before summaries are stored or serialized.
+
+Migration path for provider/runtime evidence:
+
+1. Keep producing the existing diagnostic or runtime classification artifact.
+2. Convert the typed report to an `EvidenceReportDescriptor` with the adapter.
+3. Register the descriptor with the shared `EvidenceReportRegistryService`.
+4. Render or export the registry snapshot for any future evidence view.
+
+This keeps provider connectivity, runtime proof, and benchmark/runtime artifacts
+on the same descriptor/summary contract while leaving artifact ownership with
+their existing producers.
