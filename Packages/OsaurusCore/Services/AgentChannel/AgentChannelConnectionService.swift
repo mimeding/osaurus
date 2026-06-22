@@ -35,9 +35,14 @@ final class AgentChannelConnectionService: @unchecked Sendable {
 
     private static let discordConnectionId = AgentChannelConnection.nativeDiscordConnectionId
     private let discordService: DiscordConnectionService
+    private let customHTTPRunner: AgentChannelCustomHTTPRunner
 
-    init(discordService: DiscordConnectionService) {
+    init(
+        discordService: DiscordConnectionService,
+        customHTTPRunner: AgentChannelCustomHTTPRunner = .shared
+    ) {
         self.discordService = discordService
+        self.customHTTPRunner = customHTTPRunner
     }
 
     func listConnections() -> [[String: Any]] {
@@ -64,10 +69,12 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                 return [
                     "connection_id": connection.id,
                     "kind": connection.kind.rawValue,
-                    "status": "configured_not_executable",
+                    "status": "configured",
                     "enabled": connection.enabled,
                     "standard_actions": connection.supportedActions.map(\.rawValue),
                     "custom_actions": connection.customHTTP?.actions.keys.sorted() ?? [],
+                    "write_enabled": connection.writeEnabled,
+                    "safe_http_runner": true,
                 ]
             case .slack, .telegram:
                 return [
@@ -100,7 +107,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                 ]
             }
         case .customHTTP:
-            throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
+            return try await customHTTPRunner.listSpaces(connection: connection)
         case .slack, .telegram:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
@@ -123,7 +130,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                 ]
             }
         case .customHTTP:
-            throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
+            return try await customHTTPRunner.listRooms(connection: connection, spaceId: spaceId)
         case .slack, .telegram:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
@@ -139,7 +146,11 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["standard_kind"] = "channel_messages"
             return payload
         case .customHTTP:
-            throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
+            return try await customHTTPRunner.readMessages(
+                connection: connection,
+                roomId: roomId,
+                limit: limit
+            )
         case .slack, .telegram:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
@@ -155,7 +166,11 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["standard_kind"] = "thread_messages"
             return payload
         case .customHTTP:
-            throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
+            return try await customHTTPRunner.readThread(
+                connection: connection,
+                threadId: threadId,
+                limit: limit
+            )
         case .slack, .telegram:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
@@ -182,7 +197,13 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["standard_kind"] = "message_search"
             return payload
         case .customHTTP:
-            throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
+            return try await customHTTPRunner.searchMessages(
+                connection: connection,
+                query: query,
+                roomIds: roomIds,
+                limitPerRoom: limitPerRoom,
+                maxMatches: maxMatches
+            )
         case .slack, .telegram:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
@@ -198,7 +219,11 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["standard_kind"] = "message_draft"
             return payload
         case .customHTTP:
-            throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
+            return try customHTTPRunner.draftMessage(
+                connection: connection,
+                roomId: roomId,
+                content: content
+            )
         case .slack, .telegram:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
@@ -223,7 +248,12 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["standard_kind"] = "message_sent"
             return payload
         case .customHTTP:
-            throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
+            return try await customHTTPRunner.sendMessage(
+                connection: connection,
+                roomId: roomId,
+                content: content,
+                confirmSend: confirmSend
+            )
         case .slack, .telegram:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
@@ -247,7 +277,12 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["standard_kind"] = "thread_reply_sent"
             return payload
         case .customHTTP:
-            throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
+            return try await customHTTPRunner.replyThread(
+                connection: connection,
+                threadId: threadId,
+                content: content,
+                confirmSend: confirmSend
+            )
         case .slack, .telegram:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }

@@ -38,6 +38,31 @@ private extension OsaurusTool {
             }
         }
 
+        if let error = error as? AgentChannelCustomHTTPRunnerError {
+            switch error {
+            case .missingConfiguration, .missingAction, .unsupportedMethod, .unsafeURL,
+                 .unsafeHeader, .unsupportedPlaceholder, .malformedTemplate,
+                 .bodyTooLarge, .responseTooLarge:
+                return ToolEnvelope.failure(kind: .invalidArgs, message: error.localizedDescription, tool: tool)
+            case .writeDisabled, .writeConfirmationRequired, .roomNotReadable, .roomNotWritable:
+                return ToolEnvelope.failure(kind: .rejected, message: error.localizedDescription, tool: tool)
+            case .missingSecret:
+                return ToolEnvelope.failure(
+                    kind: .unavailable,
+                    message: error.localizedDescription,
+                    tool: tool,
+                    retryable: false
+                )
+            case .requestFailed, .invalidResponse, .httpError:
+                return ToolEnvelope.failure(
+                    kind: .executionError,
+                    message: error.localizedDescription,
+                    tool: tool,
+                    retryable: false
+                )
+            }
+        }
+
         if let error = error as? DiscordConnectionServiceError {
             switch error {
             case .invalidId, .sendConfirmationRequired, .messageTooLong, .emptyMessage:

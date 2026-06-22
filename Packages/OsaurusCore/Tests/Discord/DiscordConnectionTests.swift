@@ -577,7 +577,7 @@ struct DiscordConnectionTests {
                 )
             )
             let diagnostics = await service.diagnostics(connectionId: "ops-webhook")
-            #expect(diagnostics["status"] as? String == "configured_not_executable")
+            #expect(diagnostics["status"] as? String == "configured")
             #expect(diagnostics["custom_actions"] as? [String] == ["send_message"])
         }
     }

@@ -43,19 +43,22 @@ struct AgentChannelCustomHTTPAction: Codable, Equatable, Sendable {
     var query: [String: String]
     var headers: [String: String]
     var bodyTemplate: String?
+    var responseMapping: AgentChannelCustomHTTPResponseMapping?
 
     init(
         method: String = "GET",
         path: String,
         query: [String: String] = [:],
         headers: [String: String] = [:],
-        bodyTemplate: String? = nil
+        bodyTemplate: String? = nil,
+        responseMapping: AgentChannelCustomHTTPResponseMapping? = nil
     ) {
         self.method = method.uppercased()
         self.path = path
         self.query = query
         self.headers = headers
         self.bodyTemplate = bodyTemplate
+        self.responseMapping = responseMapping
     }
 
     init(from decoder: Decoder) throws {
@@ -65,6 +68,32 @@ struct AgentChannelCustomHTTPAction: Codable, Equatable, Sendable {
         query = try container.decodeIfPresent([String: String].self, forKey: .query) ?? [:]
         headers = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
         bodyTemplate = try container.decodeIfPresent(String.self, forKey: .bodyTemplate)
+        responseMapping = try container.decodeIfPresent(
+            AgentChannelCustomHTTPResponseMapping.self,
+            forKey: .responseMapping
+        )
+    }
+}
+
+struct AgentChannelCustomHTTPResponseMapping: Codable, Equatable, Sendable {
+    var collectionPath: String?
+    var idPath: String?
+    var namePath: String?
+    var contentPath: String?
+    var urlPath: String?
+
+    init(
+        collectionPath: String? = nil,
+        idPath: String? = nil,
+        namePath: String? = nil,
+        contentPath: String? = nil,
+        urlPath: String? = nil
+    ) {
+        self.collectionPath = collectionPath
+        self.idPath = idPath
+        self.namePath = namePath
+        self.contentPath = contentPath
+        self.urlPath = urlPath
     }
 }
 

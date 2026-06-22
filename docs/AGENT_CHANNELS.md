@@ -66,17 +66,40 @@ configuration foundation.
 }
 ```
 
-Custom HTTP execution is intentionally not enabled until the request templating,
-credential substitution, response mapping, and security review are implemented.
-Until then, JSON custom channels can be loaded and diagnosed, while executable
-actions are provided by native adapters such as Discord.
+Custom HTTP actions execute through a bounded runner, not a shell or plugin
+process. The runner composes `baseURL + path`, substitutes path variables such
+as `{room_id}`, renders `${content}` / `${query}`-style request fields, and
+resolves `${secret:name}` placeholders from Keychain using the connection's
+secret references. Raw secret values must never appear in `agent-channels.json`.
+
+Execution guardrails:
+
+- Allowed methods are `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`.
+- Base URLs must be HTTP(S), must not include user info, query, or fragments,
+  and must not point at loopback, link-local, private IPv4 ranges, `.local`, or
+  `localhost` names.
+- Headers and query fields reject CR/LF before execution; header names are
+  restricted to normal HTTP token characters.
+- Unknown or malformed template placeholders are rejected before a request is
+  opened.
+- Request bodies and responses are capped, and returned response payloads are
+  redacted for resolved secret values.
+- `draft_message` renders a dry-run preview without sending HTTP.
+- `send_message` and `reply_thread` require `writeEnabled: true`, a matching
+  write room allowlist entry, and tool arguments containing `confirm_send:
+  true`.
+
+Custom action responses are wrapped into the same standard Agent Channel result
+shapes as native adapters. Optional `responseMapping` paths can map provider
+fields such as `id`, `name`, `content`, `url`, or a collection root onto the
+standard rows.
 
 ## Connection Center Validation
 
 The connection center validates channel definitions before saving:
 
 - `discord` is reserved for the native Discord adapter.
-- Custom HTTP connections require an HTTP or HTTPS base URL.
+- Custom HTTP connections require a public HTTP or HTTPS base URL.
 - Custom action names must match supported standard actions.
 - HTTP action paths must start with `/`.
 - Header/query fields and secret references reject line breaks.

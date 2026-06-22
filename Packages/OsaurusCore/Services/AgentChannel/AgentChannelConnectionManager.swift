@@ -208,7 +208,13 @@ final class AgentChannelConnectionManager: @unchecked Sendable {
         guard let components = URLComponents(string: customHTTP.baseURL),
               let scheme = components.scheme?.lowercased(),
               ["http", "https"].contains(scheme),
-              components.host?.isEmpty == false
+              let host = components.host,
+              !host.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              Self.isSafePublicHost(host)
         else {
             throw AgentChannelConnectionManagerError.invalidCustomHTTPBaseURL(customHTTP.baseURL)
         }
@@ -250,10 +256,70 @@ final class AgentChannelConnectionManager: @unchecked Sendable {
             )
         }
     }
+
+    private static func isSafePublicHost(_ host: String) -> Bool {
+        let lower = normalizedHostLiteral(host)
+        guard !lower.isEmpty,
+              !lower.containsLineBreak,
+              lower != "localhost",
+              lower != "local",
+              !lower.hasSuffix(".localhost"),
+              !lower.hasSuffix(".local")
+        else {
+            return false
+        }
+        guard let ipv4 = IPv4Literal(lower) else {
+            guard lower.contains(":") else { return true }
+            return !lower.hasPrefix("fe80:")
+                && !lower.hasPrefix("fc")
+                && !lower.hasPrefix("fd")
+                && lower != "::1"
+                && lower != "0:0:0:0:0:0:0:1"
+        }
+        return !ipv4.isPrivateOrLocal
+    }
+
+    private static func normalizedHostLiteral(_ host: String) -> String {
+        let lower = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.hasPrefix("["),
+           lower.hasSuffix("]") {
+            return String(lower.dropFirst().dropLast())
+        }
+        return lower
+    }
 }
 
 private extension String {
     var containsLineBreak: Bool {
         rangeOfCharacter(from: .newlines) != nil
+    }
+}
+
+private struct IPv4Literal {
+    let octets: [UInt8]
+
+    init?(_ host: String) {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        var parsed = [UInt8]()
+        for part in parts {
+            guard let value = UInt8(part), String(value) == String(part) else {
+                return nil
+            }
+            parsed.append(value)
+        }
+        octets = parsed
+    }
+
+    var isPrivateOrLocal: Bool {
+        let first = octets[0]
+        let second = octets[1]
+        if first == 0 || first == 10 || first == 127 || first >= 224 { return true }
+        if first == 100 && (64 ... 127).contains(second) { return true }
+        if first == 169 && second == 254 { return true }
+        if first == 172 && (16 ... 31).contains(second) { return true }
+        if first == 192 && second == 168 { return true }
+        if first == 198 && (18 ... 19).contains(second) { return true }
+        return false
     }
 }
