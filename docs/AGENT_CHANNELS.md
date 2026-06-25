@@ -129,6 +129,20 @@ conservative Slack posting controls: automatic name linking is disabled,
 message parsing is set to `none`, unfurls are disabled, and thread replies do
 not broadcast.
 
+The native adapter keeps live Slack calls behind `SlackAPIClientProtocol`.
+Outbound sends are represented as a `SlackOutboundMessageRequest` before
+transport so tests can assert channel id, text, thread timestamp, parsing,
+unfurl, and broadcast controls without Slack credentials. Slack Events API
+message and `app_mention` payloads normalize into
+`SlackNormalizedInboundMessage`, preserving the provider event id, workspace id,
+room id, message timestamp, canonical `channel_id:thread_ts`, mention user ids,
+and payload JSON for the shared Agent Channel store. A repeated Slack event id
+is recorded once through `channel_seen_events`, and message snapshots from
+read/search/send paths are keyed as `slack + channel_id + message_ts`.
+Webhook receivers should use `SlackSignatureVerifier` with the saved
+`signing_secret` to validate `X-Slack-Request-Timestamp`,
+`X-Slack-Signature`, and the exact raw request body before normalizing content.
+
 ## Message State And Dedupe
 
 Agent Channels keep provider-neutral message state in
