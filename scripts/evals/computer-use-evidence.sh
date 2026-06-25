@@ -14,7 +14,8 @@ Usage:
 Environment:
   OUT_DIR=path        Evidence output directory.
                       Default: build/computer-use-evidence/<UTC timestamp>
-  RUN_EVALS=1        Also run the Packages/OsaurusEvals ComputerUse suite.
+  RUN_EVALS=1        Also run the Packages/OsaurusEvals ComputerUse and
+                      ComputerUseLoop suites.
   MODEL=id           Model id passed to osaurus-evals when RUN_EVALS=1.
   STRICT=0           Always exit 0 after writing artifacts. Default exits nonzero
                       when a required command fails.
@@ -101,8 +102,17 @@ if [[ "$RUN_EVALS" == "1" ]]; then
     eval_cmd+=(--model "$MODEL")
   fi
   run_step evals-computer-use "${eval_cmd[@]}"
+  loop_eval_cmd=(
+    swift run --package-path Packages/OsaurusEvals osaurus-evals run
+    --suite Packages/OsaurusEvals/Suites/ComputerUseLoop
+    --out "${OUT_DIR}/evals-computer-use-loop.json"
+  )
+  if [[ -n "${MODEL:-}" ]]; then
+    loop_eval_cmd+=(--model "$MODEL")
+  fi
+  run_step evals-computer-use-loop "${loop_eval_cmd[@]}"
 else
-  echo "RUN_EVALS is not 1; skipping model-dependent ComputerUse eval suite."
+  echo "RUN_EVALS is not 1; skipping model-dependent ComputerUse and ComputerUseLoop eval suites."
 fi
 
 {
