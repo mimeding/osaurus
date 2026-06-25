@@ -166,6 +166,35 @@ message. Discord does this for `read_messages`, `search_messages`, and
 the local store. The store keeps only the newest 1,000 message snapshots per
 connection/room pair so busy channels do not grow the database without bound.
 
+Telegram is native as well. The Bot API does not expose arbitrary prior chat
+history to bots, so Telegram `read_messages` and `search_messages` read from the
+local Agent Channel message store. The adapter exposes webhook and long-poll
+service entry points for populating that store; a production HTTP receiver,
+background poller, and visible settings surface are separate integration work.
+The native Telegram adapter:
+
+- stores non-secret allowlists in `telegram.json` and keeps the bot token in
+  Keychain;
+- authorizes reads and writes against explicit chat allowlists, and authorizes
+  inbound receives against explicit chat and sender allowlists;
+- runs the shared inbound authorization gate before storing message text or
+  making it dispatchable, so inbound Telegram text remains untrusted external
+  data rather than instruction text;
+- normalizes webhook and long-poll updates into candidate provider-neutral
+  external message snapshots, then stores snapshots only after authorization;
+- deduplicates by Telegram `update_id` with `recordReceiveEvent(...)` before
+  dispatch/storage, while long-poll batches store the next global `getUpdates`
+  offset as a receive cursor;
+- ignores self messages and bot messages by default to avoid bot loops;
+- drops empty or oversized inbound message content before storage;
+- requires `confirm_send: true` before posting and records sent messages with a
+  Telegram delivery status.
+
+The production Telegram webhook receiver must pass the configured Telegram
+secret token into the service verifier before decoding update content. Direct
+service calls that omit an expected secret are test/in-process entry points, not
+the public HTTP receiver contract.
+
 Relay or webhook receivers should follow the same sequence used by the Telegram
 plugin pattern:
 

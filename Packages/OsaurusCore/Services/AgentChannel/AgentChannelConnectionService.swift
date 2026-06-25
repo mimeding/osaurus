@@ -31,19 +31,25 @@ enum AgentChannelConnectionServiceError: LocalizedError, Equatable, Sendable {
 }
 
 final class AgentChannelConnectionService: @unchecked Sendable {
-    static let shared = AgentChannelConnectionService(discordService: .shared)
+    static let shared = AgentChannelConnectionService(discordService: .shared, telegramService: .shared)
 
     private static let discordConnectionId = AgentChannelConnection.nativeDiscordConnectionId
+    private static let telegramConnectionId = AgentChannelConnection.nativeTelegramConnectionId
     private let discordService: DiscordConnectionService
+    private let telegramService: TelegramConnectionService
 
-    init(discordService: DiscordConnectionService) {
+    init(discordService: DiscordConnectionService, telegramService: TelegramConnectionService = .shared) {
         self.discordService = discordService
+        self.telegramService = telegramService
     }
 
     func listConnections() -> [[String: Any]] {
-        var rows = [discordConnectionDictionary()]
+        var rows = [discordConnectionDictionary(), telegramConnectionDictionary()]
         let customRows = AgentChannelConfigurationStore.load().connections
-            .filter { $0.id.lowercased() != Self.discordConnectionId }
+            .filter {
+                let id = $0.id.lowercased()
+                return id != Self.discordConnectionId && id != Self.telegramConnectionId
+            }
             .map(connectionDictionary)
         rows.append(contentsOf: customRows)
         return rows
@@ -62,6 +68,15 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                 payload["relay_receive_policy"] = relayReceivePolicy(for: connection).dictionary
                 payload["message_store"] = discordService.messageStoreDiagnostics()
                 return payload
+            case .telegram:
+                var payload = await telegramService.diagnostics().dictionary
+                payload["connection_id"] = connection.id
+                payload["kind"] = connection.kind.rawValue
+                payload["standard_actions"] = connection.supportedActions.map(\.rawValue)
+                payload["action_policies"] = actionPolicies(for: connection).map(\.dictionary)
+                payload["relay_receive_policy"] = relayReceivePolicy(for: connection).dictionary
+                payload["message_store"] = telegramService.messageStoreDiagnostics()
+                return payload
             case .customHTTP:
                 return [
                     "connection_id": connection.id,
@@ -73,7 +88,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                     "action_policies": actionPolicies(for: connection).map(\.dictionary),
                     "relay_receive_policy": relayReceivePolicy(for: connection).dictionary,
                 ]
-            case .slack, .telegram:
+            case .slack:
                 return [
                     "connection_id": connection.id,
                     "kind": connection.kind.rawValue,
@@ -105,9 +120,19 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                     "raw": row,
                 ]
             }
+        case .telegram:
+            return telegramService.listSpaces().map { row in
+                [
+                    "id": row["id"] ?? "",
+                    "name": row["name"] ?? "",
+                    "kind": row["kind"] ?? "messaging_network",
+                    "connection_id": connection.id,
+                    "raw": row,
+                ]
+            }
         case .customHTTP:
             throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
-        case .slack, .telegram:
+        case .slack:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
     }
@@ -128,9 +153,22 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                     "raw": row,
                 ]
             }
+        case .telegram:
+            return try await telegramService.listChats().map { row in
+                [
+                    "id": row["id"] ?? "",
+                    "name": row["name"] ?? "",
+                    "kind": row["kind"] ?? "chat",
+                    "space_id": spaceId,
+                    "connection_id": connection.id,
+                    "read_allowed": row["read_allowed"] ?? false,
+                    "write_allowed": row["write_allowed"] ?? false,
+                    "raw": row,
+                ]
+            }
         case .customHTTP:
             throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
-        case .slack, .telegram:
+        case .slack:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
     }
@@ -144,9 +182,15 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["room_id"] = roomId
             payload["standard_kind"] = "channel_messages"
             return payload
+        case .telegram:
+            var payload = try telegramService.readChat(TelegramReadRequest(chatId: roomId, limit: limit))
+            payload["connection_id"] = connection.id
+            payload["room_id"] = roomId
+            payload["standard_kind"] = "chat_messages"
+            return payload
         case .customHTTP:
             throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
-        case .slack, .telegram:
+        case .slack:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
     }
@@ -187,9 +231,20 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["room_ids"] = roomIds ?? []
             payload["standard_kind"] = "message_search"
             return payload
+        case .telegram:
+            var payload = try telegramService.searchMessages(
+                query: query,
+                chatIds: roomIds,
+                limitPerChat: limitPerRoom,
+                maxMatches: maxMatches
+            )
+            payload["connection_id"] = connection.id
+            payload["room_ids"] = roomIds ?? []
+            payload["standard_kind"] = "message_search"
+            return payload
         case .customHTTP:
             throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
-        case .slack, .telegram:
+        case .slack:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
     }
@@ -203,9 +258,15 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["room_id"] = roomId
             payload["standard_kind"] = "message_draft"
             return payload
+        case .telegram:
+            var payload = try telegramService.draftMessage(chatId: roomId, content: content)
+            payload["connection_id"] = connection.id
+            payload["room_id"] = roomId
+            payload["standard_kind"] = "message_draft"
+            return payload
         case .customHTTP:
             throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
-        case .slack, .telegram:
+        case .slack:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
     }
@@ -228,9 +289,22 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             payload["room_id"] = roomId
             payload["standard_kind"] = "message_sent"
             return payload
+        case .telegram:
+            var payload = try await telegramService.sendMessage(
+                TelegramWriteRequest(
+                    chatId: roomId,
+                    text: content,
+                    replyToMessageId: nil,
+                    confirmSend: confirmSend
+                )
+            )
+            payload["connection_id"] = connection.id
+            payload["room_id"] = roomId
+            payload["standard_kind"] = "message_sent"
+            return payload
         case .customHTTP:
             throw AgentChannelConnectionServiceError.customExecutionNotImplemented(connection.id)
-        case .slack, .telegram:
+        case .slack:
             throw AgentChannelConnectionServiceError.unsupportedKind(connection.kind)
         }
     }
@@ -355,8 +429,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             }
             do {
                 if let providerEventId,
-                    try messageStore.isEventSeen(connectionId: connection.id, providerEventId: providerEventId)
-                {
+                    try messageStore.isEventSeen(connectionId: connection.id, providerEventId: providerEventId) {
                     return deny("duplicate_event_\(policy.duplicateBehavior)", decision: .duplicate)
                 }
             } catch {
@@ -404,6 +477,9 @@ final class AgentChannelConnectionService: @unchecked Sendable {
         if resolvedId.lowercased() == Self.discordConnectionId {
             return discordConnection()
         }
+        if resolvedId.lowercased() == Self.telegramConnectionId {
+            return telegramConnection()
+        }
         guard let connection = AgentChannelConfigurationStore.load().connection(id: resolvedId) else {
             throw AgentChannelConnectionServiceError.connectionNotFound(resolvedId)
         }
@@ -448,6 +524,56 @@ final class AgentChannelConnectionService: @unchecked Sendable {
         let writeRooms = row["write_room_allowlist"] as? [String] ?? []
         row["configured"] =
             discordService.hasBotToken()
+            && (!readRooms.isEmpty || !writeRooms.isEmpty)
+        return row
+    }
+
+    private func telegramConnection() -> AgentChannelConnection {
+        let config = telegramService.configuration()
+        return AgentChannelConnection(
+            id: Self.telegramConnectionId,
+            name: "Telegram",
+            kind: .telegram,
+            enabled: true,
+            supportedActions: [
+                .diagnostics,
+                .listSpaces,
+                .listRooms,
+                .readMessages,
+                .searchMessages,
+                .draftMessage,
+                .sendMessage,
+            ],
+            spaceAllowlist: ["telegram"],
+            readRoomAllowlist: config.readableChatIds,
+            writeRoomAllowlist: config.writableChatIds,
+            writeEnabled: config.writeEnabled,
+            defaultReadLimit: config.defaultReadLimit,
+            secrets: [
+                AgentChannelSecretReference(
+                    name: "bot_token",
+                    keychainId: TelegramCredentialStore.botTokenKey
+                )
+            ],
+            inboundAuthorization: AgentChannelInboundAuthorizationPolicy(
+                senderAllowlist: config.senderAllowlist,
+                roomAllowlist: config.readableChatIds,
+                allowUnscopedSpaces: false,
+                allowBotMessages: !config.ignoreBotMessages,
+                allowSelfMessages: !config.ignoreSelfMessages,
+                requireProviderEventId: true,
+                auditDecisionReason: "telegram_receive_authorization"
+            )
+        )
+    }
+
+    private func telegramConnectionDictionary() -> [String: Any] {
+        var row = connectionDictionary(telegramConnection())
+        row["credential_saved"] = telegramService.hasBotToken()
+        let readRooms = row["read_room_allowlist"] as? [String] ?? []
+        let writeRooms = row["write_room_allowlist"] as? [String] ?? []
+        row["configured"] =
+            telegramService.hasBotToken()
             && (!readRooms.isEmpty || !writeRooms.isEmpty)
         return row
     }
@@ -509,9 +635,9 @@ final class AgentChannelConnectionService: @unchecked Sendable {
         switch connection.kind {
         case .customHTTP:
             return (.configuredOnly, "Custom HTTP action is configured, but execution is not enabled yet.")
-        case .slack, .telegram:
+        case .slack:
             return (.configuredOnly, "Provider adapter is configured, but execution is not implemented yet.")
-        case .discord:
+        case .discord, .telegram:
             switch action {
             case .diagnostics, .listSpaces:
                 return (.available, nil)
