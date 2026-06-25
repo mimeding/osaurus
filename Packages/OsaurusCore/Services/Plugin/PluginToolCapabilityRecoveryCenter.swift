@@ -162,7 +162,8 @@ enum PluginToolCapabilityRecoveryCenter {
         if !plugin.enabled {
             append(.disabledPlugin, to: &reasons)
         }
-        if plugin.trustState == .untrusted || plugin.loadError?.hasPrefix(consentRequiredPrefix) == true {
+        if plugin.trustState == .untrusted || plugin.trustState == .unknown
+            || plugin.loadError?.hasPrefix(consentRequiredPrefix) == true {
             append(.untrustedPlugin, to: &reasons)
         }
         if plugin.manifestState == .stale || plugin.manifestState == .missing || plugin.hasStaleDeclaredArtifacts {
@@ -173,6 +174,9 @@ enum PluginToolCapabilityRecoveryCenter {
             append(.pluginLoadFailed, to: &reasons)
             evidence.append(loadError)
         }
+        evidence.append("kind=\(plugin.kind.rawValue)")
+        evidence.append("trust=\(plugin.trustState.rawValue)")
+        evidence.append("manifest=\(plugin.manifestState.rawValue)")
         if let provenance = plugin.provenanceSummary, !provenance.isEmpty {
             evidence.append("provenance=\(provenance)")
         }
@@ -325,8 +329,14 @@ enum PluginToolCapabilityRecoveryCenter {
             if !plugin.enabled {
                 append(.disabledPlugin, to: &reasons)
             }
-            if plugin.trustState == .untrusted {
+            if plugin.trustState == .untrusted || plugin.trustState == .unknown
+                || plugin.loadError?.hasPrefix(consentRequiredPrefix) == true {
                 append(.untrustedPlugin, to: &reasons)
+            }
+            if let loadError = plugin.loadError, !loadError.isEmpty,
+                !loadError.hasPrefix(consentRequiredPrefix) {
+                append(.pluginLoadFailed, to: &reasons)
+                evidence.append(loadError)
             }
             if plugin.manifestState == .stale || plugin.manifestState == .missing || plugin.hasStaleDeclaredArtifacts {
                 append(.staleManifest, to: &reasons)
@@ -349,6 +359,7 @@ enum PluginToolCapabilityRecoveryCenter {
             reasons.contains(.untrustedPlugin)
             || reasons.contains(.provenanceScopeMismatch)
             || reasons.contains(.disabledPlugin)
+            || reasons.contains(.pluginLoadFailed)
         if externallyUnsafe, row.availability.isCallableNow || row.availability.isLoadableViaCapabilitiesLoad {
             append(.falseAvailablePrevented, to: &reasons)
         }
@@ -523,6 +534,7 @@ enum PluginToolCapabilityRecoveryCenter {
             || reasons.contains(.provenanceScopeMismatch)
             || reasons.contains(.falseAvailablePrevented)
             || reasons.contains(.disabledPermissionPolicy)
+            || reasons.contains(.pluginLoadFailed)
             || reasons.contains(.missingSystemPermission) {
             return .blocked
         }
@@ -590,8 +602,8 @@ enum PluginToolCapabilityRecoveryCenter {
         if reasons.contains(.missingSystemPermission) {
             suggestions.append(
                 CapabilityRecoverySuggestion(
-                    title: "Grant the missing OS permission",
-                    detail: "Grant only the named system permission after verifying this tool's owner and requested action.",
+                    title: "Review OS permission",
+                    detail: "Open the relevant macOS privacy pane, then grant only the named permission after verifying this tool's owner and requested action.",
                     actionKind: .grantSystemPermission,
                     safetyChecks: [.trust, .provenance, .scope, .userPolicy]
                 )

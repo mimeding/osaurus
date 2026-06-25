@@ -151,6 +151,10 @@ struct CapabilityRecoveryItem: Equatable, Identifiable, Sendable {
         status == .available || status == .loadable
     }
 
+    var needsUserAction: Bool {
+        !isUsableNow || !suggestions.isEmpty
+    }
+
     func containsReason(_ reason: CapabilityRecoveryReasonCode) -> Bool {
         reasonCodes.contains(reason)
     }
@@ -167,6 +171,14 @@ struct PluginToolCapabilityRecoveryReport: Sendable {
 
     var blockingCount: Int {
         items.filter { $0.status == .blocked || $0.status == .unavailable }.count
+    }
+
+    var actionableItems: [CapabilityRecoveryItem] {
+        items.filter(\.needsUserAction)
+    }
+
+    var actionableCount: Int {
+        actionableItems.count
     }
 
     func items(containing reason: CapabilityRecoveryReasonCode) -> [CapabilityRecoveryItem] {

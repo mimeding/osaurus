@@ -389,6 +389,106 @@ struct PluginToolCapabilityRecoveryCenterTests {
         #expect(item?.containsReason(.pluginLoadFailed) == false)
     }
 
+    @Test func pluginToolLoadErrorPreventsFalseAvailableToolState() {
+        let plugin = PluginCapabilitySnapshot(
+            pluginId: "com.example.broken",
+            displayName: "Broken Plugin",
+            kind: .native,
+            trustState: .unknown,
+            manifestState: .current,
+            declaredToolNames: ["broken_tool"],
+            loadedToolNames: ["broken_tool"],
+            loadError: "plugin crashed while loading"
+        )
+        let row = makeRow(
+            name: "broken_tool",
+            source: .plugin,
+            state: .exposed,
+            availabilityReasons: [.alreadyLoaded],
+            detail: "already loaded",
+            groupName: plugin.pluginId
+        )
+
+        let report = PluginToolCapabilityRecoveryCenter.diagnose(
+            PluginToolCapabilityRecoveryRequest(
+                toolExposure: exposure([row]),
+                plugins: [plugin],
+                includeHealthyItems: true
+            )
+        )
+
+        let pluginItem = report.item(kind: .plugin, identifier: plugin.pluginId)
+        #expect(pluginItem?.status == .blocked)
+        #expect(pluginItem?.containsReason(.untrustedPlugin) == true)
+        #expect(pluginItem?.containsReason(.pluginLoadFailed) == true)
+
+        let toolItem = report.item(kind: .tool, identifier: "broken_tool")
+        #expect(toolItem?.status == .blocked)
+        #expect(toolItem?.isUsableNow == false)
+        #expect(toolItem?.containsReason(.untrustedPlugin) == true)
+        #expect(toolItem?.containsReason(.pluginLoadFailed) == true)
+        #expect(toolItem?.containsReason(.falseAvailablePrevented) == true)
+    }
+
+    @Test func pluginEvidenceCarriesTrustProvenanceAndManifestState() {
+        let plugin = PluginCapabilitySnapshot(
+            pluginId: "github:owner/repo/slack",
+            displayName: "Slack",
+            kind: .claude,
+            trustState: .trusted,
+            manifestState: .stale,
+            declaredToolNames: ["slack_search", "slack_send"],
+            loadedToolNames: ["slack_search"],
+            provenanceSummary: "github:owner/repo",
+            scopeSummary: "plugins/slack"
+        )
+
+        let report = PluginToolCapabilityRecoveryCenter.diagnose(
+            PluginToolCapabilityRecoveryRequest(plugins: [plugin])
+        )
+
+        let item = report.item(kind: .plugin, identifier: plugin.pluginId)
+        #expect(item?.status == .needsReview)
+        #expect(item?.evidence.contains("kind=claude") == true)
+        #expect(item?.evidence.contains("trust=trusted") == true)
+        #expect(item?.evidence.contains("manifest=stale") == true)
+        #expect(item?.evidence.contains("provenance=github:owner/repo") == true)
+        #expect(item?.evidence.contains("scope=plugins/slack") == true)
+    }
+
+    @Test func actionableItemsExcludeHealthyRowsButKeepSafeRecoveryActions() {
+        let healthy = makeRow(
+            name: "ready_tool",
+            source: .plugin,
+            state: .exposed,
+            availabilityReasons: [.alreadyLoaded],
+            detail: "ready",
+            groupName: "com.example.ready"
+        )
+        let blocked = makeRow(
+            name: "notes_create",
+            source: .plugin,
+            state: .blocked,
+            availabilityReasons: [.missingPermission],
+            detail: "missing system permission(s): Notes",
+            groupName: "com.example.notes"
+        )
+
+        let report = PluginToolCapabilityRecoveryCenter.diagnose(
+            PluginToolCapabilityRecoveryRequest(
+                toolExposure: exposure([healthy, blocked]),
+                includeHealthyItems: true
+            )
+        )
+
+        #expect(report.item(kind: .tool, identifier: "ready_tool")?.isUsableNow == true)
+        #expect(report.actionableItems.map(\.subject.identifier) == ["notes_create"])
+        #expect(report.actionableCount == 1)
+        let action = report.actionableItems.first?.suggestions.first
+        #expect(action?.actionKind == .grantSystemPermission)
+        #expect(action?.autoApplies == false)
+    }
+
     @Test func includeHealthyItemsEmitsAvailableRows() {
         let plugin = PluginCapabilitySnapshot(
             pluginId: "com.example.ready",
