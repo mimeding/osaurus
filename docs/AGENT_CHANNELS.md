@@ -38,6 +38,23 @@ stable provider event id, acknowledges duplicates without dispatching the same
 event again, persists a normalized external message snapshot, and treats cursor
 updates as optional.
 
+Relay receive also reports `inbound_authorization`. This is the provider-neutral
+pre-dispatch gate an adapter must apply before external content reaches agent
+context or tool input. The default decision is deny. A receive event is
+dispatchable only when it has a stable provider event id, is not a replay when
+the message store can check seen events, targets an allowlisted group/space
+when one is configured, targets an allowlisted room/channel, comes from an
+allowlisted sender, and is not a bot or self message unless the connection
+explicitly allows those message types. If provider event ids are required, an
+adapter must provide the message store before an otherwise valid event can be
+allowed; missing replay state fails closed. Inbound authorization also requires
+an explicit connection id and never falls back to the default Discord
+connection. Group/space-scoped events fail closed when a space id is present
+but no space allowlist is configured, unless the connection explicitly opts into
+`allowUnscopedSpaces`. Each decision carries an `audit_decision_reason` so
+denied relays can be logged without exposing secrets or external message
+content.
+
 ## Configuration
 
 Non-secret channel definitions live in `agent-channels.json`. Secrets should be
@@ -64,6 +81,15 @@ configuration foundation.
       "writeRoomAllowlist": ["alerts"],
       "writeEnabled": true,
       "defaultReadLimit": 25,
+      "inboundAuthorization": {
+        "senderAllowlist": ["user-1"],
+        "roomAllowlist": ["alerts"],
+        "allowUnscopedSpaces": false,
+        "allowBotMessages": false,
+        "allowSelfMessages": false,
+        "requireProviderEventId": true,
+        "auditDecisionReason": "ops_webhook_receive_gate"
+      },
       "secrets": [
         { "name": "bearer", "keychainId": "ops_webhook_token" }
       ],
@@ -147,11 +173,16 @@ plugin pattern:
 2. Build a stable provider event id, such as a Telegram update id, Discord
    message snowflake id, or Slack event id. Do not use session-scoped sequence
    numbers that can change when a provider replays the same logical message.
-3. Call `recordReceiveEvent(connectionId:providerEventId:message:cursor:)`.
+3. Run the connection's inbound authorization gate before adding message text
+   to agent context or tool input. Unauthorized groups/spaces, rooms, senders,
+   bot messages, self messages, duplicate events, and missing replay state must
+   be acknowledged or dropped according to the decision reason without
+   dispatching to an agent.
+4. Call `recordReceiveEvent(connectionId:providerEventId:message:cursor:)`.
    A result with `shouldDispatch == false` means the event was already
    processed and should be acknowledged without another agent dispatch.
-4. Dispatch only the normalized stored snapshot as untrusted external data.
-5. Preserve the cursor returned by the provider when one exists.
+5. Dispatch only the normalized stored snapshot as untrusted external data.
+6. Preserve the cursor returned by the provider when one exists.
 
 The helper performs the event dedupe insert, normalized inbound message
 snapshot write, per-room pruning, and optional cursor update in one transaction.

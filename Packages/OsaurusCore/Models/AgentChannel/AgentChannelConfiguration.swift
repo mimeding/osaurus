@@ -98,6 +98,7 @@ struct AgentChannelRelayReceivePolicy: Equatable, Sendable {
     var duplicateBehavior: String
     var snapshotPersistence: String
     var cursorUpdate: String
+    var inboundAuthorization: AgentChannelInboundAuthorizationPolicy
 
     init(
         status: AgentChannelActionStatus,
@@ -105,7 +106,8 @@ struct AgentChannelRelayReceivePolicy: Equatable, Sendable {
         providerEventIdRequired: Bool = true,
         duplicateBehavior: String = "acknowledge_without_dispatch",
         snapshotPersistence: String = "normalized_external_message_snapshot",
-        cursorUpdate: String = "optional"
+        cursorUpdate: String = "optional",
+        inboundAuthorization: AgentChannelInboundAuthorizationPolicy = AgentChannelInboundAuthorizationPolicy()
     ) {
         self.effect = .relayReceive
         self.status = status
@@ -114,6 +116,7 @@ struct AgentChannelRelayReceivePolicy: Equatable, Sendable {
         self.duplicateBehavior = duplicateBehavior
         self.snapshotPersistence = snapshotPersistence
         self.cursorUpdate = cursorUpdate
+        self.inboundAuthorization = inboundAuthorization
     }
 
     var dictionary: [String: Any] {
@@ -125,9 +128,169 @@ struct AgentChannelRelayReceivePolicy: Equatable, Sendable {
             "duplicate_behavior": duplicateBehavior,
             "snapshot_persistence": snapshotPersistence,
             "cursor_update": cursorUpdate,
+            "inbound_authorization": inboundAuthorization.dictionary,
         ]
         if let reason {
             row["reason"] = reason
+        }
+        return row
+    }
+}
+
+struct AgentChannelInboundAuthorizationPolicy: Codable, Equatable, Sendable {
+    static let defaultDuplicateBehavior = "acknowledge_without_dispatch"
+    static let defaultAuditDecisionReason = "inbound_authorization_required_before_agent_context"
+
+    var senderAllowlist: [String]
+    var roomAllowlist: [String]
+    var allowUnscopedSpaces: Bool
+    var allowBotMessages: Bool
+    var allowSelfMessages: Bool
+    var requireProviderEventId: Bool
+    var duplicateBehavior: String
+    var auditDecisionReason: String
+
+    init(
+        senderAllowlist: [String] = [],
+        roomAllowlist: [String] = [],
+        allowUnscopedSpaces: Bool = false,
+        allowBotMessages: Bool = false,
+        allowSelfMessages: Bool = false,
+        requireProviderEventId: Bool = true,
+        duplicateBehavior: String = Self.defaultDuplicateBehavior,
+        auditDecisionReason: String = Self.defaultAuditDecisionReason
+    ) {
+        self.senderAllowlist = AgentChannelConnection.normalizedIds(senderAllowlist)
+        self.roomAllowlist = AgentChannelConnection.normalizedIds(roomAllowlist)
+        self.allowUnscopedSpaces = allowUnscopedSpaces
+        self.allowBotMessages = allowBotMessages
+        self.allowSelfMessages = allowSelfMessages
+        self.requireProviderEventId = requireProviderEventId
+        self.duplicateBehavior = duplicateBehavior.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.auditDecisionReason = auditDecisionReason.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            senderAllowlist: try container.decodeIfPresent([String].self, forKey: .senderAllowlist) ?? [],
+            roomAllowlist: try container.decodeIfPresent([String].self, forKey: .roomAllowlist) ?? [],
+            allowUnscopedSpaces: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .allowUnscopedSpaces
+            ) ?? false,
+            allowBotMessages: try container.decodeIfPresent(Bool.self, forKey: .allowBotMessages) ?? false,
+            allowSelfMessages: try container.decodeIfPresent(Bool.self, forKey: .allowSelfMessages) ?? false,
+            requireProviderEventId: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .requireProviderEventId
+            ) ?? true,
+            duplicateBehavior: try container.decodeIfPresent(
+                String.self,
+                forKey: .duplicateBehavior
+            ) ?? Self.defaultDuplicateBehavior,
+            auditDecisionReason: try container.decodeIfPresent(
+                String.self,
+                forKey: .auditDecisionReason
+            ) ?? Self.defaultAuditDecisionReason
+        )
+    }
+
+    var normalized: AgentChannelInboundAuthorizationPolicy {
+        AgentChannelInboundAuthorizationPolicy(
+            senderAllowlist: senderAllowlist,
+            roomAllowlist: roomAllowlist,
+            allowUnscopedSpaces: allowUnscopedSpaces,
+            allowBotMessages: allowBotMessages,
+            allowSelfMessages: allowSelfMessages,
+            requireProviderEventId: requireProviderEventId,
+            duplicateBehavior: duplicateBehavior.isEmpty ? Self.defaultDuplicateBehavior : duplicateBehavior,
+            auditDecisionReason: auditDecisionReason.isEmpty
+                ? Self.defaultAuditDecisionReason
+                : auditDecisionReason
+        )
+    }
+
+    var dictionary: [String: Any] {
+        let policy = normalized
+        return [
+            "default_decision": "deny",
+            "sender_allowlist": policy.senderAllowlist,
+            "room_allowlist": policy.roomAllowlist,
+            "allow_unscoped_spaces": policy.allowUnscopedSpaces,
+            "bot_messages": policy.allowBotMessages ? "allow" : "deny",
+            "self_messages": policy.allowSelfMessages ? "allow" : "deny",
+            "provider_event_id_required": policy.requireProviderEventId,
+            "dedupe_key": "connection_id + provider_event_id",
+            "duplicate_behavior": policy.duplicateBehavior,
+            "dispatch_contract": "authorize_before_agent_context_or_tool_input",
+            "audit_decision_reason": policy.auditDecisionReason,
+        ]
+    }
+}
+
+struct AgentChannelInboundMessageAuthorizationRequest: Equatable, Sendable {
+    var connectionId: String?
+    var providerEventId: String?
+    var spaceId: String?
+    var roomId: String
+    var senderId: String?
+    var isBotMessage: Bool
+    var isSelfMessage: Bool
+
+    init(
+        connectionId: String? = nil,
+        providerEventId: String? = nil,
+        spaceId: String? = nil,
+        roomId: String,
+        senderId: String? = nil,
+        isBotMessage: Bool = false,
+        isSelfMessage: Bool = false
+    ) {
+        self.connectionId = connectionId.map(AgentChannelConnection.normalizedId)
+        self.providerEventId = providerEventId.map(AgentChannelConnection.normalizedId)
+        self.spaceId = spaceId.map(AgentChannelConnection.normalizedId)
+        self.roomId = AgentChannelConnection.normalizedId(roomId)
+        self.senderId = senderId.map(AgentChannelConnection.normalizedId)
+        self.isBotMessage = isBotMessage
+        self.isSelfMessage = isSelfMessage
+    }
+}
+
+enum AgentChannelInboundAuthorizationDecisionValue: String, Codable, Equatable, Sendable {
+    case allow
+    case deny
+    case duplicate
+}
+
+struct AgentChannelInboundAuthorizationDecision: Equatable, Sendable {
+    var decision: AgentChannelInboundAuthorizationDecisionValue
+    var shouldDispatch: Bool
+    var reason: String
+    var auditDecisionReason: String
+    var connectionId: String
+    var providerEventId: String?
+    var spaceId: String?
+    var roomId: String
+    var senderId: String?
+
+    var dictionary: [String: Any] {
+        var row: [String: Any] = [
+            "decision": decision.rawValue,
+            "should_dispatch": shouldDispatch,
+            "reason": reason,
+            "audit_decision_reason": auditDecisionReason,
+            "connection_id": connectionId,
+            "room_id": roomId,
+        ]
+        if let providerEventId {
+            row["provider_event_id"] = providerEventId
+        }
+        if let spaceId {
+            row["space_id"] = spaceId
+        }
+        if let senderId {
+            row["sender_id"] = senderId
         }
         return row
     }
@@ -245,6 +408,23 @@ struct AgentChannelConnection: Codable, Equatable, Identifiable, Sendable {
     var defaultReadLimit: Int
     var secrets: [AgentChannelSecretReference]
     var customHTTP: AgentChannelCustomHTTPConfiguration?
+    var inboundAuthorization: AgentChannelInboundAuthorizationPolicy
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case kind
+        case enabled
+        case supportedActions
+        case spaceAllowlist
+        case readRoomAllowlist
+        case writeRoomAllowlist
+        case writeEnabled
+        case defaultReadLimit
+        case secrets
+        case customHTTP
+        case inboundAuthorization
+    }
 
     init(
         id: String,
@@ -258,7 +438,8 @@ struct AgentChannelConnection: Codable, Equatable, Identifiable, Sendable {
         writeEnabled: Bool = false,
         defaultReadLimit: Int = 50,
         secrets: [AgentChannelSecretReference] = [],
-        customHTTP: AgentChannelCustomHTTPConfiguration? = nil
+        customHTTP: AgentChannelCustomHTTPConfiguration? = nil,
+        inboundAuthorization: AgentChannelInboundAuthorizationPolicy = AgentChannelInboundAuthorizationPolicy()
     ) {
         self.id = Self.normalizedId(id)
         self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -272,6 +453,35 @@ struct AgentChannelConnection: Codable, Equatable, Identifiable, Sendable {
         self.defaultReadLimit = Self.clampReadLimit(defaultReadLimit)
         self.secrets = secrets.map(\.normalized)
         self.customHTTP = customHTTP
+        self.inboundAuthorization = inboundAuthorization.normalized
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(String.self, forKey: .id),
+            name: try container.decode(String.self, forKey: .name),
+            kind: try container.decode(AgentChannelKind.self, forKey: .kind),
+            enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
+            supportedActions: try container.decodeIfPresent(
+                [AgentChannelAction].self,
+                forKey: .supportedActions
+            ) ?? AgentChannelAction.allCases,
+            spaceAllowlist: try container.decodeIfPresent([String].self, forKey: .spaceAllowlist) ?? [],
+            readRoomAllowlist: try container.decodeIfPresent([String].self, forKey: .readRoomAllowlist) ?? [],
+            writeRoomAllowlist: try container.decodeIfPresent([String].self, forKey: .writeRoomAllowlist) ?? [],
+            writeEnabled: try container.decodeIfPresent(Bool.self, forKey: .writeEnabled) ?? false,
+            defaultReadLimit: try container.decodeIfPresent(Int.self, forKey: .defaultReadLimit) ?? 50,
+            secrets: try container.decodeIfPresent([AgentChannelSecretReference].self, forKey: .secrets) ?? [],
+            customHTTP: try container.decodeIfPresent(
+                AgentChannelCustomHTTPConfiguration.self,
+                forKey: .customHTTP
+            ),
+            inboundAuthorization: try container.decodeIfPresent(
+                AgentChannelInboundAuthorizationPolicy.self,
+                forKey: .inboundAuthorization
+            ) ?? AgentChannelInboundAuthorizationPolicy()
+        )
     }
 
     var normalized: AgentChannelConnection {
@@ -287,7 +497,8 @@ struct AgentChannelConnection: Codable, Equatable, Identifiable, Sendable {
             writeEnabled: writeEnabled,
             defaultReadLimit: defaultReadLimit,
             secrets: secrets,
-            customHTTP: customHTTP
+            customHTTP: customHTTP,
+            inboundAuthorization: inboundAuthorization
         )
     }
 

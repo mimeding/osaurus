@@ -259,6 +259,110 @@ final class AgentChannelConnectionService: @unchecked Sendable {
         }
     }
 
+    func authorizeInboundMessage(
+        _ request: AgentChannelInboundMessageAuthorizationRequest,
+        messageStore: AgentChannelMessageStore? = nil
+    ) throws -> AgentChannelInboundAuthorizationDecision {
+        let requestedConnectionId = request.connectionId.flatMap(Self.normalizedOptionalId)
+        let providerEventId = request.providerEventId.flatMap(Self.normalizedOptionalId)
+        let spaceId = request.spaceId.flatMap(Self.normalizedOptionalId)
+        let roomId = Self.normalizedId(request.roomId)
+        let senderId = request.senderId.flatMap(Self.normalizedOptionalId)
+        guard let requestedConnectionId else {
+            return Self.inboundAuthorizationDeny(
+                reason: "connection_id_required",
+                connectionId: "",
+                providerEventId: providerEventId,
+                spaceId: spaceId,
+                roomId: roomId,
+                senderId: senderId
+            )
+        }
+
+        let connection: AgentChannelConnection
+        do {
+            connection = try resolveConnection(requestedConnectionId)
+        } catch AgentChannelConnectionServiceError.connectionNotFound(_) {
+            return Self.inboundAuthorizationDeny(
+                reason: "connection_not_found",
+                connectionId: requestedConnectionId,
+                providerEventId: providerEventId,
+                spaceId: spaceId,
+                roomId: roomId,
+                senderId: senderId
+            )
+        }
+
+        let policy = connection.inboundAuthorization
+
+        func deny(
+            _ reason: String,
+            decision: AgentChannelInboundAuthorizationDecisionValue = .deny
+        ) -> AgentChannelInboundAuthorizationDecision {
+            AgentChannelInboundAuthorizationDecision(
+                decision: decision,
+                shouldDispatch: false,
+                reason: reason,
+                auditDecisionReason: policy.auditDecisionReason,
+                connectionId: connection.id,
+                providerEventId: providerEventId,
+                spaceId: spaceId,
+                roomId: roomId,
+                senderId: senderId
+            )
+        }
+
+        guard connection.enabled else {
+            return deny("connection_disabled")
+        }
+        guard !policy.requireProviderEventId || providerEventId != nil else {
+            return deny("provider_event_id_required")
+        }
+        if !connection.spaceAllowlist.isEmpty {
+            guard let spaceId, connection.spaceAllowlist.contains(spaceId) else {
+                return deny("space_not_allowlisted")
+            }
+        } else if spaceId != nil, !policy.allowUnscopedSpaces {
+            return deny("space_allowlist_required")
+        }
+        guard !policy.roomAllowlist.isEmpty, policy.roomAllowlist.contains(roomId) else {
+            return deny("room_not_allowlisted")
+        }
+        if request.isSelfMessage, !policy.allowSelfMessages {
+            return deny("self_message_denied")
+        }
+        if request.isBotMessage, !policy.allowBotMessages {
+            return deny("bot_message_denied")
+        }
+        guard let senderId,
+              !policy.senderAllowlist.isEmpty,
+              policy.senderAllowlist.contains(senderId)
+        else {
+            return deny("sender_not_allowlisted")
+        }
+        if policy.requireProviderEventId {
+            guard let messageStore else {
+                return deny("message_store_required_for_replay_check")
+            }
+            if let providerEventId,
+               try messageStore.isEventSeen(connectionId: connection.id, providerEventId: providerEventId) {
+                return deny("duplicate_event_\(policy.duplicateBehavior)", decision: .duplicate)
+            }
+        }
+
+        return AgentChannelInboundAuthorizationDecision(
+            decision: .allow,
+            shouldDispatch: true,
+            reason: "allowed",
+            auditDecisionReason: policy.auditDecisionReason,
+            connectionId: connection.id,
+            providerEventId: providerEventId,
+            spaceId: spaceId,
+            roomId: roomId,
+            senderId: senderId
+        )
+    }
+
     private func requireAction(
         _ action: AgentChannelAction,
         connectionId: String?
@@ -344,6 +448,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             "default_read_limit": connection.defaultReadLimit,
             "secret_names": connection.secrets.map(\.name),
             "custom_http_configured": connection.customHTTP != nil,
+            "inbound_authorization": connection.inboundAuthorization.dictionary,
             "action_policies": actionPolicies(for: connection).map(\.dictionary),
             "relay_receive_policy": relayReceivePolicy(for: connection).dictionary,
         ]
@@ -416,11 +521,16 @@ final class AgentChannelConnectionService: @unchecked Sendable {
 
     private func relayReceivePolicy(for connection: AgentChannelConnection) -> AgentChannelRelayReceivePolicy {
         guard connection.enabled else {
-            return AgentChannelRelayReceivePolicy(status: .disabled, reason: "Connection is disabled.")
+            return AgentChannelRelayReceivePolicy(
+                status: .disabled,
+                reason: "Connection is disabled.",
+                inboundAuthorization: connection.inboundAuthorization
+            )
         }
         return AgentChannelRelayReceivePolicy(
             status: .unsupported,
-            reason: "No live receive relay is registered for this connection."
+            reason: "No live receive relay is registered for this connection.",
+            inboundAuthorization: connection.inboundAuthorization
         )
     }
 
@@ -433,5 +543,35 @@ final class AgentChannelConnectionService: @unchecked Sendable {
         case .diagnostics, .listSpaces, .listRooms, .draftMessage:
             return nil
         }
+    }
+
+    private static func normalizedId(_ id: String) -> String {
+        AgentChannelConnection.normalizedId(id)
+    }
+
+    private static func normalizedOptionalId(_ id: String?) -> String? {
+        let normalized = AgentChannelConnection.normalizedId(id ?? "")
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func inboundAuthorizationDeny(
+        reason: String,
+        connectionId: String,
+        providerEventId: String?,
+        spaceId: String?,
+        roomId: String,
+        senderId: String?
+    ) -> AgentChannelInboundAuthorizationDecision {
+        AgentChannelInboundAuthorizationDecision(
+            decision: .deny,
+            shouldDispatch: false,
+            reason: reason,
+            auditDecisionReason: AgentChannelInboundAuthorizationPolicy.defaultAuditDecisionReason,
+            connectionId: connectionId,
+            providerEventId: providerEventId,
+            spaceId: spaceId,
+            roomId: roomId,
+            senderId: senderId
+        )
     }
 }

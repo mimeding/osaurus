@@ -689,6 +689,15 @@ struct DiscordConnectionTests {
                       "writeRoomAllowlist": ["alerts"],
                       "writeEnabled": true,
                       "defaultReadLimit": 25,
+                      "inboundAuthorization": {
+                        "senderAllowlist": ["user-1"],
+                        "roomAllowlist": ["alerts"],
+                        "allowUnscopedSpaces": false,
+                        "allowBotMessages": false,
+                        "allowSelfMessages": false,
+                        "requireProviderEventId": true,
+                        "auditDecisionReason": "ops_webhook_receive_gate"
+                      },
                       "secrets": [
                         { "name": "bearer", "keychainId": "ops_webhook_token" }
                       ],
@@ -724,6 +733,8 @@ struct DiscordConnectionTests {
             #expect(connection.kind == .customHTTP)
             #expect(connection.supportedActions == [.diagnostics, .sendMessage])
             #expect(connection.writeRoomAllowlist == ["alerts"])
+            #expect(connection.inboundAuthorization.senderAllowlist == ["user-1"])
+            #expect(connection.inboundAuthorization.roomAllowlist == ["alerts"])
             #expect(connection.customHTTP?.actions["send_message"]?.method == "POST")
 
             let service = AgentChannelConnectionService(
@@ -746,6 +757,17 @@ struct DiscordConnectionTests {
             let relayPolicy = try #require(diagnostics["relay_receive_policy"] as? [String: Any])
             #expect(relayPolicy["effect"] as? String == "relay_receive")
             #expect(relayPolicy["provider_event_id_required"] as? Bool == true)
+            let inboundAuthorization = try #require(
+                relayPolicy["inbound_authorization"] as? [String: Any]
+            )
+            #expect(inboundAuthorization["default_decision"] as? String == "deny")
+            #expect(inboundAuthorization["sender_allowlist"] as? [String] == ["user-1"])
+            #expect(inboundAuthorization["room_allowlist"] as? [String] == ["alerts"])
+            #expect(inboundAuthorization["allow_unscoped_spaces"] as? Bool == false)
+            #expect(
+                inboundAuthorization["dispatch_contract"] as? String
+                    == "authorize_before_agent_context_or_tool_input"
+            )
         }
     }
 
@@ -777,6 +799,416 @@ struct DiscordConnectionTests {
             let draftPolicy = try #require(policy(named: "draft_message", in: policies))
             #expect(draftPolicy["effect"] as? String == "draft")
             #expect(draftPolicy["requires_confirmation"] as? Bool == false)
+        }
+    }
+
+    @Test func inboundAuthorizationDeniesBeforeAgentDispatchAndAuditsReason() async throws {
+        try await withIsolatedDiscordStores { credentials in
+            let connection = AgentChannelConnection(
+                id: "ops-webhook",
+                name: "Ops Webhook",
+                kind: .customHTTP,
+                supportedActions: [.diagnostics],
+                spaceAllowlist: ["ops"],
+                customHTTP: AgentChannelCustomHTTPConfiguration(baseURL: "https://hooks.example.test"),
+                inboundAuthorization: AgentChannelInboundAuthorizationPolicy(
+                    senderAllowlist: ["user-1"],
+                    roomAllowlist: ["alerts"],
+                    auditDecisionReason: "ops_receive_authorization"
+                )
+            )
+            try AgentChannelConfigurationStore.save(
+                AgentChannelConfiguration(connections: [connection])
+            )
+            let service = AgentChannelConnectionService(
+                discordService: DiscordConnectionService(
+                    client: FakeDiscordAPIClient(),
+                    credentialStore: credentials
+                )
+            )
+
+            let missingStore = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-1",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(missingStore.decision == .deny)
+            #expect(!missingStore.shouldDispatch)
+            #expect(missingStore.reason == "message_store_required_for_replay_check")
+
+            let store = AgentChannelMessageStore()
+            try store.openInMemory()
+            defer { store.close() }
+            let allowed = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-1",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                ),
+                messageStore: store
+            )
+            #expect(allowed.decision == .allow)
+            #expect(allowed.shouldDispatch)
+            #expect(allowed.reason == "allowed")
+            #expect(allowed.auditDecisionReason == "ops_receive_authorization")
+
+            let missingEvent = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(missingEvent.decision == .deny)
+            #expect(!missingEvent.shouldDispatch)
+            #expect(missingEvent.reason == "provider_event_id_required")
+
+            let roomDenied = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-2",
+                    spaceId: "ops",
+                    roomId: "general",
+                    senderId: "user-1"
+                )
+            )
+            #expect(roomDenied.decision == .deny)
+            #expect(roomDenied.reason == "room_not_allowlisted")
+
+            let spaceDenied = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-3",
+                    spaceId: "sales",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(spaceDenied.decision == .deny)
+            #expect(spaceDenied.reason == "space_not_allowlisted")
+
+            let senderDenied = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-4",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-2"
+                )
+            )
+            #expect(senderDenied.decision == .deny)
+            #expect(senderDenied.reason == "sender_not_allowlisted")
+
+            let botDenied = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-5",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1",
+                    isBotMessage: true
+                )
+            )
+            #expect(botDenied.decision == .deny)
+            #expect(botDenied.reason == "bot_message_denied")
+
+            let selfDenied = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-6",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1",
+                    isSelfMessage: true
+                )
+            )
+            #expect(selfDenied.decision == .deny)
+            #expect(selfDenied.reason == "self_message_denied")
+
+            #expect(try store.markEventSeen(connectionId: "ops-webhook", providerEventId: "evt-7"))
+            let duplicate = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-7",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                ),
+                messageStore: store
+            )
+            #expect(duplicate.decision == .duplicate)
+            #expect(!duplicate.shouldDispatch)
+            #expect(duplicate.reason == "duplicate_event_acknowledge_without_dispatch")
+
+            #expect(try store.markEventSeen(connectionId: "ops-webhook", providerEventId: "evt-8"))
+            let unauthorizedReplay = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-8",
+                    spaceId: "ops",
+                    roomId: "general",
+                    senderId: "user-1"
+                ),
+                messageStore: store
+            )
+            #expect(unauthorizedReplay.decision == .deny)
+            #expect(unauthorizedReplay.reason == "room_not_allowlisted")
+        }
+    }
+
+    @Test func inboundAuthorizationRequiresExplicitConnectionId() async throws {
+        try await withIsolatedDiscordStores { credentials in
+            let service = AgentChannelConnectionService(
+                discordService: DiscordConnectionService(
+                    client: FakeDiscordAPIClient(),
+                    credentialStore: credentials
+                )
+            )
+
+            let missing = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    providerEventId: "evt-1",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(missing.decision == .deny)
+            #expect(!missing.shouldDispatch)
+            #expect(missing.reason == "connection_id_required")
+            #expect(missing.connectionId == "")
+
+            let unknown = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "missing-channel",
+                    providerEventId: "evt-2",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(unknown.decision == .deny)
+            #expect(!unknown.shouldDispatch)
+            #expect(unknown.reason == "connection_not_found")
+            #expect(unknown.connectionId == "missing-channel")
+        }
+    }
+
+    @Test func inboundAuthorizationDefaultDeniesEmptyAllowListsAndUnscopedSpaces() async throws {
+        try await withIsolatedDiscordStores { credentials in
+            try AgentChannelConfigurationStore.save(
+                AgentChannelConfiguration(
+                    connections: [
+                        AgentChannelConnection(
+                            id: "default-deny",
+                            name: "Default Deny",
+                            kind: .customHTTP,
+                            supportedActions: [.diagnostics],
+                            customHTTP: AgentChannelCustomHTTPConfiguration(
+                                baseURL: "https://hooks.example.test"
+                            )
+                        ),
+                        AgentChannelConnection(
+                            id: "empty-room",
+                            name: "Empty Room",
+                            kind: .customHTTP,
+                            supportedActions: [.diagnostics],
+                            customHTTP: AgentChannelCustomHTTPConfiguration(
+                                baseURL: "https://hooks.example.test"
+                            ),
+                            inboundAuthorization: AgentChannelInboundAuthorizationPolicy(
+                                senderAllowlist: ["user-1"],
+                                allowUnscopedSpaces: true
+                            )
+                        ),
+                        AgentChannelConnection(
+                            id: "empty-sender",
+                            name: "Empty Sender",
+                            kind: .customHTTP,
+                            supportedActions: [.diagnostics],
+                            customHTTP: AgentChannelCustomHTTPConfiguration(
+                                baseURL: "https://hooks.example.test"
+                            ),
+                            inboundAuthorization: AgentChannelInboundAuthorizationPolicy(
+                                roomAllowlist: ["alerts"],
+                                allowUnscopedSpaces: true
+                            )
+                        ),
+                        AgentChannelConnection(
+                            id: "unscoped-allowed",
+                            name: "Unscoped Allowed",
+                            kind: .customHTTP,
+                            supportedActions: [.diagnostics],
+                            customHTTP: AgentChannelCustomHTTPConfiguration(
+                                baseURL: "https://hooks.example.test"
+                            ),
+                            inboundAuthorization: AgentChannelInboundAuthorizationPolicy(
+                                senderAllowlist: ["user-1"],
+                                roomAllowlist: ["alerts"],
+                                allowUnscopedSpaces: true
+                            )
+                        ),
+                    ]
+                )
+            )
+            let service = AgentChannelConnectionService(
+                discordService: DiscordConnectionService(
+                    client: FakeDiscordAPIClient(),
+                    credentialStore: credentials
+                )
+            )
+
+            let unscopedDenied = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "default-deny",
+                    providerEventId: "evt-1",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(unscopedDenied.decision == .deny)
+            #expect(unscopedDenied.reason == "space_allowlist_required")
+
+            let emptyRoomDenied = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "empty-room",
+                    providerEventId: "evt-2",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(emptyRoomDenied.decision == .deny)
+            #expect(emptyRoomDenied.reason == "room_not_allowlisted")
+
+            let emptySenderDenied = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "empty-sender",
+                    providerEventId: "evt-3",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(emptySenderDenied.decision == .deny)
+            #expect(emptySenderDenied.reason == "sender_not_allowlisted")
+
+            let store = AgentChannelMessageStore()
+            try store.openInMemory()
+            defer { store.close() }
+            let unscopedAllowed = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "unscoped-allowed",
+                    providerEventId: "evt-4",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                ),
+                messageStore: store
+            )
+            #expect(unscopedAllowed.decision == .allow)
+            #expect(unscopedAllowed.shouldDispatch)
+        }
+    }
+
+    @Test func inboundAuthorizationDeniesDisabledConnection() async throws {
+        try await withIsolatedDiscordStores { credentials in
+            try AgentChannelConfigurationStore.save(
+                AgentChannelConfiguration(
+                    connections: [
+                        AgentChannelConnection(
+                            id: "disabled-channel",
+                            name: "Disabled Channel",
+                            kind: .customHTTP,
+                            enabled: false,
+                            supportedActions: [.diagnostics],
+                            spaceAllowlist: ["ops"],
+                            customHTTP: AgentChannelCustomHTTPConfiguration(
+                                baseURL: "https://hooks.example.test"
+                            ),
+                            inboundAuthorization: AgentChannelInboundAuthorizationPolicy(
+                                senderAllowlist: ["user-1"],
+                                roomAllowlist: ["alerts"]
+                            )
+                        ),
+                    ]
+                )
+            )
+            let service = AgentChannelConnectionService(
+                discordService: DiscordConnectionService(
+                    client: FakeDiscordAPIClient(),
+                    credentialStore: credentials
+                )
+            )
+
+            let decision = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "disabled-channel",
+                    providerEventId: "evt-1",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(decision.decision == .deny)
+            #expect(!decision.shouldDispatch)
+            #expect(decision.reason == "connection_disabled")
+        }
+    }
+
+    @Test func inboundAuthorizationAllowsBotAndSelfMessagesWhenConfigured() async throws {
+        try await withIsolatedDiscordStores { credentials in
+            try AgentChannelConfigurationStore.save(
+                AgentChannelConfiguration(
+                    connections: [
+                        AgentChannelConnection(
+                            id: "bot-self-channel",
+                            name: "Bot Self Channel",
+                            kind: .customHTTP,
+                            supportedActions: [.diagnostics],
+                            spaceAllowlist: ["ops"],
+                            customHTTP: AgentChannelCustomHTTPConfiguration(
+                                baseURL: "https://hooks.example.test"
+                            ),
+                            inboundAuthorization: AgentChannelInboundAuthorizationPolicy(
+                                senderAllowlist: ["user-1"],
+                                roomAllowlist: ["alerts"],
+                                allowBotMessages: true,
+                                allowSelfMessages: true
+                            )
+                        ),
+                    ]
+                )
+            )
+            let service = AgentChannelConnectionService(
+                discordService: DiscordConnectionService(
+                    client: FakeDiscordAPIClient(),
+                    credentialStore: credentials
+                )
+            )
+            let store = AgentChannelMessageStore()
+            try store.openInMemory()
+            defer { store.close() }
+
+            let decision = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "bot-self-channel",
+                    providerEventId: "evt-1",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1",
+                    isBotMessage: true,
+                    isSelfMessage: true
+                ),
+                messageStore: store
+            )
+            #expect(decision.decision == .allow)
+            #expect(decision.shouldDispatch)
+            #expect(decision.reason == "allowed")
         }
     }
 
