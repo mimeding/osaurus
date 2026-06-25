@@ -20,6 +20,8 @@ Environment:
   STRICT=0           Always exit 0 after writing artifacts. Default exits nonzero
                       when a required command fails.
 
+Requires `python3` for timing, manifest, and summary generation.
+
 The runner writes logs, manifest.json, summary.md, and command-results.tsv under
 OUT_DIR. build/ is gitignored, so generated evidence stays local by default.
 EOF
@@ -39,6 +41,12 @@ RESULTS_TSV="${OUT_DIR}/command-results.tsv"
 STRICT="${STRICT:-1}"
 RUN_EVALS="${RUN_EVALS:-0}"
 OSAURUS_TEST_ROOT="${OSAURUS_TEST_ROOT:-/tmp/osaurus-computer-use-evidence}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  echo "error: ${PYTHON_BIN} is required to write Computer Use evidence artifacts." >&2
+  exit 1
+fi
 
 mkdir -p "$LOG_DIR"
 printf "name\tcommand\tlog\texit_code\tduration_ms\n" > "$RESULTS_TSV"
@@ -55,7 +63,7 @@ quote_cmd() {
 }
 
 now_ms() {
-  python3 -c 'import time; print(int(time.time() * 1000))'
+  "$PYTHON_BIN" -c 'import time; print(int(time.time() * 1000))'
 }
 
 run_step() {
@@ -126,7 +134,7 @@ fi
   if [[ -n "${MODEL:-}" ]]; then echo "model ${MODEL}"; fi
 } > "${OUT_DIR}/environment.txt"
 
-python3 - "$OUT_DIR" "$RESULTS_TSV" "$fail" <<'PY'
+"$PYTHON_BIN" - "$OUT_DIR" "$RESULTS_TSV" "$fail" <<'PY'
 import csv
 import json
 import pathlib

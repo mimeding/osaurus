@@ -24,9 +24,10 @@ model-dependent OsaurusEvals ComputerUse suite:
 RUN_EVALS=1 MODEL=foundation make computer-use-evidence
 ```
 
-With `RUN_EVALS=1`, the runner also executes the model-dependent
-`ComputerUseLoop` suite. That suite is where live-model loop quality is scored;
-the default Swift tests keep the CI-safe proof deterministic.
+With `RUN_EVALS=1`, the runner builds `osaurus-evals` and executes both
+model-dependent suites: `ComputerUse` and `ComputerUseLoop`. The loop suite is
+where live-model Computer Use quality is scored; the default Swift tests keep
+the CI-safe proof deterministic.
 
 Useful overrides:
 

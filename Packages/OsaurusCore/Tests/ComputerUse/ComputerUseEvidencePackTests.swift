@@ -144,8 +144,8 @@ final class ComputerUseEvidencePackTests: XCTestCase {
         let pid: Int32 = 5150
         // MockMacDriver advances one snapshot per capture: initial observe,
         // one post-action verify per acting verb, then one final assertion read.
-        // Keep the submit button visible through snapshot 5 so resolution tests
-        // the pre-submit tree, then expose the submitted state on snapshots 6-7.
+        // Keep status as Draft through snapshot 5 so the submit click resolves
+        // against the pre-submit tree, then expose the submitted state on 6-7.
         let snapshots = [
             browserFormSnapshot(snapshotId: 1, pid: pid),
             browserFormSnapshot(snapshotId: 2, pid: pid, team: "Synthetic Platform Team"),
