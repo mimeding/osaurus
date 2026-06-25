@@ -8,6 +8,10 @@
 import Foundation
 
 struct AgentChannelCustomHTTPResponseMapping: Codable, Equatable, Sendable {
+    static let maxPathLength = 160
+    static let maxPathSegments = 12
+    static let maxArrayIndex = 1_000
+
     var itemsPath: String?
     var idPath: String?
     var namePath: String?
@@ -63,6 +67,82 @@ struct AgentChannelCustomHTTPResponseMapping: Codable, Equatable, Sendable {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    var allConfiguredPaths: [String] {
+        [
+            itemsPath,
+            idPath,
+            namePath,
+            roomIdPath,
+            threadIdPath,
+            contentPath,
+            authorIdPath,
+            authorNamePath,
+            timestampPath,
+            cursorPath,
+        ].compactMap { $0 }
+    }
+
+    static func validatePath(_ path: String) throws {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard trimmed.utf8.count <= maxPathLength else {
+            throw AgentChannelCustomJSONRunnerError.invalidResponse(
+                "Response mapping path is too long.",
+                partialWriteStatus: nil
+            )
+        }
+        guard trimmed.rangeOfCharacter(from: .controlCharacters) == nil,
+            !trimmed.contains("{{"),
+            !trimmed.contains("}}"),
+            !trimmed.contains("["),
+            !trimmed.contains("]"),
+            !trimmed.contains("*")
+        else {
+            throw AgentChannelCustomJSONRunnerError.invalidResponse(
+                "Response mapping path `\(trimmed)` contains unsupported characters.",
+                partialWriteStatus: nil
+            )
+        }
+
+        let withoutRoot: String
+        if trimmed == "$" {
+            return
+        } else if trimmed.hasPrefix("$.") {
+            withoutRoot = String(trimmed.dropFirst(2))
+        } else {
+            withoutRoot = trimmed
+        }
+
+        let segments = withoutRoot.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard !segments.isEmpty,
+            segments.count <= maxPathSegments,
+            segments.allSatisfy({ !$0.isEmpty })
+        else {
+            throw AgentChannelCustomJSONRunnerError.invalidResponse(
+                "Response mapping path `\(trimmed)` exceeds supported depth or has empty segments.",
+                partialWriteStatus: nil
+            )
+        }
+
+        for segment in segments {
+            if segment.allSatisfy(\.isNumber) {
+                guard let index = Int(segment), index <= maxArrayIndex else {
+                    throw AgentChannelCustomJSONRunnerError.invalidResponse(
+                        "Response mapping path `\(trimmed)` has an array index outside the supported range.",
+                        partialWriteStatus: nil
+                    )
+                }
+                continue
+            }
+            guard segment.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil else {
+                throw AgentChannelCustomJSONRunnerError.invalidResponse(
+                    "Response mapping path `\(trimmed)` contains unsupported segment `\(segment)`.",
+                    partialWriteStatus: nil
+                )
+            }
+        }
+    }
 }
 struct AgentChannelCustomHTTPIdempotency: Codable, Equatable, Sendable {
     var header: String?
@@ -85,6 +165,10 @@ struct AgentChannelCustomHTTPIdempotency: Codable, Equatable, Sendable {
             keyTemplate: keyTemplate,
             responseIdPath: responseIdPath
         )
+    }
+
+    var configuredResponsePaths: [String] {
+        [responseIdPath].compactMap { $0 }
     }
 
     private static func trimmed(_ value: String?) -> String? {

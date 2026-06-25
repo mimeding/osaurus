@@ -168,6 +168,9 @@ Read/write gates:
 - `send_message` and `reply_thread` also require `confirm_send: true`.
 - `draft_message` is a local dry run. It returns a redacted request summary and
   never dispatches HTTP.
+- The custom runner has an injectable authorization policy hook so tests and
+  future shared Agent Channel contracts can deny a standard action after the
+  static allowlists pass and before HTTP dispatch.
 
 Templates:
 
@@ -206,6 +209,9 @@ Responses:
 - `idPath`, `namePath`, `roomIdPath`, `threadIdPath`, `contentPath`,
   `authorIdPath`, `authorNamePath`, `timestampPath`, and `cursorPath` select
   fields inside provider objects.
+- Mapping paths are bounded: at most 160 UTF-8 bytes, 12 dot-separated
+  segments, no empty/control/template/wildcard/bracket syntax, and array
+  indexes must be 1,000 or lower. Mapped row output is capped at 100 rows.
 - Read and search results are marked `partial: true` because the runner only
   proves the provider response slice it fetched.
 - Successful writes return `partial_write: false` and
@@ -214,6 +220,9 @@ Responses:
   happens after dispatch, tool failures include a `partial_write_status` such as
   `cancelled_after_dispatch`, `transport_unconfirmed`,
   `http_status_unconfirmed`, or `malformed_write_response`.
+- When a write receives a 2xx response but JSON parsing or response mapping
+  fails, the idempotency ledger preserves an unconfirmed terminal state for the
+  key so an immediate retry cannot duplicate the delivery.
 
 Idempotency:
 
@@ -223,9 +232,12 @@ Idempotency:
   target, and content.
 - Configure `idempotency.responseIdPath` when the provider's id field differs
   from the normal response mapping.
-- Repeated write attempts with the same key are suppressed in-process and return
-  `delivery_status: "duplicate_suppressed"` without dispatching another HTTP
-  request.
+- Repeated write attempts with the same completed key are suppressed in-process
+  and return `delivery_status: "duplicate_suppressed"` without dispatching
+  another HTTP request. Concurrent repeats while the first request is still in
+  flight are reserved and return
+  `delivery_status: "duplicate_in_flight_suppressed"` without a second
+  delivery attempt.
 
 Diagnostics:
 
@@ -241,9 +253,13 @@ The connection center validates channel definitions before saving:
 
 - `discord` is reserved for the native Discord adapter.
 - Custom HTTP connections require an HTTP or HTTPS base URL.
+- Custom HTTP base URLs run through the same blocked-host policy used by the
+  runner, so localhost/private/link-local targets are rejected before save.
 - Custom action names must match supported standard actions.
 - HTTP action paths must start with `/`.
 - Header/query fields and secret references reject line breaks.
+- `responseMapping` paths and `idempotency.responseIdPath` must satisfy the
+  same bounded response-path rules used at runtime.
 - Secret references store only `name=keychain-id` pointers, not raw credentials.
 
 ## Discord Connection

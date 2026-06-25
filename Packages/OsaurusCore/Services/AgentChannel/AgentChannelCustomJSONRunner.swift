@@ -59,6 +59,29 @@ struct KeychainAgentChannelSecretResolver: AgentChannelSecretResolving {
     }
 }
 
+enum AgentChannelCustomJSONAuthorizationMode: Sendable {
+    case read
+    case write
+}
+
+struct AgentChannelCustomJSONAuthorizationRequest: Sendable {
+    var connectionId: String
+    var action: AgentChannelAction
+    var mode: AgentChannelCustomJSONAuthorizationMode
+    var spaceId: String?
+    var roomId: String?
+    var threadId: String?
+    var roomIds: [String]
+}
+
+protocol AgentChannelCustomJSONAuthorizationPolicy: Sendable {
+    func authorize(_ request: AgentChannelCustomJSONAuthorizationRequest) throws
+}
+
+struct PermissiveAgentChannelCustomJSONAuthorizationPolicy: AgentChannelCustomJSONAuthorizationPolicy {
+    func authorize(_: AgentChannelCustomJSONAuthorizationRequest) throws {}
+}
+
 protocol AgentChannelCustomJSONRunning {
     func diagnostics(connection: AgentChannelConnection) async -> [String: Any]
     func listSpaces(connection: AgentChannelConnection) async throws -> [[String: Any]]
@@ -169,18 +192,23 @@ enum AgentChannelCustomJSONRunnerError: LocalizedError, Equatable, Sendable {
 
 final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchecked Sendable {
     static let defaultMaxRequestBytes = 262_144
+    private static let maxMappedRows = 100
 
     private let httpClient: any AgentChannelHTTPClient
     private let secretResolver: any AgentChannelSecretResolving
+    private let authorizationPolicy: any AgentChannelCustomJSONAuthorizationPolicy
     private let idempotencyLedger: AgentChannelCustomJSONIdempotencyLedger
 
     init(
         httpClient: any AgentChannelHTTPClient = AgentChannelCustomJSONRunner.makeDefaultHTTPClient(),
         secretResolver: any AgentChannelSecretResolving = KeychainAgentChannelSecretResolver(),
+        authorizationPolicy: any AgentChannelCustomJSONAuthorizationPolicy =
+            PermissiveAgentChannelCustomJSONAuthorizationPolicy(),
         idempotencyLedger: AgentChannelCustomJSONIdempotencyLedger = AgentChannelCustomJSONIdempotencyLedger()
     ) {
         self.httpClient = httpClient
         self.secretResolver = secretResolver
+        self.authorizationPolicy = authorizationPolicy
         self.idempotencyLedger = idempotencyLedger
     }
 
@@ -395,6 +423,12 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
     ) async throws -> [String: Any] {
         let customHTTP = try requireConfiguration(connection)
         let customAction = try requireAction(action, connection: connection, configuration: customHTTP)
+        try authorize(
+            action,
+            connection: connection,
+            input: input,
+            mode: mode == .write ? .write : .read
+        )
         let redactor = AgentChannelSecretRedactor()
         let idempotencyKey = try idempotencyKey(
             for: customAction,
@@ -404,23 +438,51 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
             redactor: redactor
         )
 
-        if mode == .write, let idempotencyKey, let cached = idempotencyLedger.result(for: idempotencyKey) {
-            var duplicate = cached
-            duplicate["duplicate"] = true
-            duplicate["delivery_status"] = "duplicate_suppressed"
-            return duplicate
+        var reservedIdempotencyKey: String?
+        if mode == .write, let idempotencyKey {
+            switch idempotencyLedger.reserve(idempotencyKey) {
+            case .reserved:
+                reservedIdempotencyKey = idempotencyKey
+            case .completed(let cached):
+                return duplicateResult(
+                    from: cached,
+                    status: (cached["partial_write"] as? Bool) == true
+                        ? "duplicate_unconfirmed_suppressed"
+                        : "duplicate_suppressed"
+                )
+            case .inFlight:
+                return inFlightDuplicateResult(
+                    action: action,
+                    connection: connection,
+                    input: input,
+                    targetRoomId: targetRoomId,
+                    idempotencyKey: idempotencyKey,
+                    redactor: redactor
+                )
+            }
         }
 
-        let prepared = try prepareRequest(
-            action: customAction,
-            configuration: customHTTP,
-            connection: connection,
-            input: input,
-            idempotencyKey: idempotencyKey,
-            redactor: redactor
-        )
+        let prepared: AgentChannelPreparedHTTPRequest
+        do {
+            prepared = try prepareRequest(
+                action: customAction,
+                configuration: customHTTP,
+                connection: connection,
+                input: input,
+                idempotencyKey: idempotencyKey,
+                redactor: redactor
+            )
+        } catch {
+            if let reservedIdempotencyKey {
+                idempotencyLedger.finishFailure(for: reservedIdempotencyKey)
+            }
+            throw error
+        }
 
         if Task.isCancelled {
+            if let reservedIdempotencyKey {
+                idempotencyLedger.finishFailure(for: reservedIdempotencyKey)
+            }
             throw AgentChannelCustomJSONRunnerError.cancelled(partialWriteStatus: nil)
         }
 
@@ -436,14 +498,55 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
             )
         } catch is CancellationError {
             let status = mode == .write && dispatched ? "cancelled_after_dispatch" : nil
+            if let reservedIdempotencyKey {
+                if let status {
+                    finishUnconfirmedWrite(
+                        action: action,
+                        connection: connection,
+                        input: input,
+                        targetRoomId: targetRoomId,
+                        idempotencyKey: reservedIdempotencyKey,
+                        reason: status,
+                        redactor: redactor
+                    )
+                } else {
+                    idempotencyLedger.finishFailure(for: reservedIdempotencyKey)
+                }
+            }
             throw AgentChannelCustomJSONRunnerError.cancelled(partialWriteStatus: status)
         } catch let error as AgentChannelHTTPResponseTooLargeError {
+            if let reservedIdempotencyKey {
+                finishUnconfirmedWrite(
+                    action: action,
+                    connection: connection,
+                    input: input,
+                    targetRoomId: targetRoomId,
+                    idempotencyKey: reservedIdempotencyKey,
+                    reason: "Response exceeded \(error.maxBytes) bytes.",
+                    redactor: redactor
+                )
+            }
             throw AgentChannelCustomJSONRunnerError.invalidResponse(
                 "Response exceeded \(error.maxBytes) bytes.",
                 partialWriteStatus: mode == .write ? "response_too_large_unconfirmed" : nil
             )
         } catch {
             let status = mode == .write && dispatched ? "transport_unconfirmed" : nil
+            if let reservedIdempotencyKey {
+                if status != nil {
+                    finishUnconfirmedWrite(
+                        action: action,
+                        connection: connection,
+                        input: input,
+                        targetRoomId: targetRoomId,
+                        idempotencyKey: reservedIdempotencyKey,
+                        reason: error.localizedDescription,
+                        redactor: redactor
+                    )
+                } else {
+                    idempotencyLedger.finishFailure(for: reservedIdempotencyKey)
+                }
+            }
             throw AgentChannelCustomJSONRunnerError.transport(
                 redactor.redact(error.localizedDescription),
                 partialWriteStatus: status
@@ -452,10 +555,32 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
 
         if Task.isCancelled {
             let status = mode == .write ? "cancelled_after_response" : nil
+            if let reservedIdempotencyKey {
+                finishUnconfirmedWrite(
+                    action: action,
+                    connection: connection,
+                    input: input,
+                    targetRoomId: targetRoomId,
+                    idempotencyKey: reservedIdempotencyKey,
+                    reason: status ?? "cancelled",
+                    redactor: redactor
+                )
+            }
             throw AgentChannelCustomJSONRunnerError.cancelled(partialWriteStatus: status)
         }
 
         guard let http = response as? HTTPURLResponse else {
+            if let reservedIdempotencyKey {
+                finishUnconfirmedWrite(
+                    action: action,
+                    connection: connection,
+                    input: input,
+                    targetRoomId: targetRoomId,
+                    idempotencyKey: reservedIdempotencyKey,
+                    reason: "Transport did not return an HTTP response.",
+                    redactor: redactor
+                )
+            }
             throw AgentChannelCustomJSONRunnerError.invalidResponse(
                 "Transport did not return an HTTP response.",
                 partialWriteStatus: mode == .write ? "response_unconfirmed" : nil
@@ -463,6 +588,17 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
         }
 
         guard data.count <= responseLimit else {
+            if let reservedIdempotencyKey {
+                finishUnconfirmedWrite(
+                    action: action,
+                    connection: connection,
+                    input: input,
+                    targetRoomId: targetRoomId,
+                    idempotencyKey: reservedIdempotencyKey,
+                    reason: "Response exceeded \(responseLimit) bytes.",
+                    redactor: redactor
+                )
+            }
             throw AgentChannelCustomJSONRunnerError.invalidResponse(
                 "Response exceeded \(responseLimit) bytes.",
                 partialWriteStatus: mode == .write ? "response_too_large_unconfirmed" : nil
@@ -472,6 +608,18 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
         guard customAction.successStatusCodes.contains(http.statusCode) else {
             let bodyText = String(bytes: data.prefix(600), encoding: .utf8) ?? ""
             let body = redactor.redact(bodyText)
+            if let reservedIdempotencyKey {
+                finishUnconfirmedWrite(
+                    action: action,
+                    connection: connection,
+                    input: input,
+                    targetRoomId: targetRoomId,
+                    idempotencyKey: reservedIdempotencyKey,
+                    statusCode: http.statusCode,
+                    reason: body,
+                    redactor: redactor
+                )
+            }
             throw AgentChannelCustomJSONRunnerError.httpStatus(
                 statusCode: http.statusCode,
                 body: body,
@@ -479,27 +627,73 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
             )
         }
 
-        let json = try parseJSON(data, mode: mode)
-        var result = try mapResult(
-            json,
-            action: resultAction ?? action,
-            connection: connection,
-            customAction: customAction,
-            statusCode: http.statusCode,
-            input: input,
-            targetRoomId: targetRoomId,
-            idempotencyKey: idempotencyKey,
-            redactor: redactor,
-            standardKindOverride: standardKindOverride
-        )
+        let json: Any
+        var result: [String: Any]
+        do {
+            json = try parseJSON(data, mode: mode)
+            result = try mapResult(
+                json,
+                action: resultAction ?? action,
+                connection: connection,
+                customAction: customAction,
+                statusCode: http.statusCode,
+                input: input,
+                targetRoomId: targetRoomId,
+                idempotencyKey: idempotencyKey,
+                redactor: redactor,
+                standardKindOverride: standardKindOverride
+            )
+        } catch {
+            if let reservedIdempotencyKey {
+                idempotencyLedger.finishUnconfirmed(
+                    unconfirmedWriteResult(
+                        action: action,
+                        connection: connection,
+                        input: input,
+                        targetRoomId: targetRoomId,
+                        idempotencyKey: reservedIdempotencyKey,
+                        statusCode: http.statusCode,
+                        reason: error.localizedDescription,
+                        redactor: redactor
+                    ),
+                    for: reservedIdempotencyKey
+                )
+            }
+            throw error
+        }
 
         if mode == .write {
             result["delivery_status"] = "confirmed"
-            if let idempotencyKey {
-                idempotencyLedger.record(result, for: idempotencyKey)
+            if let reservedIdempotencyKey {
+                idempotencyLedger.finishSuccess(result, for: reservedIdempotencyKey)
             }
         }
         return result
+    }
+
+    private func finishUnconfirmedWrite(
+        action: AgentChannelAction,
+        connection: AgentChannelConnection,
+        input: [String: AgentChannelTemplateValue],
+        targetRoomId: String?,
+        idempotencyKey: String,
+        statusCode: Int = 0,
+        reason: String,
+        redactor: AgentChannelSecretRedactor
+    ) {
+        idempotencyLedger.finishUnconfirmed(
+            unconfirmedWriteResult(
+                action: action,
+                connection: connection,
+                input: input,
+                targetRoomId: targetRoomId,
+                idempotencyKey: idempotencyKey,
+                statusCode: statusCode,
+                reason: reason,
+                redactor: redactor
+            ),
+            for: idempotencyKey
+        )
     }
 
     private func dryRunWriteAction(
@@ -511,6 +705,12 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
     ) throws -> [String: Any] {
         let customHTTP = try requireConfiguration(connection)
         let customAction = try requireAction(action, connection: connection, configuration: customHTTP)
+        try authorize(
+            action,
+            connection: connection,
+            input: input,
+            mode: .write
+        )
         let redactor = AgentChannelSecretRedactor()
         let idempotencyKey = try idempotencyKey(
             for: customAction,
@@ -758,9 +958,9 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
         redactor: AgentChannelSecretRedactor
     ) throws -> [[String: Any]] {
         let array = try Self.arrayValue(json, path: mapping.itemsPath ?? defaultItemsPath)
-        return array.enumerated().map { index, item in
-            let id = Self.stringValue(item, path: mapping.idPath ?? "id") ?? "\(index)"
-            let name = Self.stringValue(item, path: mapping.namePath ?? "name") ?? ""
+        return try array.prefix(Self.maxMappedRows).enumerated().map { index, item in
+            let id = try Self.stringValue(item, path: mapping.idPath ?? "id") ?? "\(index)"
+            let name = try Self.stringValue(item, path: mapping.namePath ?? "name") ?? ""
             return [
                 "id": id,
                 "name": name,
@@ -784,8 +984,9 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
         redactor: AgentChannelSecretRedactor
     ) throws -> [String: Any] {
         let array = try Self.arrayValue(json, path: mapping.itemsPath ?? defaultItemsPath)
-        let messages = array.enumerated().map { index, item in
-            mapMessage(
+        let rowLimit = min(limit ?? Self.maxMappedRows, Self.maxMappedRows)
+        let messages = try array.prefix(rowLimit).enumerated().map { index, item in
+            try mapMessage(
                 item,
                 mapping: mapping,
                 fallbackRoomId: roomId,
@@ -819,7 +1020,7 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
                 partialWriteStatus: "malformed_write_response"
             )
         }
-        return mapMessage(
+        return try mapMessage(
             object,
             mapping: mapping,
             fallbackRoomId: fallbackRoomId,
@@ -836,15 +1037,15 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
         fallbackMessageId: String?,
         fallbackContent: String? = nil,
         redactor: AgentChannelSecretRedactor
-    ) -> [String: Any] {
+    ) throws -> [String: Any] {
         [
-            "id": Self.stringValue(item, path: mapping.idPath ?? "id") ?? fallbackMessageId ?? "",
-            "room_id": Self.stringValue(item, path: mapping.roomIdPath ?? "room_id") ?? fallbackRoomId,
-            "thread_id": Self.stringValue(item, path: mapping.threadIdPath ?? "thread_id") ?? "",
-            "content": redactor.redact(Self.stringValue(item, path: mapping.contentPath ?? "content") ?? fallbackContent ?? ""),
-            "author_id": Self.stringValue(item, path: mapping.authorIdPath ?? "author_id") ?? "",
-            "author_name": Self.stringValue(item, path: mapping.authorNamePath ?? "author_name") ?? "",
-            "timestamp": Self.stringValue(item, path: mapping.timestampPath ?? "timestamp") ?? "",
+            "id": try Self.stringValue(item, path: mapping.idPath ?? "id") ?? fallbackMessageId ?? "",
+            "room_id": try Self.stringValue(item, path: mapping.roomIdPath ?? "room_id") ?? fallbackRoomId,
+            "thread_id": try Self.stringValue(item, path: mapping.threadIdPath ?? "thread_id") ?? "",
+            "content": redactor.redact(try Self.stringValue(item, path: mapping.contentPath ?? "content") ?? fallbackContent ?? ""),
+            "author_id": try Self.stringValue(item, path: mapping.authorIdPath ?? "author_id") ?? "",
+            "author_name": try Self.stringValue(item, path: mapping.authorNamePath ?? "author_name") ?? "",
+            "timestamp": try Self.stringValue(item, path: mapping.timestampPath ?? "timestamp") ?? "",
             "raw": redactor.redactJSON(item),
         ]
     }
@@ -904,9 +1105,99 @@ final class AgentChannelCustomJSONRunner: AgentChannelCustomJSONRunning, @unchec
         throw AgentChannelCustomJSONRunnerError.actionNotConfigured(action: action, connectionId: connection.id)
     }
 
+    private func authorize(
+        _ action: AgentChannelAction,
+        connection: AgentChannelConnection,
+        input: [String: AgentChannelTemplateValue],
+        mode: AgentChannelCustomJSONAuthorizationMode
+    ) throws {
+        do {
+            try authorizationPolicy.authorize(
+                AgentChannelCustomJSONAuthorizationRequest(
+                    connectionId: connection.id,
+                    action: action,
+                    mode: mode,
+                    spaceId: input["space_id"]?.rawString,
+                    roomId: input["room_id"]?.rawString,
+                    threadId: input["thread_id"]?.rawString,
+                    roomIds: input["room_ids"]?.stringArrayValue ?? []
+                )
+            )
+        } catch let error as AgentChannelCustomJSONRunnerError {
+            throw error
+        } catch {
+            throw AgentChannelCustomJSONRunnerError.invalidRequest(
+                "Authorization denied: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func duplicateResult(from cached: [String: Any], status: String) -> [String: Any] {
+        var duplicate = cached
+        duplicate["duplicate"] = true
+        duplicate["delivery_status"] = status
+        return duplicate
+    }
+
+    private func inFlightDuplicateResult(
+        action: AgentChannelAction,
+        connection: AgentChannelConnection,
+        input: [String: AgentChannelTemplateValue],
+        targetRoomId: String?,
+        idempotencyKey: String,
+        redactor: AgentChannelSecretRedactor
+    ) -> [String: Any] {
+        var result: [String: Any] = [
+            "connection_id": connection.id,
+            "kind": action == .replyThread ? "custom_json_thread_reply_sent" : "custom_json_message_sent",
+            "standard_kind": action == .replyThread ? "thread_reply_sent" : "message_sent",
+            "channel_id": targetRoomId ?? input["room_id"]?.rawString ?? "",
+            "provider_status_code": NSNull(),
+            "partial_write": true,
+            "duplicate": true,
+            "delivery_status": "duplicate_in_flight_suppressed",
+            "idempotency_key": redactor.redact(idempotencyKey),
+        ]
+        if action == .replyThread {
+            result["thread_id"] = targetRoomId ?? input["thread_id"]?.rawString ?? ""
+        }
+        return result
+    }
+
+    private func unconfirmedWriteResult(
+        action: AgentChannelAction,
+        connection: AgentChannelConnection,
+        input: [String: AgentChannelTemplateValue],
+        targetRoomId: String?,
+        idempotencyKey: String,
+        statusCode: Int,
+        reason: String,
+        redactor: AgentChannelSecretRedactor
+    ) -> [String: Any] {
+        var result: [String: Any] = [
+            "connection_id": connection.id,
+            "kind": action == .replyThread ? "custom_json_thread_reply_sent" : "custom_json_message_sent",
+            "standard_kind": action == .replyThread ? "thread_reply_sent" : "message_sent",
+            "channel_id": targetRoomId ?? input["room_id"]?.rawString ?? "",
+            "provider_status_code": statusCode,
+            "partial_write": true,
+            "delivery_status": "unconfirmed_after_response_mapping_failure",
+            "idempotency_key": redactor.redact(idempotencyKey),
+            "failure": redactor.redact(reason),
+        ]
+        if action == .replyThread {
+            result["thread_id"] = targetRoomId ?? input["thread_id"]?.rawString ?? ""
+        }
+        return result
+    }
+
     private func requireSpace(_ spaceId: String, connection: AgentChannelConnection) throws {
-        if !connection.spaceAllowlist.isEmpty && !connection.spaceAllowlist.contains(spaceId) {
-            throw AgentChannelCustomJSONRunnerError.spaceNotAllowlisted(spaceId: spaceId, connectionId: connection.id)
+        let normalized = AgentChannelConnection.normalizedId(spaceId)
+        guard !normalized.isEmpty, connection.spaceAllowlist.contains(normalized) else {
+            throw AgentChannelCustomJSONRunnerError.spaceNotAllowlisted(
+                spaceId: normalized,
+                connectionId: connection.id
+            )
         }
     }
 
@@ -962,15 +1253,48 @@ private struct AgentChannelPreparedHTTPRequest {
 }
 
 final class AgentChannelCustomJSONIdempotencyLedger: @unchecked Sendable {
-    private let lock = NSLock()
-    private var results: [String: [String: Any]] = [:]
-
-    func result(for key: String) -> [String: Any]? {
-        lock.withLock { results[key] }
+    enum Reservation {
+        case reserved
+        case inFlight
+        case completed([String: Any])
     }
 
-    func record(_ result: [String: Any], for key: String) {
-        lock.withLock { results[key] = result }
+    private enum Entry {
+        case inFlight
+        case completed([String: Any])
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+
+    func reserve(_ key: String) -> Reservation {
+        lock.withLock {
+            switch entries[key] {
+            case .completed(let result):
+                return .completed(result)
+            case .inFlight:
+                return .inFlight
+            case nil:
+                entries[key] = .inFlight
+                return .reserved
+            }
+        }
+    }
+
+    func finishSuccess(_ result: [String: Any], for key: String) {
+        lock.withLock { entries[key] = .completed(result) }
+    }
+
+    func finishUnconfirmed(_ result: [String: Any], for key: String) {
+        lock.withLock { entries[key] = .completed(result) }
+    }
+
+    func finishFailure(for key: String) {
+        lock.withLock {
+            if case .inFlight? = entries[key] {
+                entries.removeValue(forKey: key)
+            }
+        }
     }
 }
 
@@ -1001,6 +1325,11 @@ private final class AgentChannelSecretRedactor: @unchecked Sendable {
             if let queryEncoded = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
                 queryEncoded != value {
                 secrets["\(name)_url_query"] = queryEncoded
+            }
+            if let strictQueryEncoded = value.addingPercentEncoding(
+                withAllowedCharacters: .agentChannelQueryValueAllowed
+            ), strictQueryEncoded != value {
+                secrets["\(name)_url_query_strict"] = strictQueryEncoded
             }
         }
     }
@@ -1315,6 +1644,13 @@ extension AgentChannelCustomJSONRunner {
         }
     }
 
+    static func validateConfigurationURL(_ configuration: AgentChannelCustomHTTPConfiguration) throws {
+        guard let url = URL(string: configuration.baseURL) else {
+            throw AgentChannelCustomJSONRunnerError.blockedURL(BlockedURLMessage.baseURLNotAbsolute)
+        }
+        try validateURL(url, configuration: configuration)
+    }
+
     private static func effectiveAllowedHosts(
         configuration: AgentChannelCustomHTTPConfiguration,
         baseHost: String? = nil
@@ -1478,6 +1814,7 @@ extension AgentChannelCustomJSONRunner {
     }
 
     private static func arrayValue(_ json: Any, path: String) throws -> [[String: Any]] {
+        try AgentChannelCustomHTTPResponseMapping.validatePath(path)
         guard let value = value(in: json, path: path) else {
             throw AgentChannelCustomJSONRunnerError.invalidResponse(
                 "Missing array at response mapping path `\(path)`.",
@@ -1496,7 +1833,8 @@ extension AgentChannelCustomJSONRunner {
         )
     }
 
-    private static func stringValue(_ json: Any, path: String) -> String? {
+    private static func stringValue(_ json: Any, path: String) throws -> String? {
+        try AgentChannelCustomHTTPResponseMapping.validatePath(path)
         guard let value = value(in: json, path: path) else { return nil }
         if let string = value as? String { return string }
         if let number = value as? NSNumber { return number.stringValue }
@@ -1506,7 +1844,8 @@ extension AgentChannelCustomJSONRunner {
     private static func value(in json: Any, path: String) -> Any? {
         if path == "$" || path.isEmpty { return json }
         var current: Any? = json
-        for rawPart in path.split(separator: ".").map(String.init) {
+        let normalizedPath = path.hasPrefix("$.") ? String(path.dropFirst(2)) : path
+        for rawPart in normalizedPath.split(separator: ".").map(String.init) {
             guard let value = current else { return nil }
             if let dict = value as? [String: Any] {
                 current = dict[rawPart]

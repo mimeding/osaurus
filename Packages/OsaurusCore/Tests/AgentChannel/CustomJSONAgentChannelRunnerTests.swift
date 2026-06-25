@@ -125,6 +125,50 @@ struct CustomJSONAgentChannelRunnerTests {
         }
     }
 
+    @Test func listRoomsRequiresExplicitSpaceAllowlistBeforeHTTP() async {
+        let client = RecordingAgentChannelHTTPClient { request in
+            Issue.record("HTTP should not be dispatched without an allowlisted space: \(request)")
+            return jsonResponse(for: request, body: #"{"rooms":[]}"#)
+        }
+        let runner = makeRunner(client: client)
+        let connection = makeConnection(
+            spaceAllowlist: [],
+            customHTTP: makeConfiguration(
+                actions: [.listRooms: AgentChannelCustomHTTPAction(path: "/spaces/{{input.space_id}}/rooms")]
+            )
+        )
+
+        let error = await expectCustomJSONError {
+            try await runner.listRooms(connection: connection, spaceId: "ops")
+        }
+
+        guard case .spaceNotAllowlisted(let spaceId, let connectionId)? = error else {
+            Issue.record("Expected spaceNotAllowlisted, got \(String(describing: error))")
+            return
+        }
+        #expect(spaceId == "ops")
+        #expect(connectionId == "custom-json")
+        #expect(client.requestCount == 0)
+    }
+
+    @Test func managerRejectsUnsafeBaseURLBeforeSave() async throws {
+        try await withIsolatedAgentChannelConfiguration {
+            let manager = AgentChannelConnectionManager()
+            let unsafeBaseURL = "https://127.0.0.1"
+
+            #expect(throws: AgentChannelConnectionManagerError.invalidCustomHTTPBaseURL(unsafeBaseURL)) {
+                try manager.upsertConnection(
+                    makeConnection(
+                        customHTTP: makeConfiguration(
+                            baseURL: unsafeBaseURL,
+                            actions: [.listSpaces: AgentChannelCustomHTTPAction(path: "/spaces")]
+                        )
+                    )
+                )
+            }
+        }
+    }
+
     @Test func queryTemplateEscapesInputWithoutAddingSiblingParameters() async throws {
         let injected = "find me&role=admin+plus?x#frag"
         let client = RecordingAgentChannelHTTPClient { request in
@@ -274,7 +318,7 @@ struct CustomJSONAgentChannelRunnerTests {
     }
 
     @Test func draftMessageRedactsSecretURLAndNeverDispatchesHTTP() throws {
-        let secret = "super/secret-token"
+        let secret = "super+secret=token&x?y#z"
         let client = RecordingAgentChannelHTTPClient { request in
             Issue.record("HTTP should not be dispatched for draft: \(request)")
             return jsonResponse(for: request, body: #"{"id":"unexpected"}"#)
@@ -301,8 +345,39 @@ struct CustomJSONAgentChannelRunnerTests {
         let resultText = String(describing: result)
         #expect(client.requestCount == 0)
         #expect(!resultText.contains(secret))
-        #expect(!resultText.contains("super%2Fsecret-token"))
+        #expect(!resultText.contains("super%2Bsecret%3Dtoken%26x%3Fy%23z"))
         #expect(resultText.contains("[REDACTED:api_token]"))
+    }
+
+    @Test func transportErrorsRedactStrictQueryEncodedSecrets() async {
+        let secret = "super+secret=token&x?y#z"
+        let client = RecordingAgentChannelHTTPClient { request in
+            throw EchoingTransportError(message: request.url?.absoluteString ?? "")
+        }
+        let runner = makeRunner(client: client, secrets: ["api_token": secret])
+        let connection = makeConnection(
+            secrets: [
+                AgentChannelSecretReference(name: "api_token", keychainId: "custom-api-token"),
+            ],
+            customHTTP: makeConfiguration(
+                actions: [
+                    .listSpaces: AgentChannelCustomHTTPAction(
+                        path: "/spaces",
+                        query: ["token": "{{secret.api_token}}"]
+                    ),
+                ]
+            )
+        )
+
+        let error = await expectCustomJSONError {
+            try await runner.listSpaces(connection: connection)
+        }
+
+        let description = error?.localizedDescription ?? ""
+        #expect(!description.contains(secret))
+        #expect(!description.contains("super%2Bsecret%3Dtoken%26x%3Fy%23z"))
+        #expect(description.contains("[REDACTED:api_token"))
+        #expect(client.requestCount == 1)
     }
 
     @Test func idempotencySecretTemplateIsRedactedFromDraftAndSendResults() async throws {
@@ -427,6 +502,36 @@ struct CustomJSONAgentChannelRunnerTests {
         #expect(client.requestCount == 0)
     }
 
+    @Test func authorizationPolicyHookRejectsBeforeHTTP() async {
+        let client = RecordingAgentChannelHTTPClient { request in
+            Issue.record("HTTP should not be dispatched when policy denies: \(request)")
+            return jsonResponse(for: request, body: #"{"messages":[]}"#)
+        }
+        let policy = DenyingAgentChannelAuthorizationPolicy(message: "group ops-only denied")
+        let runner = makeRunner(client: client, authorizationPolicy: policy)
+        let connection = makeConnection(
+            customHTTP: makeConfiguration(
+                actions: [
+                    .readMessages: AgentChannelCustomHTTPAction(path: "/rooms/{{input.room_id}}/messages"),
+                ]
+            )
+        )
+
+        let error = await expectCustomJSONError {
+            try await runner.readMessages(connection: connection, roomId: "room-1", limit: 10)
+        }
+
+        guard case .invalidRequest(let message)? = error else {
+            Issue.record("Expected invalidRequest, got \(String(describing: error))")
+            return
+        }
+        #expect(message.contains("Authorization denied"))
+        #expect(message.contains("group ops-only denied"))
+        #expect(policy.requests.map(\.action) == [.readMessages])
+        #expect(policy.requests.map(\.roomId) == ["room-1"])
+        #expect(client.requestCount == 0)
+    }
+
     @Test func duplicateDeliveryUsesIdempotencyLedger() async throws {
         let client = RecordingAgentChannelHTTPClient { request in
             #expect(request.value(forHTTPHeaderField: "Idempotency-Key")?.isEmpty == false)
@@ -466,6 +571,54 @@ struct CustomJSONAgentChannelRunnerTests {
         #expect(second["partial_write"] as? Bool == false)
     }
 
+    @Test func concurrentDuplicateDeliveryIsSuppressedWhileFirstSendInFlight() async throws {
+        let client = RecordingAgentChannelHTTPClient { request in
+            #expect(request.value(forHTTPHeaderField: "Idempotency-Key")?.isEmpty == false)
+            try await Task.sleep(nanoseconds: 50_000_000)
+            return jsonResponse(for: request, body: #"{"id":"provider-message-1","content":"sent"}"#)
+        }
+        let runner = makeRunner(client: client)
+        let connection = makeConnection(
+            customHTTP: makeConfiguration(
+                actions: [
+                    .sendMessage: AgentChannelCustomHTTPAction(
+                        method: "POST",
+                        path: "/rooms/{{input.room_id}}/messages",
+                        bodyTemplate: #"{"content":{{input.content}}}"#,
+                        idempotency: AgentChannelCustomHTTPIdempotency()
+                    ),
+                ]
+            )
+        )
+
+        let firstTask = Task<String, Error> {
+            let result = try await runner.sendMessage(
+                connection: connection,
+                roomId: "room-1",
+                content: "same in-flight message",
+                confirmSend: true
+            )
+            return result["delivery_status"] as? String ?? ""
+        }
+        for _ in 0 ..< 100 where client.requestCount == 0 {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        let second = try await runner.sendMessage(
+            connection: connection,
+            roomId: "room-1",
+            content: "same in-flight message",
+            confirmSend: true
+        )
+        let firstStatus = try await firstTask.value
+
+        #expect(client.requestCount == 1)
+        #expect(firstStatus == "confirmed")
+        #expect(second["delivery_status"] as? String == "duplicate_in_flight_suppressed")
+        #expect(second["duplicate"] as? Bool == true)
+        #expect(second["partial_write"] as? Bool == true)
+    }
+
     @Test func responseExceedingLimitIsRejected() async {
         let client = RecordingAgentChannelHTTPClient { request in
             jsonResponse(for: request, body: String(repeating: "x", count: 1_025))
@@ -489,6 +642,175 @@ struct CustomJSONAgentChannelRunnerTests {
         #expect(message.contains("1024"))
         #expect(client.responseLimits == [1_024])
         #expect(client.requestCount == 1)
+    }
+
+    @Test func managerRejectsInvalidResponseIdPathBeforeSave() async throws {
+        try await withIsolatedAgentChannelConfiguration {
+            let manager = AgentChannelConnectionManager()
+            let invalidPath = "message..id"
+
+            #expect(
+                throws: AgentChannelConnectionManagerError.invalidCustomHTTPResponseMapping(
+                    action: "send_message",
+                    path: invalidPath
+                )
+            ) {
+                try manager.upsertConnection(
+                    makeConnection(
+                        customHTTP: makeConfiguration(
+                            actions: [
+                                .sendMessage: AgentChannelCustomHTTPAction(
+                                    method: "POST",
+                                    path: "/rooms/{{input.room_id}}/messages",
+                                    bodyTemplate: #"{"content":{{input.content}}}"#,
+                                    idempotency: AgentChannelCustomHTTPIdempotency(
+                                        responseIdPath: invalidPath
+                                    )
+                                ),
+                            ]
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    @Test func responseMappingRejectsUnsupportedPaths() async {
+        let client = RecordingAgentChannelHTTPClient { request in
+            jsonResponse(for: request, body: #"{"messages":[]}"#)
+        }
+        let runner = makeRunner(client: client)
+        let connection = makeConnection(
+            customHTTP: makeConfiguration(
+                actions: [
+                    .readMessages: AgentChannelCustomHTTPAction(
+                        path: "/rooms/{{input.room_id}}/messages",
+                        responseMapping: AgentChannelCustomHTTPResponseMapping(itemsPath: "messages..items")
+                    ),
+                ]
+            )
+        )
+
+        let error = await expectCustomJSONError {
+            try await runner.readMessages(connection: connection, roomId: "room-1", limit: 10)
+        }
+
+        guard case .invalidResponse(let message, nil)? = error else {
+            Issue.record("Expected invalidResponse, got \(String(describing: error))")
+            return
+        }
+        #expect(message.contains("empty segments"))
+        #expect(client.requestCount == 1)
+    }
+
+    @Test func responseMappingCapsMappedRows() async throws {
+        let spacesJSON = (0 ..< 150)
+            .map { #"{"id":"space-\#($0)","name":"Space \#($0)"}"# }
+            .joined(separator: ",")
+        let client = RecordingAgentChannelHTTPClient { request in
+            jsonResponse(for: request, body: #"{"spaces":[\#(spacesJSON)]}"#)
+        }
+        let runner = makeRunner(client: client)
+        let connection = makeConnection(
+            customHTTP: makeConfiguration(
+                actions: [.listSpaces: AgentChannelCustomHTTPAction(path: "/spaces")]
+            )
+        )
+
+        let spaces = try await runner.listSpaces(connection: connection)
+
+        #expect(spaces.count == 100)
+        #expect(spaces.first?["id"] as? String == "space-0")
+        #expect(spaces.last?["id"] as? String == "space-99")
+        #expect(client.requestCount == 1)
+    }
+
+    @Test func malformedSuccessWriteResponseDoesNotAllowImmediateDuplicateDispatch() async throws {
+        let client = RecordingAgentChannelHTTPClient { request in
+            jsonResponse(for: request, body: #"{"#)
+        }
+        let runner = makeRunner(client: client)
+        let connection = makeConnection(
+            customHTTP: makeConfiguration(
+                actions: [
+                    .sendMessage: AgentChannelCustomHTTPAction(
+                        method: "POST",
+                        path: "/rooms/{{input.room_id}}/messages",
+                        bodyTemplate: #"{"content":{{input.content}}}"#,
+                        idempotency: AgentChannelCustomHTTPIdempotency()
+                    ),
+                ]
+            )
+        )
+
+        let error = await expectCustomJSONError {
+            try await runner.sendMessage(
+                connection: connection,
+                roomId: "room-1",
+                content: "malformed response",
+                confirmSend: true
+            )
+        }
+        guard case .invalidResponse(_, "malformed_write_response")? = error else {
+            Issue.record("Expected malformed write response, got \(String(describing: error))")
+            return
+        }
+
+        let duplicate = try await runner.sendMessage(
+            connection: connection,
+            roomId: "room-1",
+            content: "malformed response",
+            confirmSend: true
+        )
+
+        #expect(client.requestCount == 1)
+        #expect(duplicate["duplicate"] as? Bool == true)
+        #expect(duplicate["partial_write"] as? Bool == true)
+        #expect(duplicate["delivery_status"] as? String == "duplicate_unconfirmed_suppressed")
+    }
+
+    @Test func transportFailureAfterWriteDispatchDoesNotAllowImmediateDuplicateDispatch() async throws {
+        let client = RecordingAgentChannelHTTPClient { _ in
+            throw URLError(.networkConnectionLost)
+        }
+        let runner = makeRunner(client: client)
+        let connection = makeConnection(
+            customHTTP: makeConfiguration(
+                actions: [
+                    .sendMessage: AgentChannelCustomHTTPAction(
+                        method: "POST",
+                        path: "/rooms/{{input.room_id}}/messages",
+                        bodyTemplate: #"{"content":{{input.content}}}"#,
+                        idempotency: AgentChannelCustomHTTPIdempotency()
+                    ),
+                ]
+            )
+        )
+
+        let error = await expectCustomJSONError {
+            try await runner.sendMessage(
+                connection: connection,
+                roomId: "room-1",
+                content: "transport uncertain",
+                confirmSend: true
+            )
+        }
+        guard case .transport(_, "transport_unconfirmed")? = error else {
+            Issue.record("Expected transport_unconfirmed, got \(String(describing: error))")
+            return
+        }
+
+        let duplicate = try await runner.sendMessage(
+            connection: connection,
+            roomId: "room-1",
+            content: "transport uncertain",
+            confirmSend: true
+        )
+
+        #expect(client.requestCount == 1)
+        #expect(duplicate["duplicate"] as? Bool == true)
+        #expect(duplicate["partial_write"] as? Bool == true)
+        #expect(duplicate["delivery_status"] as? String == "duplicate_unconfirmed_suppressed")
     }
 
     @Test func malformedReadResponseIsRejected() async {
@@ -566,11 +888,14 @@ struct CustomJSONAgentChannelRunnerTests {
 
 private func makeRunner(
     client: RecordingAgentChannelHTTPClient,
-    secrets: [String: String] = [:]
+    secrets: [String: String] = [:],
+    authorizationPolicy: any AgentChannelCustomJSONAuthorizationPolicy =
+        PermissiveAgentChannelCustomJSONAuthorizationPolicy()
 ) -> AgentChannelCustomJSONRunner {
     AgentChannelCustomJSONRunner(
         httpClient: client,
-        secretResolver: StaticAgentChannelSecretResolver(secrets: secrets)
+        secretResolver: StaticAgentChannelSecretResolver(secrets: secrets),
+        authorizationPolicy: authorizationPolicy
     )
 }
 
@@ -595,6 +920,7 @@ private func makeConfiguration(
 private func makeConnection(
     id: String = "custom-json",
     name: String = "Custom JSON",
+    spaceAllowlist: [String] = ["space-1"],
     readRooms: [String] = ["room-1"],
     writeRooms: [String] = ["room-1"],
     writeEnabled: Bool = true,
@@ -607,6 +933,7 @@ private func makeConnection(
         kind: .customHTTP,
         enabled: true,
         supportedActions: AgentChannelAction.allCases,
+        spaceAllowlist: spaceAllowlist,
         readRoomAllowlist: readRooms,
         writeRoomAllowlist: writeRooms,
         writeEnabled: writeEnabled,
@@ -627,6 +954,25 @@ private func expectCustomJSONError<T>(
     } catch {
         Issue.record("Expected AgentChannelCustomJSONRunnerError, got \(error)")
         return nil
+    }
+}
+
+private func withIsolatedAgentChannelConfiguration(
+    body: @Sendable () async throws -> Void
+) async throws {
+    try await StoragePathsTestLock.shared.run {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "osaurus-agent-channel-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let previousDirectory = AgentChannelConfigurationStore.overrideDirectory
+        AgentChannelConfigurationStore.overrideDirectory = directory
+        defer {
+            AgentChannelConfigurationStore.overrideDirectory = previousDirectory
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try await body()
     }
 }
 
@@ -691,4 +1037,33 @@ private struct StaticAgentChannelSecretResolver: AgentChannelSecretResolving {
     func secret(named name: String, keychainId: String, connection: AgentChannelConnection) -> String? {
         secrets[name] ?? secrets[keychainId]
     }
+}
+
+private final class DenyingAgentChannelAuthorizationPolicy: AgentChannelCustomJSONAuthorizationPolicy, @unchecked Sendable {
+    private let lock = NSLock()
+    private let message: String
+    private var capturedRequests: [AgentChannelCustomJSONAuthorizationRequest] = []
+
+    init(message: String) {
+        self.message = message
+    }
+
+    var requests: [AgentChannelCustomJSONAuthorizationRequest] {
+        lock.withLock { capturedRequests }
+    }
+
+    func authorize(_ request: AgentChannelCustomJSONAuthorizationRequest) throws {
+        lock.withLock { capturedRequests.append(request) }
+        throw DeniedAgentChannelAuthorization(message: message)
+    }
+}
+
+private struct DeniedAgentChannelAuthorization: LocalizedError {
+    var message: String
+    var errorDescription: String? { message }
+}
+
+private struct EchoingTransportError: LocalizedError, Sendable {
+    var message: String
+    var errorDescription: String? { message }
 }

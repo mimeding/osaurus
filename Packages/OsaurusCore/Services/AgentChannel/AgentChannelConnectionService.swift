@@ -372,8 +372,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             }
             do {
                 if let providerEventId,
-                    try messageStore.isEventSeen(connectionId: connection.id, providerEventId: providerEventId)
-                {
+                    try messageStore.isEventSeen(connectionId: connection.id, providerEventId: providerEventId) {
                     return deny("duplicate_event_\(policy.duplicateBehavior)", decision: .duplicate)
                 }
             } catch {
@@ -525,7 +524,36 @@ final class AgentChannelConnectionService: @unchecked Sendable {
 
         switch connection.kind {
         case .customHTTP:
-            return (.configuredOnly, "Custom HTTP action is configured, but execution is not enabled yet.")
+            guard let customHTTP = connection.customHTTP else {
+                return (.unavailable, "Custom HTTP configuration is missing.")
+            }
+            guard action == .diagnostics || customHTTP.actions[action.rawValue] != nil else {
+                return (.unavailable, "No custom HTTP mapping is configured for this action.")
+            }
+            switch action {
+            case .diagnostics:
+                return (.available, nil)
+            case .listSpaces:
+                return (.available, nil)
+            case .listRooms:
+                guard !connection.spaceAllowlist.isEmpty else {
+                    return (.unavailable, "No spaces are allowlisted for this connection.")
+                }
+                return (.available, nil)
+            case .readMessages, .searchMessages:
+                guard !connection.readRoomAllowlist.isEmpty else {
+                    return (.unavailable, "No rooms are allowlisted for read access.")
+                }
+                return (.available, nil)
+            case .draftMessage, .sendMessage, .replyThread:
+                guard connection.writeEnabled else {
+                    return (.unavailable, "Write access is disabled for this connection.")
+                }
+                guard !connection.writeRoomAllowlist.isEmpty else {
+                    return (.unavailable, "No rooms are allowlisted for write access.")
+                }
+                return (.available, nil)
+            }
         case .slack, .telegram:
             return (.configuredOnly, "Provider adapter is configured, but execution is not implemented yet.")
         case .discord:
