@@ -13,8 +13,12 @@ public struct WorkspaceContextSourceWorkbenchRow: Equatable, Sendable, Identifia
     public var title: String
     public var subtitle: String
     public var kindLabel: String
+    public var categoryLabel: String
     public var statusLabel: String
     public var badges: [String]
+    public var provenanceLabel: String
+    public var citationLabel: String?
+    public var snapshotLabel: String?
     public var warningText: String?
     public var isEffective: Bool
 
@@ -23,8 +27,12 @@ public struct WorkspaceContextSourceWorkbenchRow: Equatable, Sendable, Identifia
         title: String,
         subtitle: String,
         kindLabel: String,
+        categoryLabel: String,
         statusLabel: String,
         badges: [String],
+        provenanceLabel: String,
+        citationLabel: String?,
+        snapshotLabel: String?,
         warningText: String?,
         isEffective: Bool
     ) {
@@ -32,8 +40,12 @@ public struct WorkspaceContextSourceWorkbenchRow: Equatable, Sendable, Identifia
         self.title = title
         self.subtitle = subtitle
         self.kindLabel = kindLabel
+        self.categoryLabel = categoryLabel
         self.statusLabel = statusLabel
         self.badges = badges
+        self.provenanceLabel = provenanceLabel
+        self.citationLabel = citationLabel
+        self.snapshotLabel = snapshotLabel
         self.warningText = warningText
         self.isEffective = isEffective
     }
@@ -47,6 +59,7 @@ public struct WorkspaceContextSourceWorkbenchSummary: Equatable, Sendable {
     public var staleSources: Int
     public var missingSources: Int
     public var disabledSources: Int
+    public var categoryCounts: [WorkspaceContextSourceCategory: Int]
 
     public init(
         totalSources: Int,
@@ -55,7 +68,8 @@ public struct WorkspaceContextSourceWorkbenchSummary: Equatable, Sendable {
         duplicateSources: Int,
         staleSources: Int,
         missingSources: Int,
-        disabledSources: Int
+        disabledSources: Int,
+        categoryCounts: [WorkspaceContextSourceCategory: Int] = [:]
     ) {
         self.totalSources = totalSources
         self.effectiveSources = effectiveSources
@@ -64,6 +78,7 @@ public struct WorkspaceContextSourceWorkbenchSummary: Equatable, Sendable {
         self.staleSources = staleSources
         self.missingSources = missingSources
         self.disabledSources = disabledSources
+        self.categoryCounts = categoryCounts
     }
 }
 
@@ -86,14 +101,21 @@ public enum WorkspaceContextSourceWorkbenchPresenter {
             if !record.enabledForAgent {
                 badges.append("disabled")
             }
+            if record.source.snapshot?.isFrozen == true {
+                badges.append("frozen")
+            }
 
             return WorkspaceContextSourceWorkbenchRow(
                 id: record.id,
                 title: record.source.displayName,
                 subtitle: subtitle,
                 kindLabel: record.source.kind.displayName,
+                categoryLabel: record.source.kind.category.displayName,
                 statusLabel: statusLabel(for: record),
                 badges: badges,
+                provenanceLabel: provenanceLabel(for: record),
+                citationLabel: citationLabel(for: record),
+                snapshotLabel: snapshotLabel(for: record),
                 warningText: record.warnings.first?.message,
                 isEffective: record.isEffective
             )
@@ -110,7 +132,9 @@ public enum WorkspaceContextSourceWorkbenchPresenter {
             duplicateSources: inventory.records.filter { $0.duplicateOf != nil }.count,
             staleSources: inventory.records.filter { $0.state == .stale }.count,
             missingSources: inventory.records.filter { $0.state == .missing }.count,
-            disabledSources: inventory.records.filter { $0.state == .disabled }.count
+            disabledSources: inventory.records.filter { $0.state == .disabled }.count,
+            categoryCounts: Dictionary(grouping: inventory.records, by: { $0.source.kind.category })
+                .mapValues { $0.count }
         )
     }
 
@@ -128,6 +152,33 @@ public enum WorkspaceContextSourceWorkbenchPresenter {
             return "Missing"
         case .malformed:
             return "Malformed"
+        }
+    }
+
+    private static func provenanceLabel(for record: WorkspaceContextSourceRecord) -> String {
+        guard let provenance = record.source.provenance else { return "No provenance" }
+        if let version = provenance.versionFingerprint {
+            return "\(provenance.origin.rawValue) @ \(version)"
+        }
+        return provenance.origin.rawValue
+    }
+
+    private static func citationLabel(for record: WorkspaceContextSourceRecord) -> String? {
+        guard !record.source.citations.isEmpty else { return nil }
+        return record.source.citations.count == 1 ? "1 citation" : "\(record.source.citations.count) citations"
+    }
+
+    private static func snapshotLabel(for record: WorkspaceContextSourceRecord) -> String? {
+        guard let snapshot = record.source.snapshot else {
+            return record.source.kind.requiresFrozenSnapshot ? "No frozen snapshot" : nil
+        }
+        let id = snapshot.snapshotId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = id.isEmpty ? "" : " \(id)"
+        switch snapshot.freezeState {
+        case .frozen:
+            return snapshot.isFrozen ? "Frozen snapshot\(suffix)" : "Incomplete frozen snapshot\(suffix)"
+        case .live:
+            return "Live snapshot\(suffix)"
         }
     }
 }

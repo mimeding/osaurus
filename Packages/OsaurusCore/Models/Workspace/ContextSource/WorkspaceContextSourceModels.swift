@@ -14,6 +14,7 @@ public enum WorkspaceContextSourceKind: String, Codable, CaseIterable, Hashable,
     case memory
     case agentDatabase = "agent_database"
     case sandboxContext = "sandbox_context"
+    case screenContext = "screen_context"
     case uploadedFile = "uploaded_file"
     case workspaceKnowledge = "workspace_knowledge"
     case citation
@@ -23,9 +24,27 @@ public enum WorkspaceContextSourceKind: String, Codable, CaseIterable, Hashable,
         case .memory: return "Memory"
         case .agentDatabase: return "Agent DB"
         case .sandboxContext: return "Sandbox Context"
+        case .screenContext: return "Screen Context"
         case .uploadedFile: return "Uploaded File"
         case .workspaceKnowledge: return "Workspace Knowledge"
         case .citation: return "Citation"
+        }
+    }
+
+    public var category: WorkspaceContextSourceCategory {
+        switch self {
+        case .uploadedFile, .workspaceKnowledge:
+            return .files
+        case .memory:
+            return .memory
+        case .agentDatabase:
+            return .agentDatabase
+        case .sandboxContext:
+            return .sandboxContext
+        case .screenContext:
+            return .screenContext
+        case .citation:
+            return .citations
         }
     }
 
@@ -34,6 +53,7 @@ public enum WorkspaceContextSourceKind: String, Codable, CaseIterable, Hashable,
         case .memory: return .memoryService
         case .agentDatabase: return .agentDatabase
         case .sandboxContext: return .sandboxInjection
+        case .screenContext: return .screenContextInjection
         case .uploadedFile: return .chatAttachment
         case .workspaceKnowledge: return .workspaceKnowledgeIndex
         case .citation: return .citationResolver
@@ -59,6 +79,13 @@ public enum WorkspaceContextSourceKind: String, Codable, CaseIterable, Hashable,
         case .sandboxContext:
             return WorkspaceContextBoundaryContract(
                 authority: .sandboxContextInjection,
+                payloadPolicy: .executionEnvelopeOnly,
+                contextPolicy: .userMessagePrefixOwnedElsewhere,
+                dedupePolicy: .withinKindByProvenance
+            )
+        case .screenContext:
+            return WorkspaceContextBoundaryContract(
+                authority: .screenContextInjection,
                 payloadPolicy: .executionEnvelopeOnly,
                 contextPolicy: .userMessagePrefixOwnedElsewhere,
                 dedupePolicy: .withinKindByProvenance
@@ -91,8 +118,37 @@ public enum WorkspaceContextSourceKind: String, Codable, CaseIterable, Hashable,
         switch self {
         case .uploadedFile, .workspaceKnowledge:
             return true
-        case .memory, .agentDatabase, .sandboxContext, .citation:
+        case .memory, .agentDatabase, .sandboxContext, .screenContext, .citation:
             return false
+        }
+    }
+
+    public var requiresFrozenSnapshot: Bool {
+        switch self {
+        case .screenContext:
+            return true
+        case .memory, .agentDatabase, .sandboxContext, .uploadedFile, .workspaceKnowledge, .citation:
+            return false
+        }
+    }
+}
+
+public enum WorkspaceContextSourceCategory: String, Codable, CaseIterable, Hashable, Sendable {
+    case files
+    case memory
+    case agentDatabase = "agent_database"
+    case sandboxContext = "sandbox_context"
+    case screenContext = "screen_context"
+    case citations
+
+    public var displayName: String {
+        switch self {
+        case .files: return "Files"
+        case .memory: return "Memory"
+        case .agentDatabase: return "Agent DB"
+        case .sandboxContext: return "Sandbox Context"
+        case .screenContext: return "Screen Context"
+        case .citations: return "Citations"
         }
     }
 }
@@ -101,6 +157,7 @@ public enum WorkspaceContextSourceAuthority: String, Codable, Hashable, Sendable
     case memoryService
     case agentDatabase
     case sandboxContextInjection
+    case screenContextInjection
     case chatAttachmentStore
     case workspaceKnowledgeIndex
     case citationResolver
@@ -148,6 +205,7 @@ public enum WorkspaceContextSourceOrigin: String, Codable, Hashable, Sendable {
     case memoryService
     case agentDatabase
     case sandboxInjection
+    case screenContextInjection
     case chatAttachment
     case workspaceKnowledgeIndex
     case citationResolver
@@ -197,6 +255,45 @@ public struct WorkspaceContextSourceProvenance: Codable, Equatable, Hashable, Se
     }
 }
 
+public enum WorkspaceContextSnapshotFreezeState: String, Codable, Hashable, Sendable {
+    case live
+    case frozen
+}
+
+public struct WorkspaceContextSnapshotProvenance: Codable, Equatable, Hashable, Sendable {
+    public var freezeState: WorkspaceContextSnapshotFreezeState
+    public var snapshotId: String
+    public var capturedAt: Date?
+    public var frozenAt: Date?
+    public var sourceVersion: String?
+    public var citationVersion: String?
+    public var contextDigest: String?
+
+    public init(
+        freezeState: WorkspaceContextSnapshotFreezeState,
+        snapshotId: String,
+        capturedAt: Date? = nil,
+        frozenAt: Date? = nil,
+        sourceVersion: String? = nil,
+        citationVersion: String? = nil,
+        contextDigest: String? = nil
+    ) {
+        self.freezeState = freezeState
+        self.snapshotId = snapshotId
+        self.capturedAt = capturedAt
+        self.frozenAt = frozenAt
+        self.sourceVersion = sourceVersion
+        self.citationVersion = citationVersion
+        self.contextDigest = contextDigest
+    }
+
+    public var isFrozen: Bool {
+        freezeState == .frozen
+            && !snapshotId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && frozenAt != nil
+    }
+}
+
 public enum WorkspaceContextIndexStatus: String, Codable, Hashable, Sendable {
     case notIndexed = "not_indexed"
     case indexing
@@ -236,6 +333,7 @@ public enum WorkspaceContextCitationAnchorKind: String, Codable, Hashable, Senda
     case databaseRow = "database_row"
     case memoryEpisode = "memory_episode"
     case sandboxSnapshot = "sandbox_snapshot"
+    case screenSnapshot = "screen_snapshot"
     case externalReference = "external_reference"
 }
 
@@ -287,6 +385,7 @@ public struct WorkspaceContextSourceInput: Codable, Equatable, Hashable, Sendabl
     public var agentId: UUID?
     public var isEnabled: Bool
     public var provenance: WorkspaceContextSourceProvenance?
+    public var snapshot: WorkspaceContextSnapshotProvenance?
     public var index: WorkspaceContextIndexState?
     public var citations: [WorkspaceContextCitation]
     public var metadata: [String: String]
@@ -298,6 +397,7 @@ public struct WorkspaceContextSourceInput: Codable, Equatable, Hashable, Sendabl
         agentId: UUID? = nil,
         isEnabled: Bool = true,
         provenance: WorkspaceContextSourceProvenance? = nil,
+        snapshot: WorkspaceContextSnapshotProvenance? = nil,
         index: WorkspaceContextIndexState? = nil,
         citations: [WorkspaceContextCitation] = [],
         metadata: [String: String] = [:]
@@ -308,6 +408,7 @@ public struct WorkspaceContextSourceInput: Codable, Equatable, Hashable, Sendabl
         self.agentId = agentId
         self.isEnabled = isEnabled
         self.provenance = provenance
+        self.snapshot = snapshot
         self.index = index
         self.citations = citations
         self.metadata = metadata
@@ -323,6 +424,10 @@ public enum WorkspaceContextWarningKind: String, Codable, Hashable, Sendable {
     case duplicateSource = "duplicate_source"
     case provenanceOriginMismatch = "provenance_origin_mismatch"
     case staleProvenance = "stale_provenance"
+    case snapshotMissing = "snapshot_missing"
+    case snapshotLive = "snapshot_live"
+    case snapshotIncomplete = "snapshot_incomplete"
+    case snapshotStale = "snapshot_stale"
     case indexMissing = "index_missing"
     case indexInProgress = "index_in_progress"
     case indexFailed = "index_failed"
@@ -355,6 +460,10 @@ public struct WorkspaceContextSourceWarning: Codable, Equatable, Hashable, Senda
 public enum WorkspaceContextStalenessReason: String, Codable, Hashable, Sendable {
     case sourceMissing = "source_missing"
     case provenanceExpired = "provenance_expired"
+    case snapshotMissing = "snapshot_missing"
+    case snapshotNotFrozen = "snapshot_not_frozen"
+    case snapshotVersionMismatch = "snapshot_version_mismatch"
+    case snapshotModifiedAfterFreeze = "snapshot_modified_after_freeze"
     case indexMissing = "index_missing"
     case indexInProgress = "index_in_progress"
     case indexFailed = "index_failed"

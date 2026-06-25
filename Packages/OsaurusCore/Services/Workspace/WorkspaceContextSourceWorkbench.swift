@@ -13,18 +13,23 @@ import Foundation
 public struct WorkspaceContextSourceWorkbenchPolicy: Sendable {
     public var defaultEnabledKinds: Set<WorkspaceContextSourceKind>
     public var enabledKindsByAgent: [UUID: Set<WorkspaceContextSourceKind>]
+    public var disabledSourceIds: Set<String>
     public var disabledSourceIdsByAgent: [UUID: Set<String>]
     public var provenanceMaxAge: TimeInterval?
 
     public init(
         defaultEnabledKinds: Set<WorkspaceContextSourceKind>? = nil,
         enabledKindsByAgent: [UUID: Set<WorkspaceContextSourceKind>] = [:],
+        disabledSourceIds: Set<String> = [],
         disabledSourceIdsByAgent: [UUID: Set<String>] = [:],
         provenanceMaxAge: TimeInterval? = nil
     ) {
         self.defaultEnabledKinds = defaultEnabledKinds ?? Set(WorkspaceContextSourceKind.allCases)
         self.enabledKindsByAgent = enabledKindsByAgent
-        self.disabledSourceIdsByAgent = disabledSourceIdsByAgent
+        self.disabledSourceIds = Set(disabledSourceIds.map(\.normalizedContextSourceKey))
+        self.disabledSourceIdsByAgent = disabledSourceIdsByAgent.mapValues {
+            Set($0.map(\.normalizedContextSourceKey))
+        }
         self.provenanceMaxAge = provenanceMaxAge
     }
 
@@ -34,10 +39,23 @@ public struct WorkspaceContextSourceWorkbenchPolicy: Sendable {
     }
 
     func isSourceExplicitlyDisabled(_ source: WorkspaceContextSourceInput, for agentId: UUID?) -> Bool {
-        guard let agentId else { return false }
-        let disabled = disabledSourceIdsByAgent[agentId] ?? []
+        if isSourceGloballyDisabled(source) {
+            return true
+        }
+        return isSourceDisabledForAgent(source, agentId: agentId)
+    }
+
+    func isSourceGloballyDisabled(_ source: WorkspaceContextSourceInput) -> Bool {
         let sourceId = source.id.normalizedContextSourceKey
         let stableId = source.provenance?.stableId.normalizedContextSourceKey
+        return disabledSourceIds.contains(sourceId) || stableId.map(disabledSourceIds.contains) == true
+    }
+
+    func isSourceDisabledForAgent(_ source: WorkspaceContextSourceInput, agentId: UUID?) -> Bool {
+        guard let agentId else { return false }
+        let sourceId = source.id.normalizedContextSourceKey
+        let stableId = source.provenance?.stableId.normalizedContextSourceKey
+        let disabled = disabledSourceIdsByAgent[agentId] ?? []
         return disabled.contains(sourceId) || stableId.map(disabled.contains) == true
     }
 }
@@ -281,7 +299,15 @@ private extension WorkspaceContextSourceWorkbench {
                 )
             )
         }
-        if policy.isSourceExplicitlyDisabled(source, for: activeAgentId) {
+        if policy.isSourceGloballyDisabled(source) {
+            warnings.append(
+                warning(
+                    sourceId: source.id,
+                    kind: .sourceDisabled,
+                    message: "\(source.displayName) is disabled by workspace context policy."
+                )
+            )
+        } else if policy.isSourceDisabledForAgent(source, agentId: activeAgentId) {
             warnings.append(
                 warning(
                     sourceId: source.id,
@@ -342,6 +368,7 @@ private extension WorkspaceContextSourceWorkbench {
             )
         }
 
+        evaluateSnapshotFreshness(source: source, reasons: &reasons, warnings: &warnings)
         evaluateIndexFreshness(source: source, reasons: &reasons, warnings: &warnings)
         evaluateCitationFreshness(
             source: source,
@@ -363,6 +390,84 @@ private extension WorkspaceContextSourceWorkbench {
             return WorkspaceContextSourceStaleness(status: .stale, reasons: reasons)
         }
         return WorkspaceContextSourceStaleness(status: .current)
+    }
+
+    static func evaluateSnapshotFreshness(
+        source: WorkspaceContextSourceInput,
+        reasons: inout Set<WorkspaceContextStalenessReason>,
+        warnings: inout [WorkspaceContextSourceWarning]
+    ) {
+        guard source.kind.requiresFrozenSnapshot else { return }
+        guard let snapshot = source.snapshot else {
+            reasons.insert(.snapshotMissing)
+            warnings.append(
+                warning(
+                    sourceId: source.id,
+                    kind: .snapshotMissing,
+                    message: "\(source.displayName) has no frozen snapshot metadata."
+                )
+            )
+            return
+        }
+
+        if !snapshot.isFrozen {
+            reasons.insert(.snapshotNotFrozen)
+            switch snapshot.freezeState {
+            case .live:
+                warnings.append(
+                    warning(
+                        sourceId: source.id,
+                        kind: .snapshotLive,
+                        message: "\(source.displayName) is still live; freeze the snapshot before using it as turn context."
+                    )
+                )
+            case .frozen:
+                warnings.append(
+                    warning(
+                        sourceId: source.id,
+                        kind: .snapshotIncomplete,
+                        message: "\(source.displayName) frozen snapshot metadata is incomplete."
+                    )
+                )
+            }
+        }
+
+        if let currentVersion = source.provenance?.sourceVersion?.normalizedNonEmptyContextSourceKey {
+            if let snapshotVersion = snapshot.sourceVersion?.normalizedNonEmptyContextSourceKey {
+                if snapshotVersion != currentVersion {
+                    reasons.insert(.snapshotVersionMismatch)
+                    warnings.append(
+                        warning(
+                            sourceId: source.id,
+                            kind: .snapshotStale,
+                            message: "\(source.displayName) snapshot was captured for an older source version."
+                        )
+                    )
+                }
+            } else {
+                reasons.insert(.snapshotVersionMismatch)
+                warnings.append(
+                    warning(
+                        sourceId: source.id,
+                        kind: .snapshotStale,
+                        message: "\(source.displayName) snapshot has no source version metadata."
+                    )
+                )
+            }
+        }
+
+        if let modifiedAt = source.provenance?.modifiedAt,
+            let frozenAt = snapshot.frozenAt,
+            modifiedAt > frozenAt {
+            reasons.insert(.snapshotModifiedAfterFreeze)
+            warnings.append(
+                warning(
+                    sourceId: source.id,
+                    kind: .snapshotStale,
+                    message: "\(source.displayName) changed after its snapshot was frozen."
+                )
+            )
+        }
     }
 
     static func evaluateIndexFreshness(

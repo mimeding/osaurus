@@ -18,6 +18,64 @@ struct WorkspaceContextSourceWorkbenchTests {
     private let now = Date(timeIntervalSince1970: 10_000)
 
     @Test
+    func inventoryCoversUserVisibleSourceCategories() {
+        let uploaded = source(
+            id: "upload-a",
+            kind: .uploadedFile,
+            stableId: "attachment:upload-a",
+            version: "u1",
+            observedAt: now
+        )
+        let memory = source(
+            id: "memory-a",
+            kind: .memory,
+            stableId: "memory:agent-a",
+            version: "m1",
+            observedAt: now
+        )
+        let agentDB = source(
+            id: "db-a",
+            kind: .agentDatabase,
+            stableId: "agent-db:agent-a",
+            version: "db1",
+            observedAt: now
+        )
+        let sandbox = source(
+            id: "sandbox-a",
+            kind: .sandboxContext,
+            stableId: "sandbox:agent-a",
+            version: "s1",
+            observedAt: now
+        )
+        let screen = source(
+            id: "screen-a",
+            kind: .screenContext,
+            stableId: "screen:frontmost",
+            version: "sc1",
+            observedAt: now
+        )
+
+        let inventory = WorkspaceContextSourceWorkbench.buildInventory(
+            sources: [uploaded, memory, agentDB, sandbox, screen],
+            now: now
+        )
+        let summary = WorkspaceContextSourceWorkbenchPresenter.summary(for: inventory)
+        let rows = WorkspaceContextSourceWorkbenchPresenter.rows(for: inventory)
+
+        #expect(inventory.effectiveSources.map(\.id) == ["upload-a", "memory-a", "db-a", "sandbox-a", "screen-a"])
+        #expect(summary.categoryCounts[.files] == 1)
+        #expect(summary.categoryCounts[.memory] == 1)
+        #expect(summary.categoryCounts[.agentDatabase] == 1)
+        #expect(summary.categoryCounts[.sandboxContext] == 1)
+        #expect(summary.categoryCounts[.screenContext] == 1)
+
+        let screenRow = rows.first { $0.id == "screen-a" }
+        #expect(screenRow?.categoryLabel == "Screen Context")
+        #expect(screenRow?.badges.contains("frozen") == true)
+        #expect(screenRow?.snapshotLabel == "Frozen snapshot screen-a-snapshot")
+    }
+
+    @Test
     func deduplicatesWithinKindButKeepsBoundaryKindsSeparate() {
         let oldKnowledge = source(
             id: "kb-old",
@@ -56,6 +114,152 @@ struct WorkspaceContextSourceWorkbenchTests {
         #expect(effectiveIds == ["kb-new", "memory-readme"])
         #expect(inventory.record(id: "memory-readme")?.boundaryContract.payloadPolicy == .metadataOnly)
         #expect(inventory.record(id: "kb-new")?.boundaryContract.payloadPolicy == .metadataAndAnchorsOnly)
+    }
+
+    @Test
+    func frozenSnapshotProvenanceWarningsAreRecorded() {
+        let liveScreen = source(
+            id: "screen-live",
+            kind: .screenContext,
+            stableId: "screen:frontmost",
+            version: "screen-v1",
+            observedAt: now,
+            snapshot: WorkspaceContextSnapshotProvenance(
+                freezeState: .live,
+                snapshotId: "screen-live",
+                capturedAt: now,
+                sourceVersion: "screen-v1",
+                contextDigest: "digest-live"
+            )
+        )
+        let staleScreen = source(
+            id: "screen-stale",
+            kind: .screenContext,
+            stableId: "screen:stale",
+            version: "screen-v2",
+            observedAt: now,
+            modifiedAt: now,
+            snapshot: WorkspaceContextSnapshotProvenance(
+                freezeState: .frozen,
+                snapshotId: "screen-stale",
+                capturedAt: now.addingTimeInterval(-20),
+                frozenAt: now.addingTimeInterval(-10),
+                sourceVersion: "screen-v1",
+                contextDigest: "digest-stale"
+            ),
+            citations: [
+                WorkspaceContextCitation(
+                    id: "cite-screen",
+                    sourceId: "screen-stale",
+                    label: "Screen snapshot",
+                    sourceVersion: "screen-v2",
+                    anchor: WorkspaceContextCitationAnchor(
+                        kind: .screenSnapshot,
+                        locator: "screen-stale"
+                    )
+                )
+            ]
+        )
+        let sandboxWithoutSnapshot = source(
+            id: "sandbox-current",
+            kind: .sandboxContext,
+            stableId: "sandbox:agent-a",
+            version: "sandbox-v1",
+            observedAt: now
+        )
+        let missingScreenSnapshot = WorkspaceContextSourceInput(
+            id: "screen-missing",
+            kind: .screenContext,
+            displayName: "Screen Missing",
+            provenance: WorkspaceContextSourceProvenance(
+                stableId: "screen:missing",
+                origin: .screenContextInjection,
+                displayPath: "screen:missing",
+                sourceVersion: "screen-v1",
+                observedAt: now,
+                modifiedAt: now
+            )
+        )
+        let incompleteFrozenScreen = source(
+            id: "screen-incomplete",
+            kind: .screenContext,
+            stableId: "screen:incomplete",
+            version: "screen-v1",
+            observedAt: now,
+            snapshot: WorkspaceContextSnapshotProvenance(
+                freezeState: .frozen,
+                snapshotId: "",
+                capturedAt: now
+            )
+        )
+
+        let inventory = WorkspaceContextSourceWorkbench.buildInventory(
+            sources: [liveScreen, staleScreen, sandboxWithoutSnapshot, missingScreenSnapshot, incompleteFrozenScreen],
+            now: now
+        )
+
+        #expect(inventory.record(id: "screen-live")?.state == .stale)
+        #expect(inventory.record(id: "screen-live")?.staleness.reasons.contains(.snapshotNotFrozen) == true)
+        #expect(inventory.record(id: "screen-stale")?.staleness.reasons.contains(.snapshotVersionMismatch) == true)
+        #expect(inventory.record(id: "screen-stale")?.staleness.reasons.contains(.snapshotModifiedAfterFreeze) == true)
+        #expect(inventory.record(id: "sandbox-current")?.state == .active)
+        #expect(inventory.record(id: "screen-missing")?.staleness.reasons.contains(.snapshotMissing) == true)
+        #expect(inventory.record(id: "screen-incomplete")?.staleness.reasons.contains(.snapshotNotFrozen) == true)
+        #expect(inventory.record(id: "screen-incomplete")?.staleness.reasons.contains(.snapshotVersionMismatch) == true)
+
+        let warningKinds = Set(inventory.warnings.map(\.kind))
+        #expect(warningKinds.contains(.snapshotLive))
+        #expect(warningKinds.contains(.snapshotIncomplete))
+        #expect(warningKinds.contains(.snapshotMissing))
+        #expect(warningKinds.contains(.snapshotStale))
+
+        let incompleteRow = WorkspaceContextSourceWorkbenchPresenter.rows(for: inventory)
+            .first { $0.id == "screen-incomplete" }
+        #expect(incompleteRow?.snapshotLabel == "Incomplete frozen snapshot")
+    }
+
+    @Test
+    func globalPerSourceDisableControlsEffectiveSourcesWithoutAgentScope() {
+        let memory = source(
+            id: "memory-a",
+            kind: .memory,
+            stableId: "memory:agent-a",
+            version: "m1",
+            observedAt: now
+        )
+        let screen = source(
+            id: "screen-a",
+            kind: .screenContext,
+            stableId: "screen:frontmost",
+            version: "sc1",
+            observedAt: now
+        )
+        let uploaded = source(
+            id: "upload-a",
+            kind: .uploadedFile,
+            stableId: "attachment:upload-a",
+            version: "u1",
+            observedAt: now
+        )
+        let policy = WorkspaceContextSourceWorkbenchPolicy(
+            disabledSourceIds: [" MEMORY:AGENT-A ", "upload-a"]
+        )
+
+        let inventory = WorkspaceContextSourceWorkbench.buildInventory(
+            sources: [memory, screen, uploaded],
+            policy: policy,
+            now: now
+        )
+
+        #expect(inventory.record(id: "memory-a")?.state == .disabled)
+        #expect(inventory.record(id: "screen-a")?.state == .active)
+        #expect(inventory.record(id: "upload-a")?.state == .disabled)
+        #expect(inventory.effectiveSources.map(\.id) == ["screen-a"])
+
+        let uploadWarning = inventory.record(id: "upload-a")?.warnings.first {
+            $0.kind == .sourceDisabled
+        }
+        #expect(uploadWarning?.message == "Uploaded File upload-a is disabled by workspace context policy.")
     }
 
     @Test
@@ -356,6 +560,8 @@ struct WorkspaceContextSourceWorkbenchTests {
         sourceExists: Bool = true,
         agentId: UUID? = nil,
         observedAt: Date,
+        modifiedAt: Date? = nil,
+        snapshot: WorkspaceContextSnapshotProvenance? = nil,
         index: WorkspaceContextIndexState? = nil,
         citations: [WorkspaceContextCitation] = []
     ) -> WorkspaceContextSourceInput {
@@ -370,9 +576,10 @@ struct WorkspaceContextSourceWorkbenchTests {
                 displayPath: stableId,
                 sourceVersion: version,
                 observedAt: observedAt,
-                modifiedAt: observedAt,
+                modifiedAt: modifiedAt ?? observedAt,
                 sourceExists: sourceExists
             ),
+            snapshot: snapshot ?? defaultSnapshot(for: kind, id: id, version: version, at: observedAt),
             index: index ?? defaultIndex(for: kind, version: version, at: observedAt),
             citations: citations
         )
@@ -385,6 +592,23 @@ struct WorkspaceContextSourceWorkbenchTests {
     ) -> WorkspaceContextIndexState? {
         guard kind.requiresIndexFreshness else { return nil }
         return .indexed(version: version, at: date)
+    }
+
+    private func defaultSnapshot(
+        for kind: WorkspaceContextSourceKind,
+        id: String,
+        version: String,
+        at date: Date
+    ) -> WorkspaceContextSnapshotProvenance? {
+        guard kind.requiresFrozenSnapshot else { return nil }
+        return WorkspaceContextSnapshotProvenance(
+            freezeState: .frozen,
+            snapshotId: "\(id)-snapshot",
+            capturedAt: date,
+            frozenAt: date,
+            sourceVersion: version,
+            contextDigest: "\(id)-digest"
+        )
     }
 }
 
