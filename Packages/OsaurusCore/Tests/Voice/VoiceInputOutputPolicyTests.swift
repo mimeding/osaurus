@@ -121,4 +121,14 @@ struct VoiceInputOutputPolicyTests {
             ) == .skip(.alreadyPlaying(other))
         )
     }
+
+    @Test("PocketTTS cache probe uses FluidAudio CoreML repository folder")
+    func pocketTtsCacheProbeUsesFluidAudioCoreMLFolder() {
+        let home = URL(fileURLWithPath: "/tmp/osaurus-voice-home", isDirectory: true)
+
+        #expect(
+            TTSService.pocketTtsRepositoryDirectory(homeDirectory: home).path
+                == "/tmp/osaurus-voice-home/.cache/fluidaudio/Models/pocket-tts-coreml"
+        )
+    }
 }

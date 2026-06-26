@@ -59577,6 +59577,12 @@
             "value" : "Bedienungshilfen-Berechtigung ist erforderlich, um in andere Apps zu tippen"
           }
         },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "다른 앱에 입력하려면 손쉬운 사용 권한이 필요합니다"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
@@ -59591,6 +59597,12 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Wähle eine Tastenkombination oder lasse die Transkription deaktiviert"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "핫키를 선택하거나 전사 기능을 비활성화한 상태로 유지하세요"
           }
         },
         "zh-Hans" : {
@@ -59609,6 +59621,12 @@
             "value" : "Escape ist zum Abbrechen der Transkription reserviert"
           }
         },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Escape 키는 전사 취소에 예약되어 있습니다"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
@@ -59623,6 +59641,12 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Die Tastenkombination ist bereit. Die Aufnahme erfordert weiterhin einen ausdrücklichen Tastendruck."
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "핫키가 준비되었습니다. 녹음은 여전히 명시적인 누름이 필요합니다."
           }
         },
         "zh-Hans" : {
@@ -59641,6 +59665,12 @@
             "value" : "Buchstaben-, Zahlen- und Satzzeichentasten benötigen eine Modifikatortaste"
           }
         },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "문자, 숫자 및 문장 부호 키에는 보조 키가 필요합니다"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
@@ -59655,6 +59685,12 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Mikrofonberechtigung ist erforderlich, um Sprache aufzunehmen"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "음성을 캡처하려면 마이크 권한이 필요합니다"
           }
         },
         "zh-Hans" : {
@@ -59673,6 +59709,12 @@
             "value" : "Wähle vor der Aufnahme ein heruntergeladenes Sprachmodell aus"
           }
         },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "녹음하기 전에 다운로드한 음성 모델을 선택하세요"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
@@ -59687,6 +59729,12 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Starten"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "시작"
           }
         },
         "zh-Hans" : {
@@ -59705,6 +59753,12 @@
             "value" : "Die Tastenkombinationsbezeichnung konnte nicht gelesen werden"
           }
         },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "핫키 레이블을 읽을 수 없습니다"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
@@ -59719,6 +59773,12 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Transkriptionsmodus ist deaktiviert"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "전사 모드가 비활성화되어 있습니다"
           }
         },
         "zh-Hans" : {
@@ -59737,6 +59797,12 @@
             "value" : "Sprachaufnahme ist nicht verfügbar"
           }
         },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "음성 캡처를 사용할 수 없습니다"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
@@ -59753,6 +59819,12 @@
             "value" : "Sprachaufnahme ist nicht bereit"
           }
         },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "음성 캡처가 준비되지 않았습니다"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
@@ -59767,6 +59839,12 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Sprachaufnahme erfordert einen ausdrücklichen Tastendruck oder eine Tastenkombination"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "음성 캡처에는 명시적인 버튼 누름 또는 핫키가 필요합니다"
           }
         },
         "zh-Hans" : {
