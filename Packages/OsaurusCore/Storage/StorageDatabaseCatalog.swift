@@ -13,6 +13,14 @@
 import Foundation
 
 public enum StorageDatabaseCatalog {
+    public enum TargetAtRestPolicy: Sendable, Equatable {
+        /// The target follows the user-selected storage encryption posture.
+        case followsGlobalPolicy
+        /// The target must remain SQLCipher-encrypted even when other stores
+        /// are converged to plaintext.
+        case alwaysEncrypted
+    }
+
     /// One unified target description so callers stay flat. The
     /// `label` is only used for human-readable logging; rekey and
     /// export operate on `path`. Core databases use short labels
@@ -21,10 +29,16 @@ public enum StorageDatabaseCatalog {
     public struct DatabaseTarget: Sendable {
         public let label: String
         public let path: String
+        public let atRestPolicy: TargetAtRestPolicy
 
-        public init(label: String, path: String) {
+        public init(
+            label: String,
+            path: String,
+            atRestPolicy: TargetAtRestPolicy = .followsGlobalPolicy
+        ) {
             self.label = label
             self.path = path
+            self.atRestPolicy = atRestPolicy
         }
 
         /// Convenience constructor for plugin targets — keeps the
@@ -41,6 +55,11 @@ public enum StorageDatabaseCatalog {
             .init(label: "memory", path: OsaurusPaths.memoryDatabaseFile().path),
             .init(label: "methods", path: OsaurusPaths.methodsDatabaseFile().path),
             .init(label: "tool index", path: OsaurusPaths.toolIndexDatabaseFile().path),
+            .init(
+                label: "agent task board",
+                path: OsaurusPaths.agentTaskBoardDatabaseFile().path,
+                atRestPolicy: .alwaysEncrypted
+            ),
             // Both Agent DB stores are created encrypted on first open
             // via `EncryptedSQLiteOpener`; they're listed here so
             // `StorageExportService.rotate(...)` rekeys them along with

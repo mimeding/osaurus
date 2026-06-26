@@ -99,6 +99,7 @@ struct StorageDatabaseCatalogTests {
             #expect(
                 labels == [
                     "agent channels",
+                    "agent task board",
                     "chat history",
                     "memory",
                     "methods",

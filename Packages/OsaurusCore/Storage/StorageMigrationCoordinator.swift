@@ -164,7 +164,7 @@ public actor StorageMigrationCoordinator {
         var report = Report(mode: mode)
 
         let dbTargets = StorageDatabaseCatalog.databaseTargets()
-        let needing = dbTargets.filter { Self.needsConversion(path: $0.path, to: mode) }
+        let needing = dbTargets.filter { Self.needsConversion(target: $0, to: mode) }
         let needsBlobs = Self.blobsNeedConversion(to: mode)
 
         guard !needing.isEmpty || needsBlobs else {
@@ -231,7 +231,9 @@ public actor StorageMigrationCoordinator {
     public nonisolated static func detectOnDiskPosture() -> StorageOnDiskPosture {
         var sawPlaintext = false
         var sawEncrypted = false
-        for target in StorageDatabaseCatalog.databaseTargets() {
+        for target in StorageDatabaseCatalog.databaseTargets()
+            where target.atRestPolicy == .followsGlobalPolicy
+        {
             switch StorageFileFormat.detect(path: target.path) {
             case .plaintext: sawPlaintext = true
             case .encrypted: sawEncrypted = true
@@ -313,6 +315,25 @@ public actor StorageMigrationCoordinator {
         }
     }
 
+    static func needsConversion(
+        target: StorageDatabaseCatalog.DatabaseTarget,
+        to mode: StorageEncryptionMode
+    ) -> Bool {
+        needsConversion(path: target.path, to: effectiveMode(for: target, globalMode: mode))
+    }
+
+    private static func effectiveMode(
+        for target: StorageDatabaseCatalog.DatabaseTarget,
+        globalMode: StorageEncryptionMode
+    ) -> StorageEncryptionMode {
+        switch target.atRestPolicy {
+        case .followsGlobalPolicy:
+            return globalMode
+        case .alwaysEncrypted:
+            return .encrypted
+        }
+    }
+
     /// True when any attachment blob's on-disk form differs from `mode`
     /// (encrypted `.osec` while plaintext is desired, or vice versa).
     static func blobsNeedConversion(to mode: StorageEncryptionMode) -> Bool {
@@ -366,7 +387,8 @@ public actor StorageMigrationCoordinator {
                 var matched = 0
                 var skipped: [String] = []
                 for target in targets {
-                    guard needsConversion(path: target.path, to: mode) else {
+                    let targetMode = effectiveMode(for: target, globalMode: mode)
+                    guard needsConversion(path: target.path, to: targetMode) else {
                         matched += 1
                         continue
                     }
@@ -383,7 +405,7 @@ public actor StorageMigrationCoordinator {
                         continue
                     }
                     do {
-                        switch mode {
+                        switch targetMode {
                         case .plaintext:
                             try StorageFormatConverter.decryptInPlace(path: target.path, key: key)
                         case .encrypted:

@@ -127,6 +127,11 @@ public enum OsaurusPaths {
         root().appendingPathComponent("agent-channels", isDirectory: true)
     }
 
+    /// Durable local task-board state for spawned/remote-agent orchestration.
+    public static func agentTasks() -> URL {
+        root().appendingPathComponent("agent-tasks", isDirectory: true)
+    }
+
     /// Schedules directory
     public static func schedules() -> URL {
         root().appendingPathComponent("schedules", isDirectory: true)
@@ -475,6 +480,9 @@ public enum OsaurusPaths {
     }
     public static func agentChannelMessagesDatabaseFile() -> URL {
         agentChannels().appendingPathComponent("messages.sqlite")
+    }
+    public static func agentTaskBoardDatabaseFile() -> URL {
+        agentTasks().appendingPathComponent("board.sqlite")
     }
     public static func methodsDatabaseFile() -> URL { methods().appendingPathComponent("methods.sqlite") }
     /// Encrypted on-device Osaurus Router billing ledger: `~/.osaurus/billing/ledger.sqlite`.
