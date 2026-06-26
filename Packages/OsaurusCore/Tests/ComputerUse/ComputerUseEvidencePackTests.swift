@@ -210,7 +210,7 @@ final class ComputerUseEvidencePackTests: XCTestCase {
             gate: ComputerUseGate(policy: AutonomyPolicy(globalPreset: .trusted)),
             feed: SubagentFeed(
                 toolCallId: "evidence-browser-form",
-                kindId: "computer_use",
+                kindId: SubagentCapabilityRegistry.computerUse.id,
                 title: "Fill out the form"
             ),
             interrupt: InterruptToken(),
