@@ -186,13 +186,13 @@ That's the entire surface. v1's 18 knobs (`mmrLambda`, `mmrFetchMultiplier`, `ve
 
 ## Storage
 
-All memory data is stored in a local SQLite database with WAL mode. Since 0.17.7 the database is **encrypted at rest** with [SQLCipher](STORAGE.md) using a key kept in your macOS Keychain — the same key chat history, methods, and tool indexes use.
+All memory data is stored in a local SQLite database with WAL mode. As of 0.21.0 the database is **plaintext SQLite by default** (relying on macOS FileVault for at-rest protection), with **opt-in SQLCipher encryption** available in **Settings → Storage** — the same posture chat history, methods, and tool indexes share. The earlier always-on encryption was walked back because a missing Keychain key could silently brick memory and search; see [STORAGE.md → Why encryption is opt-in](STORAGE.md#why-encryption-is-opt-in).
 
-**Location:** `~/.osaurus/memory/memory.sqlite` (SQLCipher)
+**Location:** `~/.osaurus/memory/memory.sqlite` (plaintext SQLite, or SQLCipher when encryption is opted in)
 
 **Configuration:** `~/.osaurus/config/memory.json` (plaintext)
 
-**Vector index:** `~/.osaurus/memory/vectura/<agentId>/` — partitioned per agent so one agent's vectors never collide with another's. The vector files themselves are not yet encrypted (see [STORAGE.md → Limitations](STORAGE.md#limitations-and-trade-offs)); they are rebuilt from the encrypted SQLite source on first read after migration.
+**Vector index:** `~/.osaurus/memory/vectura/<agentId>/` — partitioned per agent so one agent's vectors never collide with another's. The vector files are plaintext in both modes (see [STORAGE.md → Limitations](STORAGE.md#limitations-and-trade-offs)); they are rebuilt from the SQLite source on demand.
 
 The schema is versioned. The v1 → v2 migration ([`migrateToV5`](../Packages/OsaurusCore/Storage/MemoryDatabase.swift)) carries forward your identity, episodes (renamed from `conversation_summaries`), and transcript (renamed from `conversation_chunks`). The noisy v1 working-memory entries, profile events, verification audit log, agent activity, embeddings cache, and graph tables are all dropped — `pinned_facts` rebuilds organically from new conversations.
 
@@ -232,7 +232,9 @@ response = client.chat.completions.create(
 
 ### Memory Ingestion — `POST /memory/ingest`
 
-Bulk-ingest conversation turns. Useful for seeding memory from existing chat logs, migrating from another system, or running benchmarks. Ingestion always flushes distillation immediately at the end of the batch — you don't have to wait for the debounce.
+Bulk-ingest conversation turns. Useful for seeding memory from existing chat logs, migrating from another system, or running benchmarks.
+
+Unless `skip_extraction` is set, the request **distills synchronously and waits for the result**: it forces an on-demand cold load of the core model if it isn't already resident, runs the single distillation LLM call, and reports the outcome in the response body. (A cold load can take tens of seconds for a larger core model — allow a long client timeout; the server has no idle cutoff on this path.) This replaces the old fire-and-forget behavior that returned `{"status":"ok"}` even when distillation was silently skipped because the core model wasn't resident.
 
 ```bash
 curl http://127.0.0.1:1337/memory/ingest \
@@ -249,15 +251,31 @@ curl http://127.0.0.1:1337/memory/ingest \
 
 | Parameter | Type | Description |
 |---|---|---|
-| `agent_id` | string | Identifier for the agent whose memory is being populated |
+| `agent_id` | string | Identifier for the agent whose memory is being populated. A UUID is canonicalized (uppercased) so it matches the agent's recall key regardless of input casing. |
 | `conversation_id` | string | Identifier for the conversation session |
 | `turns` | array | Array of turn objects, each with `user` and `assistant` fields |
-| `session_date` | string | Optional ISO 8601 date for the whole batch |
-| `skip_extraction` | bool | When `true`, only insert transcript rows; skip distillation |
+| `session_date` | string | Optional ISO 8601 date for the whole batch (used as the episode timestamp) |
+| `skip_extraction` | bool | When `true`, only insert transcript rows; skip distillation (and the synchronous wait) |
+
+**Response body:**
+
+```json
+{ "status": "ok", "turns_ingested": 2, "distillation": "distilled", "episode_id": 42 }
+```
+
+| Field | Description |
+|---|---|
+| `turns_ingested` | Number of turns stored |
+| `distillation` | Outcome token (omitted when `skip_extraction` is set): `distilled`, `no_signals`, `skipped:<reason>` (`core_model_unset`, `not_resident`, `core_model_unavailable`, `breaker_open`, `low_novelty:<n>chars`, `cancelled`, `memory_disabled`), `empty:<reason>` (`no_episode`, `empty_summary`), `dead_letter:<attempts>`, or `error:<message>` |
+| `episode_id` | Primary key of the written episode (present only when `distillation` is `distilled`) |
+
+**Idempotent per `conversation_id`.** Re-ingesting the same `conversation_id` (e.g. re-running a benchmark) first clears that conversation's prior pending signals and episodes, so you get exactly one active episode per conversation instead of duplicates. `skip_extraction` ingests leave the memory pipeline untouched and only replace transcript rows.
+
+**Bounded retries.** A session that repeatedly fails to distill (unparseable model output, persistent timeouts) is retried a bounded number of times and then dead-lettered (`distillation: "dead_letter:<attempts>"`), so it stops re-distilling on every launch/ingest. Terminal empty results (`no_episode`, `empty_summary`) mark their signals processed immediately. A missing/unavailable core model stays pending and recovers once a model is configured and resident.
 
 ### List Agents — `GET /agents`
 
-Returns all configured agents with their pinned-fact counts. Use this to discover valid agent IDs.
+Returns all configured agents with their `memory_entry_count`. Use this to discover valid agent IDs. The count reflects **stored memory** — distilled episodes plus active pinned facts — so an agent whose sessions distilled into episodes reads non-zero even when no pinned facts were promoted. `GET /agents/{id}` reports the same count for a single agent.
 
 See the [API Guide](OpenAI_API_GUIDE.md#memory-api) for additional examples.
 
@@ -288,6 +306,7 @@ Open the Management window (`⌘ Shift M`) → **Memory** to see:
 - Your **identity** (auto-derived content + manual overrides)
 - **Pinned facts** with salience bars and use counts
 - **Episodes** for the default agent
+- **Memory Console** search, inspection, disable/forget actions, diagnostics, and bounded context previews
 - **Per-agent counts**
 - **Processing statistics** (total calls, success rate, average duration)
 - **Database size**
@@ -304,6 +323,17 @@ Identity overrides are explicit facts that always appear in context.
 ### Clearing Memory
 
 The Memory view includes a danger zone for clearing all memory data. This removes identity, pinned facts, episodes, and transcript. The action is irreversible.
+
+### Memory Console
+
+The Memory Console is an administrative view over the memory database:
+
+- **Inspect** shows a privacy-safe preview and metadata for pinned facts, episodes, and transcript turns. Emails, phone numbers, account-like values, URLs, and credential-shaped tokens are redacted before display.
+- **Search** can be scoped to all memory, pinned facts, episodes, transcript, or one agent. Disabled rows are hidden by default and can be included explicitly.
+- **Disable** removes pinned facts and episodes from future recall without deleting the row. Transcript turns do not have a disabled state in the current schema, so the console explains that limitation and keeps **Forget** available.
+- **Forget** permanently deletes the selected row and removes its vector document when a matching vector id exists.
+- **Diagnose** reports storage health: schema version, row counts, pending signals, processing logs, FTS mirror availability, vector index state, and recent storage errors.
+- **Bounded context preview** assembles the memory block for a selected agent/query under an explicit token cap, then redacts the preview before showing it.
 
 ### Sync / Run Consolidation
 
@@ -326,4 +356,4 @@ The v5 schema migration is automatic on first launch after an upgrade. It runs a
 
 `pinned_facts` starts empty and accrues organically as new sessions are distilled. The Vectura vector index is wiped and rebuilt lazily on first read.
 
-Alongside the schema migration, the [storage encryption migration](STORAGE.md) runs once on first launch of 0.17.7+ and re-keys `memory.sqlite` (and every other Osaurus database) into SQLCipher. It's automatic and shows a brief overlay; details, key-rotation, and plaintext-export instructions live in [STORAGE.md](STORAGE.md).
+Alongside the schema migration, [storage convergence](STORAGE.md#migration-and-convergence) runs once on first launch. As of 0.21.0 it converges `memory.sqlite` (and every other Osaurus database) to the desired posture — **decrypting an existing SQLCipher install to plaintext when macOS FileVault is enabled, or keeping it encrypted when FileVault is off** (and re-encrypting if you opted in). The migration is invisible: no prompt or notice. If the Keychain key is already gone, the store is marked degraded (never deleted) and **Memory → Diagnostics** surfaces the real cause with Retry / Reset recovery. Details, key-rotation, opt-in encryption, and plaintext-export instructions live in [STORAGE.md](STORAGE.md).

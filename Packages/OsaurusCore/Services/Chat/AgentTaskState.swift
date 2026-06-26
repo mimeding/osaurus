@@ -37,6 +37,10 @@ public enum ToolResultClass: Equatable, Sendable {
     case notFound
     /// Any other failure envelope.
     case error
+    /// Native image job completed and returned saved image paths. `isEdit`
+    /// distinguishes a fresh generation from an edit of an existing image, so
+    /// the follow-up nudge only suggests editing AFTER a generation.
+    case nativeImageGeneration(paths: [String], isEdit: Bool)
     /// Any success that isn't a listing or file read.
     case other
 }
@@ -102,15 +106,17 @@ public final class AgentTaskState {
     /// before failing.
     private static let execLikeTools: Set<String> = ["shell_run", "sandbox_exec"]
 
-    /// Folder tools whose `invalid_args` / `not_found` failures are
-    /// DETERMINISTIC given an unchanged filesystem: re-issuing the identical
-    /// call must return the identical error. Their held errors are replayed
-    /// instead of re-executed (observed live: a model repeating the same
-    /// failing `file_edit` 8× until the iteration cap). `shell_run` and
-    /// `db_*` are deliberately excluded — identical re-runs there are
-    /// legitimate retries that may succeed.
+    /// Tools whose `invalid_args` / `not_found` failures are DETERMINISTIC
+    /// given an unchanged filesystem / capability catalog: re-issuing the
+    /// identical call must return the identical error. Their held errors are
+    /// replayed instead of re-executed (observed live: a model repeating the
+    /// same failing `file_edit` 8× until the iteration cap). `capabilities_load`
+    /// qualifies because capability ids are a closed vocabulary — a bad/unknown
+    /// id fails identically on every retry. `shell_run` and `db_*` are
+    /// deliberately excluded — identical re-runs there are legitimate retries
+    /// that may succeed.
     private static let deterministicErrorTools: Set<String> = [
-        "file_read", "file_search", "file_edit",
+        "file_read", "file_search", "file_edit", "capabilities_load",
     ]
 
     /// Error kinds eligible for held-error replay. Both depend only on the
@@ -162,6 +168,9 @@ public final class AgentTaskState {
     public private(set) var lastListing: ListingSnapshot?
     /// The exact envelope the model received for the most recent call.
     public private(set) var lastResultEnvelope: String?
+    /// The most recent tool name, used when the same result kind has different
+    /// follow-up semantics for generate vs edit.
+    private var lastToolName: String?
     /// Reads still considered fresh, keyed by signature. A write/edit to a
     /// read's path invalidates its entry so a verify-read re-executes instead
     /// of replaying stale pre-edit content.
@@ -195,6 +204,7 @@ public final class AgentTaskState {
     /// send; one-shot loops simply never call it.
     public func beginMessage() {
         lastResultEnvelope = nil
+        lastToolName = nil
         freshReads.removeAll(keepingCapacity: true)
         heldErrors.removeAll(keepingCapacity: true)
         heldErrorReplays.removeAll(keepingCapacity: true)
@@ -257,6 +267,7 @@ public final class AgentTaskState {
 
         lastResultEnvelope = result
         lastResultClass = resultClass
+        lastToolName = name
 
         // An exec can mutate ANY path (rm/mv/redirects, scripts) — wipe all
         // fresh reads so no post-mutation verify-read replays stale content.
@@ -337,9 +348,9 @@ public final class AgentTaskState {
             lastListing = parseListing(result)
         case .fileContent:
             consecutiveListingsWithoutRead = 0
-        case .notFound, .error, .other:
+        case .notFound, .error, .nativeImageGeneration, .other:
             break
-        }
+        }  // nativeImageGeneration carries associated values; matched without binding
 
         // Mark a successful read-like result as fresh (with its exact
         // envelope) so a re-issue replays it until a write invalidates it.
@@ -407,6 +418,19 @@ public final class AgentTaskState {
             }
             return
                 "Path not found. Pick a `path` from the most recent listing's entries, or list the parent directory."
+        case .nativeImageGeneration(let paths, let isEdit):
+            // Only nudge toward an edit AFTER a fresh generation, never after an
+            // edit (which would loop).
+            guard lastToolName == "image", !isEdit, !paths.isEmpty else { return nil }
+            let joinedPaths = paths.map { "`\($0)`" }.joined(separator: ", ")
+            return
+                "The previous `image` result saved image path(s): \(joinedPaths). "
+                + "If the user asked for ANY follow-up that modifies, edits, changes, adds to, "
+                + "recolors, or transforms THAT generated image, you MUST call `image` now "
+                + "with `source_paths` set to those path value(s) — do NOT call `image` "
+                + "without `source_paths` again (that produces a brand-new unrelated image, not an "
+                + "edit of this one). Only if no such follow-up was requested should you give a brief "
+                + "final confirmation. Do not narrate the edit as the final answer instead of calling the tool."
         case .fileContent, .error, .other:
             return nil
         }
@@ -437,8 +461,25 @@ public final class AgentTaskState {
             return .populatedListing
         case "file":
             return .fileContent
+        case "native_image_generation_job":
+            let paths = nativeImagePaths(from: payload)
+            if !paths.isEmpty {
+                let isEdit = (payload["mode"] as? String) == "edit"
+                return .nativeImageGeneration(paths: paths, isEdit: isEdit)
+            }
+            return .other
         default:
             return .other
+        }
+    }
+
+    private static func nativeImagePaths(from payload: [String: Any]) -> [String] {
+        guard let images = payload["images"] as? [[String: Any]] else { return [] }
+        return images.compactMap { image in
+            guard let path = image["path"] as? String,
+                !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            return path
         }
     }
 

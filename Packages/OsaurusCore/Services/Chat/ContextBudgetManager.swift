@@ -8,6 +8,9 @@
 //
 
 import Foundation
+import os
+
+private let contextBudgetLogger = Logger(subsystem: "ai.osaurus", category: "context-budget")
 
 /// Dynamic token breakdown for the context window, displayed in the
 /// context budget hover popover. Entries are derived from the composer's
@@ -22,7 +25,7 @@ public struct ContextBreakdown: Equatable, Sendable {
     }
 
     public enum Tint: String, Sendable {
-        case purple, blue, orange, green, gray, cyan, teal, indigo
+        case purple, blue, orange, green, gray, cyan, teal, indigo, pink
     }
 
     /// Prompt sections + tools
@@ -50,6 +53,7 @@ public struct ContextBreakdown: Equatable, Sendable {
         case "codeStyle", "riskAware": return .gray
         case "sandbox": return .teal
         case "memory": return .blue
+        case "screenContext": return .pink
         case "preflight": return .cyan
         case "skills": return .orange
         default: return .gray
@@ -62,6 +66,7 @@ public struct ContextBreakdown: Equatable, Sendable {
     /// here and surfaced as its own entry.
     static func from(
         context composed: ComposedContext,
+        screenContextTokens: Int = 0,
         conversationTokens: Int = 0,
         inputTokens: Int = 0,
         outputTokens: Int = 0
@@ -71,6 +76,7 @@ public struct ContextBreakdown: Equatable, Sendable {
             manifest: composed.manifest,
             toolTokens: composed.toolTokens,
             memoryTokens: memoryTokens,
+            screenContextTokens: screenContextTokens,
             conversationTokens: conversationTokens,
             inputTokens: inputTokens,
             outputTokens: outputTokens
@@ -87,6 +93,7 @@ public struct ContextBreakdown: Equatable, Sendable {
         manifest: PromptManifest,
         toolTokens: Int = 0,
         memoryTokens: Int = 0,
+        screenContextTokens: Int = 0,
         conversationTokens: Int = 0,
         inputTokens: Int = 0,
         outputTokens: Int = 0
@@ -96,6 +103,16 @@ public struct ContextBreakdown: Equatable, Sendable {
             .map { Entry(id: $0.id, label: $0.label, tokens: $0.estimatedTokens, tint: tint(for: $0.id)) }
         if memoryTokens > 0 {
             ctx.append(Entry(id: "memory", label: L("Memory"), tokens: memoryTokens, tint: tint(for: "memory")))
+        }
+        if screenContextTokens > 0 {
+            ctx.append(
+                Entry(
+                    id: "screenContext",
+                    label: L("Screen Context"),
+                    tokens: screenContextTokens,
+                    tint: tint(for: "screenContext")
+                )
+            )
         }
         if toolTokens > 0 {
             ctx.append(Entry(id: "tools", label: L("Tools"), tokens: toolTokens, tint: .orange))
@@ -387,7 +404,16 @@ public struct ContextBudgetManager: Sendable {
         guard protectedTailStart > 1 else {
             // Protected regions cover everything — nothing left to trim.
             markVisibleAsSent()
-            return (render(), Self.estimateTokens(for: render()) > budget)
+            let rendered = render()
+            let renderedTokens = Self.estimateTokens(for: rendered)
+            if renderedTokens > budget {
+                Self.logHistoryOverBudget(
+                    estimatedTokens: renderedTokens,
+                    budget: budget,
+                    phase: "protect-only check"
+                )
+            }
+            return (rendered, renderedTokens > budget)
         }
 
         // Phase 1: freeze summaries for middle tool results that were never
@@ -428,11 +454,29 @@ public struct ContextBudgetManager: Sendable {
         var runningTokens = Self.estimateTokens(for: render())
         var noteAccounted = watermark.droppedCount > 0
         while tailStart > 1, runningTokens > budget {
-            let dropped = visible[1]
-            watermark.recordDrop(at: dropped.origIndex, original: messages[dropped.origIndex])
-            visible.remove(at: 1)
-            tailStart -= 1
-            runningTokens -= Self.estimateTokens(forMessage: dropped.message)
+            // Drop the WHOLE oldest middle unit — an assistant turn plus the
+            // contiguous tool results answering it — never a lone message.
+            // Splitting a unit could leave an assistant `tool_use` without its
+            // `tool` result (or vice-versa), the orphan the encoder forwards
+            // as the Anthropic tool-pairing 400. The unit is measured inline
+            // over `visible` (avoiding a per-iteration array copy) and bounded
+            // by the middle so it never reaches into the protected tail.
+            let middleCount = tailStart - 1
+            var unitLength = 1
+            if visible[1].message.role.lowercased() == "assistant" {
+                while unitLength < middleCount,
+                    visible[1 + unitLength].message.role.lowercased() == "tool"
+                {
+                    unitLength += 1
+                }
+            }
+            for _ in 0 ..< unitLength {
+                let dropped = visible[1]
+                watermark.recordDrop(at: dropped.origIndex, original: messages[dropped.origIndex])
+                visible.remove(at: 1)
+                tailStart -= 1
+                runningTokens -= Self.estimateTokens(forMessage: dropped.message)
+            }
             if !noteAccounted {
                 runningTokens += Self.estimateTokens(
                     forMessage: ChatMessage(role: "user", content: Self.trimmedHistoryNote)
@@ -442,6 +486,13 @@ public struct ContextBudgetManager: Sendable {
         }
 
         markVisibleAsSent()
+        if runningTokens > budget {
+            Self.logHistoryOverBudget(
+                estimatedTokens: runningTokens,
+                budget: budget,
+                phase: "drop phase"
+            )
+        }
         return (render(), runningTokens > budget)
     }
 
@@ -478,8 +529,15 @@ public struct ContextBudgetManager: Sendable {
         let recentCount = countRecentMessages(in: messages, pairs: recentPairsToKeep)
         let protectedTailStart = messages.count - recentCount
 
-        // If protected regions cover everything, we can't trim further
+        // If protected regions cover everything, we can't trim further. We're
+        // already past the within-budget check above, so this returns an
+        // over-budget transcript — leave a breadcrumb.
         if firstMessageCount >= protectedTailStart {
+            Self.logHistoryOverBudget(
+                estimatedTokens: currentTokens,
+                budget: budget,
+                phase: "stateless protect-only"
+            )
             return messages
         }
 
@@ -507,19 +565,30 @@ public struct ContextBudgetManager: Sendable {
         var result: [ChatMessage] = [trimmed[0]]  // Keep first message
         let tail = Array(trimmed[protectedTailStart...])
 
-        // Add middle messages from newest to oldest until budget is reached
+        // Group the middle into atomic units (an assistant turn plus the
+        // contiguous tool results answering it; any other message is its own
+        // unit) and keep WHOLE units newest→oldest. Keeping by message could
+        // retain a tool result whose assistant tool_use was dropped — the
+        // orphan the encoder rejects with Anthropic's tool_use/tool_result
+        // 400 — so we keep/drop indivisible units instead. Stopping at the
+        // first unit that doesn't fit leaves the survivors as a contiguous
+        // suffix that always begins on a clean unit boundary, never a bare
+        // tool result.
         let middle = Array(trimmed[firstMessageCount ..< protectedTailStart])
-        var middleToKeep: [ChatMessage] = []
+        let units = Self.groupIntoUnits(middle)
+        var keptUnits: [[ChatMessage]] = []
         var runningTokens = Self.estimateTokens(for: result) + Self.estimateTokens(for: tail)
 
-        // Iterate from end of middle to start, keeping what fits
-        for msg in middle.reversed() {
-            let msgTokens = Self.estimateTokens(for: [msg])
-            if runningTokens + msgTokens <= budget {
-                middleToKeep.insert(msg, at: 0)
-                runningTokens += msgTokens
+        for unit in units.reversed() {
+            let unitTokens = Self.estimateTokens(for: unit)
+            if runningTokens + unitTokens <= budget {
+                keptUnits.insert(unit, at: 0)
+                runningTokens += unitTokens
+            } else {
+                break
             }
         }
+        let middleToKeep = keptUnits.flatMap { $0 }
 
         // If we dropped some middle messages, insert a context note
         if middleToKeep.count < middle.count {
@@ -535,10 +604,53 @@ public struct ContextBudgetManager: Sendable {
         result.append(contentsOf: middleToKeep)
         result.append(contentsOf: tail)
 
+        if runningTokens > budget {
+            Self.logHistoryOverBudget(
+                estimatedTokens: runningTokens,
+                budget: budget,
+                phase: "stateless drop phase"
+            )
+        }
         return result
     }
 
     // MARK: - Private Helpers
+
+    /// Log when history can't be brought within budget even after every
+    /// compaction lever — the protected first message + recent tail alone
+    /// exceed the window. A breadcrumb so an over-budget send isn't silent
+    /// (it pairs with the `overBudget` flag callers may surface to the user).
+    private static func logHistoryOverBudget(estimatedTokens: Int, budget: Int, phase: String) {
+        contextBudgetLogger.warning(
+            """
+            Context history still over budget after \(phase, privacy: .public): \
+            est \(estimatedTokens, privacy: .public) tok > \(budget, privacy: .public) budget — \
+            protected first message + recent tail alone exceed the window
+            """
+        )
+    }
+
+    /// Group a contiguous message slice into atomic trim units, preserving
+    /// order. A unit is one `assistant` turn plus the contiguous run of `tool`
+    /// results answering it; any other message (user/system, or a stray orphan
+    /// tool) is its own single-message unit. Keeping/dropping whole units keeps
+    /// a `tool_use` and its `tool_result` together so trimming can never orphan
+    /// either half (the Anthropic tool-pairing 400).
+    static func groupIntoUnits(_ messages: [ChatMessage]) -> [[ChatMessage]] {
+        var units: [[ChatMessage]] = []
+        var index = 0
+        while index < messages.count {
+            var end = index + 1
+            if messages[index].role.lowercased() == "assistant" {
+                while end < messages.count, messages[end].role.lowercased() == "tool" {
+                    end += 1
+                }
+            }
+            units.append(Array(messages[index ..< end]))
+            index = end
+        }
+        return units
+    }
 
     /// Counts how many trailing messages constitute the requested number of
     /// assistant→tool pairs. A "pair" is an assistant turn followed by one
@@ -693,6 +805,21 @@ final class ContextBudgetTracker {
         breakdown?.setTokens(for: "conversation", in: \.messages, tokens: tokens, label: L("Conversation"), tint: .gray)
     }
 
+    /// Set the screen-context row — the frozen `[Screen Context]` block that
+    /// rides on the latest user message (mirrors how the Memory row is
+    /// surfaced separately from Conversation). Counted once here so the live
+    /// conversation total, measured before the prefix is injected, doesn't
+    /// double-count it.
+    func updateScreenContext(tokens: Int) {
+        breakdown?.setTokens(
+            for: "screenContext",
+            in: \.context,
+            tokens: tokens,
+            label: L("Screen Context"),
+            tint: .pink
+        )
+    }
+
     /// Surface history compaction in the context popover: `savedTokens` is
     /// the estimate trimmed away from the conversation this iteration.
     func updateCompaction(savedTokens: Int) {
@@ -714,7 +841,7 @@ final class ContextBudgetTracker {
             currentTurnOutput = ContextBudgetManager.estimateOutputTokens(for: turn)
         }
         let totalOutput = cumulativeOutputTokens + currentTurnOutput
-        bd.setTokens(for: "output", in: \.messages, tokens: totalOutput, label: "Output", tint: .green)
+        bd.setTokens(for: "output", in: \.messages, tokens: totalOutput, label: L("Output"), tint: .green)
         return bd
     }
 

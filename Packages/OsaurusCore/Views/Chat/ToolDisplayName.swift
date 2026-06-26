@@ -43,6 +43,15 @@ enum ToolDisplayName {
         if isSearchTool(rawName) {
             return searchLabel(rawName, running: running, arguments: arguments)
         }
+        if rawName == "image" {
+            return imageLabel(running: running, arguments: arguments)
+        }
+        // Other sub-agent tools (spawn, computer_use, sandbox_reduce) take their
+        // chip label from the capability registry (SSOT) so the chip and the
+        // live-feed header always read the same word.
+        if let label = SubagentCapabilityRegistry.displayLabel(forToolName: rawName) {
+            return label
+        }
         if let label = curated[rawName] {
             return label.text(running: running)
         }
@@ -57,6 +66,25 @@ enum ToolDisplayName {
     /// Whether `rawName` is a search tool whose title should embed its query.
     static func isSearchTool(_ rawName: String) -> Bool {
         rawName == "search" || rawName == "web_search"
+    }
+
+    /// The single `image` tool both generates and edits; show the right verb by
+    /// peeking at whether `source_paths` was provided (edit mode).
+    private static func imageLabel(running: Bool, arguments: String?) -> String {
+        let isEdit = imageHasSourcePaths(arguments)
+        if isEdit {
+            return running ? L("Editing the image") : L("Edited the image")
+        }
+        return running ? L("Generating an image") : L("Generated an image")
+    }
+
+    private static func imageHasSourcePaths(_ arguments: String?) -> Bool {
+        guard let arguments,
+            let data = arguments.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let paths = ArgumentCoercion.stringArray(json["source_paths"])
+        else { return false }
+        return paths.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     private static func searchLabel(_ rawName: String, running: Bool, arguments: String?) -> String {
@@ -113,6 +141,7 @@ enum ToolDisplayName {
         "db_alter_table": ToolLabel(L("Updating a table’s structure"), L("Updated a table’s structure")),
         "db_insert": ToolLabel(L("Inserting into the database"), L("Inserted into the database")),
         "db_upsert": ToolLabel(L("Saving to the database"), L("Saved to the database")),
+        "db_import": ToolLabel(L("Importing data into the database"), L("Imported data into the database")),
         "db_update": ToolLabel(L("Updating the database"), L("Updated the database")),
         "db_delete": ToolLabel(L("Deleting from the database"), L("Deleted from the database")),
         "db_query": ToolLabel(L("Querying the database"), L("Queried the database")),
@@ -158,6 +187,7 @@ enum ToolDisplayName {
         "capabilities_load": ToolLabel(L("Loading capabilities"), L("Loaded capabilities")),
         "search_memory": ToolLabel(L("Searching memory"), L("Searched memory")),
         "render_chart": ToolLabel(L("Rendering a chart"), L("Rendered a chart")),
+        // `image` is handled by `imageLabel` (mode-aware: generate vs edit).
         "share_artifact": ToolLabel(L("Sharing a file"), L("Shared a file")),
         "speak": ToolLabel(L("Speaking"), L("Spoke")),
         "notify": ToolLabel(L("Sending a notification"), L("Sent a notification")),

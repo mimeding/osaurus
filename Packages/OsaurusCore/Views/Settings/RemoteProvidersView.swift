@@ -5,7 +5,15 @@
 //  View for managing remote API providers (OpenAI, Anthropic, etc.).
 //
 
+import AppKit
 import SwiftUI
+
+/// Lets the connectivity filter drive the header `HeaderTabsRow`, so the
+/// Providers tab uses the same segmented control as every other settings tab.
+/// `title` maps to the existing `displayName`.
+extension ProviderConnectivityFilter: AnimatedTabItem {
+    var title: String { displayName }
+}
 
 struct RemoteProvidersView: View {
     @ObservedObject private var manager = RemoteProviderManager.shared
@@ -18,6 +26,10 @@ struct RemoteProvidersView: View {
     @State private var editingProvider: RemoteProvider?
     @State private var showReorderSheet = false
     @State private var hasAppeared = false
+    @State private var providerFilter: ProviderConnectivityFilter = .all
+    @State private var credentialPresence: [UUID: RemoteProviderCredentialPresence] = [:]
+    @State private var reconnectingAll = false
+    @State private var reconnectingProviderIds: Set<UUID> = []
 
     private struct AddSheetConfig: Identifiable {
         let id = UUID()
@@ -41,6 +53,7 @@ struct RemoteProvidersView: View {
                     if userConfiguredProviders.isEmpty {
                         emptyStateView
                     } else {
+                        connectivityCenterView
                         providerListView
                     }
                 }
@@ -55,6 +68,7 @@ struct RemoteProvidersView: View {
             withAnimation(.easeOut(duration: 0.25).delay(0.05)) {
                 hasAppeared = true
             }
+            refreshCredentialPresence()
         }
         .sheet(item: $addSheetConfig) { config in
             RemoteProviderEditSheet(
@@ -63,11 +77,13 @@ struct RemoteProvidersView: View {
                 startAtAPIKeyPicker: config.startAtAPIKeyPicker
             ) { provider, apiKey, oauthTokens in
                 manager.addProvider(provider, apiKey: apiKey, oauthTokens: oauthTokens)
+                refreshCredentialPresence()
             }
         }
         .sheet(item: $editingProvider) { provider in
             RemoteProviderEditSheet(provider: provider) { updatedProvider, apiKey, oauthTokens in
                 manager.updateProvider(updatedProvider, apiKey: apiKey, oauthTokens: oauthTokens)
+                refreshCredentialPresence()
             }
         }
         .sheet(isPresented: $showReorderSheet) {
@@ -77,19 +93,40 @@ struct RemoteProvidersView: View {
 
     // MARK: - Header
 
+    @ViewBuilder
     private var headerView: some View {
-        ManagerHeaderWithActions(
-            title: L("Providers"),
-            subtitle: subtitleText
-        ) {
-            if userConfiguredProviders.count > 1 {
-                HeaderIconButton("list.bullet.indent", help: "Reorder providers") {
-                    showReorderSheet = true
-                }
+        // Once providers exist, the connectivity filter rides the header
+        // `tabsRow` like every other settings tab. The empty state has nothing
+        // to filter, so it falls back to the plain actions header (same pattern
+        // as `ThemesView`).
+        if userConfiguredProviders.isEmpty {
+            ManagerHeaderWithActions(
+                title: L("Providers"),
+                subtitle: subtitleText
+            ) {
+                headerActions
             }
-            HeaderPrimaryButton("Add Provider", icon: "plus") {
-                addSheetConfig = AddSheetConfig(preset: nil)
+        } else {
+            ManagerHeaderWithTabs(
+                title: L("Providers"),
+                subtitle: subtitleText
+            ) {
+                headerActions
+            } tabsRow: {
+                HeaderTabsRow(selection: $providerFilter)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var headerActions: some View {
+        if userConfiguredProviders.count > 1 {
+            HeaderIconButton("list.bullet.indent", help: "Reorder providers") {
+                showReorderSheet = true
+            }
+        }
+        HeaderPrimaryButton("Add Provider", icon: "plus") {
+            addSheetConfig = AddSheetConfig(preset: nil)
         }
     }
 
@@ -120,6 +157,19 @@ struct RemoteProvidersView: View {
 
     private var userConfiguredProviders: [RemoteProvider] {
         manager.configuration.providers.filter { $0.providerType != .osaurusRouter }
+    }
+
+    private var connectivitySnapshot: ProviderConnectivitySnapshot {
+        ProviderConnectivityCenter.snapshot(
+            providers: userConfiguredProviders,
+            states: manager.providerStates,
+            proxy: GlobalProxySettings.currentDiagnostic(),
+            credentialsByProvider: credentialPresence
+        )
+    }
+
+    private var visibleProviderReports: [ProviderConnectivityProviderReport] {
+        connectivitySnapshot.filtered(by: providerFilter)
     }
 
     private func presentAPIKeyPicker() {
@@ -185,20 +235,272 @@ struct RemoteProvidersView: View {
 
     // MARK: - Provider List
 
+    private var connectivityCenterView: some View {
+        ProviderConnectivityCenterPanel(
+            snapshot: connectivitySnapshot,
+            isReconnecting: reconnectingAll,
+            onReconnectAll: reconnectAllProviders,
+            onCopyReport: copyConnectivityReport
+        )
+    }
+
+    @ViewBuilder
     private var providerListView: some View {
-        VStack(spacing: 12) {
-            ForEach(userConfiguredProviders) { provider in
-                ProviderCardView(
-                    provider: provider,
-                    state: manager.providerStates[provider.id],
-                    onEdit: { editingProvider = provider },
-                    onDelete: { manager.removeProvider(id: provider.id) },
-                    onToggleEnabled: { enabled in
-                        manager.setEnabled(enabled, for: provider.id)
+        if visibleProviderReports.isEmpty {
+            // Providers exist, but none match the active connectivity filter
+            // (e.g. "Attention" with nothing flagged). Show a placeholder
+            // rather than a blank gap below the filter.
+            filteredEmptyState
+        } else {
+            VStack(spacing: 12) {
+                ForEach(visibleProviderReports) { report in
+                    ProviderCardView(
+                        report: report,
+                        state: report.state,
+                        isReconnecting: reconnectingProviderIds.contains(report.id),
+                        onReconnect: { reconnectProvider(report.provider) },
+                        onCopyDiagnostics: { copyDiagnostics(report.diagnostics) },
+                        onEdit: { editingProvider = report.provider },
+                        onDelete: { manager.removeProvider(id: report.id) },
+                        onToggleEnabled: { enabled in
+                            manager.setEnabled(enabled, for: report.id)
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    private var filteredEmptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 26))
+                .foregroundColor(theme.tertiaryText)
+            Text("Nothing to show here", bundle: .module)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(theme.secondaryText)
+            Text("No providers match this filter.", bundle: .module)
+                .font(.system(size: 12))
+                .foregroundColor(theme.tertiaryText)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 48)
+    }
+
+    private func refreshCredentialPresence() {
+        let providers = userConfiguredProviders
+        Task {
+            var next: [UUID: RemoteProviderCredentialPresence] = [:]
+            for provider in providers {
+                let providerID = provider.id
+                let presence = await RemoteProviderKeychain.runOffCooperativeExecutor {
+                    RemoteProviderCredentialPresence(
+                        apiKeyPresent: RemoteProviderKeychain.hasAPIKey(for: providerID),
+                        oauthTokensPresent: RemoteProviderKeychain.hasOAuthTokens(for: providerID)
+                    )
+                }
+                next[providerID] = presence
+            }
+            await MainActor.run {
+                credentialPresence = next
+            }
+        }
+    }
+
+    private func reconnectProvider(_ provider: RemoteProvider) {
+        guard provider.enabled else { return }
+        reconnectingProviderIds.insert(provider.id)
+        Task {
+            do {
+                try await manager.reconnect(providerId: provider.id)
+            } catch {
+                // RemoteProviderManager stores the user-facing failure in state.
+            }
+            await MainActor.run {
+                _ = reconnectingProviderIds.remove(provider.id)
+            }
+        }
+    }
+
+    private func reconnectAllProviders() {
+        let targets = userConfiguredProviders.filter(\.enabled)
+        guard !targets.isEmpty else { return }
+        reconnectingAll = true
+        Task {
+            for provider in targets {
+                do {
+                    try await manager.reconnect(providerId: provider.id)
+                } catch {
+                    // Individual provider rows keep their own diagnostics.
+                }
+            }
+            await MainActor.run {
+                reconnectingAll = false
+            }
+        }
+    }
+
+    private func copyConnectivityReport() {
+        copyText(connectivitySnapshot.pasteboardText)
+    }
+
+    private func copyDiagnostics(_ report: ProviderDiagnosticReport) {
+        copyText(report.pasteboardText)
+    }
+
+    private func copyText(_ value: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
+    }
+}
+
+// MARK: - Provider Connectivity Center Panel
+
+private struct ProviderConnectivityCenterPanel: View {
+    @Environment(\.theme) private var theme
+
+    let snapshot: ProviderConnectivitySnapshot
+    let isReconnecting: Bool
+    let onReconnectAll: () -> Void
+    let onCopyReport: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                HStack(spacing: 10) {
+                    Image(systemName: iconName)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(statusColor)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(statusColor.opacity(0.12)))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Provider Connectivity", bundle: .module)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(theme.primaryText)
+                        Text(summaryText)
+                            .font(.system(size: 12))
+                            .foregroundColor(theme.secondaryText)
                     }
+                }
+
+                Spacer()
+
+                Button(action: onReconnectAll) {
+                    if isReconnecting {
+                        ProgressView()
+                            .scaleEffect(0.55)
+                            .frame(width: 28, height: 28)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 28, height: 28)
+                    }
+                }
+                .buttonStyle(PlainButtonStyle())
+                .foregroundColor(theme.secondaryText)
+                .background(Circle().fill(theme.tertiaryBackground))
+                .disabled(isReconnecting || snapshot.enabledCount == 0)
+                .localizedHelp("Reconnect all")
+
+                Button(action: onCopyReport) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .foregroundColor(theme.secondaryText)
+                .background(Circle().fill(theme.tertiaryBackground))
+                .localizedHelp("Copy diagnostics")
+            }
+
+            HStack(spacing: 8) {
+                ProviderConnectivityMetricPill(
+                    title: L("Connected"),
+                    value: "\(snapshot.connectedCount)",
+                    color: theme.successColor
+                )
+                ProviderConnectivityMetricPill(
+                    title: L("Attention"),
+                    value: "\(snapshot.attentionCount)",
+                    color: theme.warningColor
+                )
+                ProviderConnectivityMetricPill(
+                    title: L("Models"),
+                    value: "\(snapshot.modelCount)",
+                    color: theme.accentColor
+                )
+                ProviderConnectivityMetricPill(
+                    title: L("Manual models"),
+                    value: "\(snapshot.manualModelProviderCount)",
+                    color: theme.infoColor
                 )
             }
         }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(theme.secondaryBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(statusColor.opacity(0.35), lineWidth: 1)
+                )
+        )
+    }
+
+    private var statusColor: Color {
+        switch snapshot.highestSeverity {
+        case .ok:
+            return theme.successColor
+        case .info:
+            return theme.infoColor
+        case .warning:
+            return theme.warningColor
+        case .blocked:
+            return theme.errorColor
+        }
+    }
+
+    private var iconName: String {
+        switch snapshot.highestSeverity {
+        case .ok:
+            return "checkmark.seal.fill"
+        case .info:
+            return "network"
+        case .warning:
+            return "exclamationmark.triangle.fill"
+        case .blocked:
+            return "xmark.octagon.fill"
+        }
+    }
+
+    private var summaryText: String {
+        L(
+            "\(snapshot.connectedCount)/\(snapshot.totalCount) connected - \(snapshot.attentionCount) attention - \(snapshot.modelCount) models"
+        )
+    }
+}
+
+private struct ProviderConnectivityMetricPill: View {
+    @Environment(\.theme) private var theme
+
+    let title: String
+    let value: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(value)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundColor(color)
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(theme.secondaryText)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(color.opacity(0.1)))
     }
 }
 
@@ -206,8 +508,11 @@ struct RemoteProvidersView: View {
 
 private struct ProviderCardView: View {
     @Environment(\.theme) private var theme
-    let provider: RemoteProvider
+    let report: ProviderConnectivityProviderReport
     let state: RemoteProviderState?
+    let isReconnecting: Bool
+    let onReconnect: () -> Void
+    let onCopyDiagnostics: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
     let onToggleEnabled: (Bool) -> Void
@@ -215,6 +520,7 @@ private struct ProviderCardView: View {
     @State private var showDeleteConfirm = false
     @State private var isHovered = false
 
+    private var provider: RemoteProvider { report.provider }
     private var isConnected: Bool { state?.isConnected ?? false }
     private var isConnecting: Bool { state?.isConnecting ?? false }
 
@@ -293,6 +599,12 @@ private struct ProviderCardView: View {
                         Text("\(modelCount) model\(modelCount == 1 ? "" : "s") available", bundle: .module)
                             .font(.system(size: 12))
                             .foregroundColor(theme.secondaryText)
+                    } else if report.hasAttention {
+                        Text(report.summary)
+                            .font(.system(size: 12))
+                            .foregroundColor(theme.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
                 }
 
@@ -300,6 +612,39 @@ private struct ProviderCardView: View {
 
                 // Actions
                 HStack(spacing: 12) {
+                    Button(action: onReconnect) {
+                        if isReconnecting || isConnecting {
+                            ProgressView()
+                                .scaleEffect(0.55)
+                                .frame(width: 32, height: 32)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 14))
+                                .foregroundColor(theme.secondaryText)
+                                .frame(width: 32, height: 32)
+                        }
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(theme.tertiaryBackground)
+                    )
+                    .disabled(!provider.enabled || isReconnecting || isConnecting)
+                    .localizedHelp("Reconnect")
+
+                    Button(action: onCopyDiagnostics) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 14))
+                            .foregroundColor(theme.secondaryText)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(theme.tertiaryBackground)
+                            )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .localizedHelp("Copy diagnostics")
+
                     Button(action: onEdit) {
                         Image(systemName: "pencil")
                             .font(.system(size: 14))
@@ -312,16 +657,19 @@ private struct ProviderCardView: View {
                     }
                     .buttonStyle(PlainButtonStyle())
 
-                    Button(action: { showDeleteConfirm = true }) {
-                        Image(systemName: "trash")
-                            .font(.system(size: 14))
-                            .foregroundColor(theme.errorColor.opacity(0.8))
-                            .frame(width: 32, height: 32)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(theme.errorColor.opacity(0.1))
-                            )
-                    }
+                    Button(
+                        action: { showDeleteConfirm = true },
+                        label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 14))
+                                .foregroundColor(theme.errorColor.opacity(0.8))
+                                .frame(width: 32, height: 32)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(theme.errorColor.opacity(0.1))
+                                )
+                        }
+                    )
                     .buttonStyle(PlainButtonStyle())
 
                     Toggle(
@@ -354,6 +702,12 @@ private struct ProviderCardView: View {
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(theme.errorColor.opacity(0.05))
+            }
+
+            if report.hasAttention {
+                Divider()
+                    .background(theme.primaryBorder)
+                ProviderDiagnosticsRowsView(report: report.diagnostics, maxRows: 3)
             }
         }
         .background(

@@ -44,7 +44,8 @@ Canonical reference for all Osaurus features, their status, and documentation.
 | VAD Mode                         | Stable    | "Voice Input"      | VOICE_INPUT.md                | Services/Voice/VADService.swift, Views/ContentView.swift (VAD controls)                     |
 | Transcription Mode               | Stable    | "Voice Input"      | VOICE_INPUT.md                | Services/Voice/TranscriptionModeService.swift, Views/Voice/TranscriptionOverlayView.swift         |
 | Sandbox                          | macOS 26+ | "Sandbox"          | SANDBOX.md                    | Services/Sandbox/SandboxManager.swift, Tools/BuiltinSandboxTools.swift, Managers/Plugin/SandboxPluginManager.swift, Views/Sandbox/SandboxView.swift |
-| Storage Encryption               | Stable    | -                  | STORAGE.md                    | Identity/StorageKeyManager.swift, Storage/EncryptedSQLiteOpener.swift, Storage/StorageDatabaseCatalog.swift, Storage/StorageMutationGate.swift, Storage/StorageExportService.swift, Storage/EncryptedFileStore.swift, Storage/AttachmentBlobStore.swift, Storage/StorageMaintenance.swift, Views/Settings/StorageSettingsView.swift, SQLCipher/ |
+| Computer Use                     | Experimental | -               | COMPUTER_USE.md               | ComputerUse/ (Tool, Loop, Policy, Perception, Recipes, Driver), Views/Settings/ComputerUseSettingsView.swift, Views/Chat/ComputerUseFeedView.swift |
+| Storage (plaintext default, opt-in encryption) | Stable | -          | STORAGE.md                    | Storage/StorageFileFormat.swift, Storage/StorageEncryptionPolicy.swift, Storage/OsaurusStorageOpener.swift, Storage/StorageMigrationCoordinator.swift, Storage/StorageRecoveryService.swift, Storage/StorageFile.swift, Storage/PersistenceHealth.swift, Identity/StorageKeyManager.swift, Storage/EncryptedSQLiteOpener.swift, Storage/StorageDatabaseCatalog.swift, Storage/StorageMutationGate.swift, Storage/StorageExportService.swift, Storage/EncryptedFileStore.swift, Storage/AttachmentBlobStore.swift, Storage/StorageMaintenance.swift, Views/Settings/StorageSettingsView.swift, SQLCipher/ |
 | CLI                              | Stable    | "CLI Reference"    | (in README)                   | Packages/OsaurusCLI/                                                                  |
 
 ---
@@ -69,11 +70,11 @@ Canonical reference for all Osaurus features, their status, and documentation.
 │  │   ├── WatchersView (Watchers)                                         │
 │  │   ├── ThemesView (Themes)                                             │
 │  │   ├── SandboxView (Sandbox Container & Plugins)                       │
-│  │   ├── StorageSettingsView (Encryption key, backup, key rotation)      │
+│  │   ├── StorageSettingsView (Encryption opt-in, backup, recovery)       │
 │  │   ├── InsightsView (Developer: Insights)                              │
 │  │   ├── ServerView (Developer: Server Explorer)                         │
 │  │   ├── VoiceView (Voice Input & VAD Settings)                          │
-│  │   ├── PrivacyView (Privacy Filter: install + 4 sub-tabs)              │
+│  │   ├── PrivacyView (Privacy Filter: 4 sub-tabs; opt-in model)          │
 │  │   └── ConfigurationView (Settings)                                    │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  Services Layer                                                          │
@@ -152,6 +153,12 @@ Canonical reference for all Osaurus features, their status, and documentation.
 │  │   ├── PrivacyFilterModelDownloader (HF bundle install + verify)       │
 │  │   ├── PrivacyFilterStore (Synchronous JSON config persistence)        │
 │  │   └── WireTransportProbe (Captures post-scrub bytes for Insights)     │
+│  ├── Computer Use                                                        │
+│  │   ├── ComputerUseTool (computer_use entry tool, nested loop)          │
+│  │   ├── ComputerUseLoop (perceive-decide-gate-act-verify)               │
+│  │   ├── NativeMacDriver (AX / SOM / Vision capture + input)             │
+│  │   ├── CaptureRouter / FrameScrubber / CloudVisionConsent              │
+│  │   └── EffectClassifier + AutonomyPolicy/Gate + AppRecipes             │
 │  └── Utilities                                                           │
 │      ├── InsightsService (Request logging)                               │
 │      ├── HuggingFaceService (Model downloads)                            │
@@ -238,6 +245,8 @@ Research notes for the next local-runtime compatibility wave live in
 | xAI | api.x.ai | 443 (HTTPS) | API Key |
 | OpenRouter | openrouter.ai | 443 (HTTPS) | API Key |
 | Custom | (user-defined) | (user-defined) | Optional |
+
+**Osaurus peers (paired / discovered):** a native Osaurus peer is added as an `.osaurus` provider and can be used either as a plain OpenAI-compatible inference backend (**Mode 1**, `/chat/completions`, local tool loop) or run fully server-side as a **remote agent** (**Mode 2**, `/agents/{address}/run`, the remote agent's own model/context/tools). Mode 2 pins the model chip to the agent's live effective model and gates the first send on connect. See [REMOTE_PROVIDERS.md](REMOTE_PROVIDERS.md) and [SECURE_CHANNEL.md](SECURE_CHANNEL.md).
 
 ---
 
@@ -327,6 +336,7 @@ This command bridge is for external clients connecting to Osaurus. If Server > N
 - `Services/Documents/CSVAdapter.swift` — CSV and TSV table parsing with bounded input handling.
 - `Services/Documents/CSVEmitter.swift` — explicit CSV/TSV delimited-text export.
 - `Services/Documents/CSVTableWorkflowService.swift` — schema previews, bounded samples, and safe CSV/TSV conversion/export validation.
+- `Services/Documents/BusinessDocumentStudioService.swift` — one bounded inspect/preview/export orchestration layer across CSV/TSV, XLSX, PDF/PPTX, rich text, and text fallback workflows.
 - `Services/Documents/XLSXAdapter.swift` — XLSX workbook parsing from Office Open XML packages.
 - `Services/Documents/XLSXEmitter.swift` — XLSX workbook emission for round-trip workflows.
 - `Services/Documents/WorkbookWorkflowService.swift` — workbook inspection, export availability, validation issues, and explicit emitter-backed save flow.
@@ -340,6 +350,7 @@ This command bridge is for external clients connecting to Osaurus. If Server > N
 
 - CSV and TSV tables preserve headers, rows, delimiters, and source metadata. Explicit table workflow previews infer schema types from bounded samples, cap large-file reads, and validate CSV/TSV conversion/export before writing.
 - XLSX workbooks preserve sheets, cells, formulas, merged ranges, shared strings, relationships, and export availability metadata. Explicit workbook save flows validate bounds, formulas, non-finite numbers, XML-safe text, merged ranges, and emitter availability before writing a minimal valid `.xlsx` package.
+- Business Document Studio wraps registry lookup, bounded previews, export availability, safe destination containment, and text-fallback export into one service so UI, plugins, and attachment flows do not reimplement format-specific routing.
 - PPTX/POTX decks preserve slide grouping, text runs, notes, slide tables, and relationships.
 - PDFs preserve page boundaries, anchors, and simple text-layer tables so citations can point back to pages and detected table cells.
 - PDF/PPTX workflow previews expose page/slide/table/notes metadata and report missing structured emitters instead of treating text writes as valid binary output.
@@ -478,6 +489,7 @@ This command bridge is for external clients connecting to Osaurus. If Server > N
 - **Generation Settings** — Configure default model, temperature, and max tokens
 - **Import/Export** — Share agents as JSON files for backup or sharing
 - **Live Switching** — Click to activate a agent, theme updates automatically
+- **Host Files (per-agent folder grant)** — Optionally grant the agent a real macOS folder it may read and write inside, including over an authenticated remote agent run (Secure Channel). Writes stay inside the folder; shell and git remain disabled. Configure → Features → Host Files; see [SECURITY.md](SECURITY.md) and [OpenAI_API_GUIDE.md](OpenAI_API_GUIDE.md).
 
 **Feature Gates (Configure → Features):** stored on `Agent.settings`; [`SystemPromptComposer.resolveTools`](../Packages/OsaurusCore/Services/Chat/SystemPromptComposer.swift) strips the matching tools when a gate is off (auto mode). Capabilities are grouped by purpose; extra ones default **off** to reduce token cost.
 
@@ -489,6 +501,7 @@ This command bridge is for external clients connecting to Osaurus. If Server > N
 | Output | `speakEnabled` | Voice | off | `speak` |
 | Memory & Recall | `searchMemoryEnabled` | Memory Recall | off | `search_memory` |
 | Autonomy | `selfSchedulingEnabled` | Self-scheduling | off | `schedule_next_run` / `cancel_next_run` / `notify` + scheduling UI |
+| Autonomy | `computerUseEnabled` | Computer Use | off | `computer_use` entry tool (custom agents only; plus per-agent autonomy ceiling) |
 | Data | `dbEnabled` | Database | off | `db_*` tools + DB tabs |
 | Code Execution | sandbox settings | Autonomous Execution / Plugin Creation / Sandbox Network / Read Secret Files | off | Sandbox capabilities (visible but disabled when the container isn't running) |
 
@@ -502,6 +515,8 @@ This command bridge is for external clients connecting to Osaurus. If Server > N
 | `defaultModel` | Optional model ID for this agent |
 | `temperature` | Optional temperature override |
 | `maxTokens` | Optional max tokens override |
+| `hostWorkspaceBookmark` | Machine-local security-scoped bookmark for a host folder the agent may read/write inside; mounted only for authenticated remote agent runs (never sent to a paired peer) |
+| `hostWorkspacePath` | Advisory display path for the host workspace folder (source of truth is the bookmark) |
 
 ---
 
@@ -1286,7 +1301,7 @@ Eight settings total, down from v1's 18. The per-section budget knobs, MMR tunin
 
 **Tool API:** `search_memory(scope, query)` with three scopes: `pinned`, `episodes`, `transcript`. Replaces v1's five-scope tool.
 
-**HTTP API:** `POST /memory/ingest` writes transcripts and triggers an immediate distillation flush after the batch (no need to wait for the writer's debounce). Strict `/chat/completions` requests do not inject read-side memory; app chat, `POST /agents/{id}/run`, and plugin host inference own composed agent context.
+**HTTP API:** `POST /memory/ingest` writes transcripts and then distills synchronously after the batch — it forces an on-demand cold load of the core model when it isn't resident, awaits the single distill call, and reports the outcome (`distillation`, `episode_id`) in the response instead of a blind `{"status":"ok"}`. It is idempotent per `conversation_id` (re-ingest clears that conversation's prior pending signals + episodes), canonicalizes a UUID `agent_id`, and dead-letters sessions that keep failing so they stop re-distilling forever. `GET /agents` / `GET /agents/{id}` report `memory_entry_count` as stored memory (episodes + active pinned facts). Strict `/chat/completions` requests do not inject read-side memory; app chat, `POST /agents/{id}/run`, and plugin host inference own composed agent context.
 
 **Storage:** `~/.osaurus/memory/memory.sqlite` (SQLite with WAL mode), `~/.osaurus/memory/vectura/` (vector index)
 
@@ -1294,7 +1309,7 @@ Eight settings total, down from v1's 18. The per-section budget knobs, MMR tunin
 
 ### Privacy Filter
 
-**Purpose:** Scrub sensitive content from cloud-bound requests on the way out and unscrub the placeholders on the way back. Detection runs entirely on-device via OpenAI's `openai/privacy-filter` (Apache-2.0, 1.5B / 50M-active sparse-MoE token classifier), served through the MLX conversion `mlx-community/openai-privacy-filter-bf16` (~2.8 GB). Fail-closed on every write path — model unavailable, no substitutions applied, or post-scrub leak detected all block the send with a typed error instead of silently sending the original. See [PRIVACY_FILTER.md](PRIVACY_FILTER.md) for the full architecture.
+**Purpose:** Scrub sensitive content from cloud-bound requests on the way out and unscrub the placeholders on the way back. Two independent layers: a **deterministic regex** layer (built-ins + presets + custom rules) that ships on and needs **zero download**, and an **opt-in on-device AI classifier** — OpenAI's `openai/privacy-filter` (Apache-2.0, 1.5B / 50M-active sparse-MoE token classifier), served through the MLX conversion `mlx-community/openai-privacy-filter-bf16` (~2.8 GB) — that adds the fuzzy categories (names, addresses, secrets) only when `aiDetectionEnabled` is on. Fail-closed on every write path — no substitutions applied or post-scrub leak detected blocks the send with a typed error; with AI detection on, a missing model also blocks; with it off, detection is regex-only and never blocks on the model. See [PRIVACY_FILTER.md](PRIVACY_FILTER.md) for the full architecture.
 
 **Components:**
 
@@ -1313,11 +1328,11 @@ Eight settings total, down from v1's 18. The per-section budget knobs, MMR tunin
 - `PrivacyFilter/Model/PrivacyFilterModelDownloader.swift` — Hugging Face streaming download + manifest synthesis
 - `PrivacyFilter/Store/PrivacyFilterConfiguration.swift` — Persisted user settings (Codable, hand-rolled decoder for forward-compat defaults)
 - `PrivacyFilter/Store/PrivacyFilterStore.swift` — JSON-on-disk persistence + lock-protected in-memory snapshot (synchronous `save`)
-- `PrivacyFilter/Views/PrivacyView.swift` — Settings UI: install hero (pre-install) + 4 sub-tabs (Overview / Rules / Providers / Model) post-install
+- `PrivacyFilter/Views/PrivacyView.swift` — Settings UI: 4 sub-tabs always rendered (no model gate); AI-detection toggle + no-detector note in Overview; dry-run tester in Rules; install hero lives inside the Model tab
 - `PrivacyFilter/Views/RedactionReviewSheet.swift` — Modal review with scrubbed preview + hover-reveal
 - `PrivacyFilter/Views/RedactionPreviewBuilder.swift` — Pure helper that scrubs text and builds the highlight map for the preview pane
 - `PrivacyFilter/Views/RedactionPreviewTextView.swift` — `NSViewRepresentable` that reuses the chat highlighter inside the review sheet
-- `PrivacyFilter/Views/PrivacyCustomRuleEditor.swift` — Custom-rule editor sheet with regex validation
+- `PrivacyFilter/Views/PrivacyCustomRuleEditor.swift` — Custom-rule editor sheet: Simple (no-regex builder) / Regex modes, case toggle, custom placeholder label, live test panel
 - `Views/Chat/RedactionHighlighter.swift` — Walks `NSTextStorage` and applies underline + accent to placeholder ranges (chat bubbles + preview)
 - `Views/Chat/RedactionHoverController.swift` — Hover-tracked `NSPopover` tooltip with direction-aware copy (outbound / inbound / preview)
 - `Services/Provider/WireTransportProbe.swift` — Captures the post-scrub HTTP body + pre-unscrub inbound stream for the Insights surface
@@ -1328,8 +1343,8 @@ Eight settings total, down from v1's 18. The per-section budget knobs, MMR tunin
 |-------|--------|---------|
 | Built-in regex | `RegexEntityDetector` | Phone / email / URL / account number — all on, toggled per-category |
 | Preset rules | `PrivacyRulePresets.all` | Driver's license, passport, IBAN, AWS keys, GitHub tokens — all opt-in |
-| Custom rules | `PrivacyFilterConfiguration.customRules` | User-defined; validated through `safeCompile` before save |
-| On-device classifier | `PrivacyFilterKit` over OpenAI's `openai/privacy-filter` (MLX BF16 conversion) | BIOES decoder + Viterbi calibration; emits 8 categories (`person`, `email`, `phone`, `url`, `address`, `date`, `accountNumber`, `secret`) |
+| Custom rules | `PrivacyFilterConfiguration.customRules` | User-defined; Simple (no-regex builder) or raw Regex, per-rule case flag + optional custom placeholder label; validated/escaped before save |
+| On-device classifier | `PrivacyFilterKit` over OpenAI's `openai/privacy-filter` (MLX BF16 conversion) | **Opt-in (off by default)** via `aiDetectionEnabled`; BIOES decoder + Viterbi calibration; emits 8 categories (`person`, `email`, `phone`, `url`, `address`, `date`, `accountNumber`, `secret`) |
 
 **Placeholder wire format:** `[PERSON_1]`, `[EMAIL_2]`, `[PHONE_1]`, `[URL_1]`, `[ADDR_1]`, `[ACCT_1]`, `[DATE_1]`, `[SECRET_1]`. Per-category, per-conversation indexing. `RedactionMap` interns by original so the same value across turns reuses one placeholder.
 
@@ -1338,7 +1353,7 @@ Eight settings total, down from v1's 18. The per-section budget knobs, MMR tunin
 | Case | When it fires |
 |------|---------------|
 | `.reviewCanceled` | User dismissed the review sheet (or task cancelled while suspended on it) |
-| `.engineUnavailable(detail)` | Master toggle on, model bundle missing / failed to load |
+| `.engineUnavailable(detail)` | AI detection on, model bundle missing / failed to load (regex-only sends never hit this) |
 | `.scrubNoOp(approvedCount)` | Approved entities produced zero substitutions (almost certainly a wiring bug) |
 | `.scrubLeaked(categoryCounts)` | Post-scrub re-scan found PII the substitution missed; send is blocked |
 
@@ -1348,13 +1363,13 @@ The post-scrub invariant only re-scans categories whose built-in regex toggle is
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `enabled` | false | Master toggle (synchronous persistence; survives Cmd-Q) |
+| `enabled` | false | Master toggle (regex layer; no model required; synchronous persistence; survives Cmd-Q) |
+| `aiDetectionEnabled` | false | Opt into the on-device AI classifier; on → load model + fail closed if missing, off → regex-only. Legacy files missing the key decode to `true` (preserve existing model users) |
 | `skipCodeBlocks` | true | Skip fenced + inline code spans |
 | `alwaysApproveByDefault` | false | Skip the review sheet per-session |
-| `confidenceThreshold` | 0.5 | Reserved for the classifier; persisted for future kit versions |
 | `builtinPatternEnabled` | all on | Per-category regex toggle (controls detection + leak check) |
 | `presetRules` | `{}` | Opt-in preset rule map |
-| `customRules` | `[]` | User-defined `PrivacyRule` array |
+| `customRules` | `[]` | User-defined `PrivacyRule` array (`kind`, `caseSensitive`, optional `builder` + `placeholderLabel`) |
 | `providerOverrides` | `{}` | Per-`RemoteProvider.id` enable map; missing keys → true |
 
 **Storage:**
@@ -1363,6 +1378,53 @@ The post-scrub invariant only re-scans categories whose built-in regex toggle is
 - `~/.osaurus/aux-models/openai-privacy-filter-bf16-v1/` — Model bundle + locally-generated `osaurus-manifest.json` for SHA-256 re-verify
 
 **Verification surface:** Open **Insights** (`⌘ Shift I`) → pick a request → **Request** / **Response** tabs. The **Server Request** / **Server Response** sub-sections show the exact bytes captured by `WireTransportProbe` (post-scrub on the way out, pre-unscrub on the way in) so users can confirm at a glance that placeholders actually made it onto the wire.
+
+---
+
+### Computer Use
+
+**Purpose:** Let a custom agent operate a macOS app on the user's behalf to accomplish a natural-language goal — working primarily from the **accessibility tree**, with a **screenshot** fallback only when an element can't be resolved. Off by default, enabled **per agent** (custom agents only), with a **safe-by-default autonomy gate** on every action. See [COMPUTER_USE.md](COMPUTER_USE.md) for the full architecture.
+
+**Mental model:** the parent agent calls one tool — `computer_use(goal:)` — exactly once. It spins up a **nested sub-agent** (the `sandbox_reduce` pattern) that runs a `perceive → decide → gate → act → verify` loop and returns a single summary. The model only proposes the next intent (one `agent_action` per step, forced `tool_choice`); the harness owns every deterministic decision. Inner steps never enter the parent transcript — they surface only through the live `ComputerUseFeed` in the chat row.
+
+**Components:**
+
+- `ComputerUse/Tool/ComputerUseTool.swift` — the `computer_use` entry tool (PermissionedTool: Accessibility preflight; stripped from the schema unless `computerUseEnabled`)
+- `ComputerUse/Loop/ComputerUseLoop.swift` — the perceive→decide→gate→act→verify controller (`RunLimits`, `RunOutcome`)
+- `ComputerUse/Model/AgentAction.swift` — the single model-facing `agent_action` envelope (constrained verb enum + schema-validated decode + bounded re-ask)
+- `ComputerUse/Driver/NativeMacDriver.swift` + `Driver/Mac/*` — AX / SOM / Vision capture and synthetic input
+- `ComputerUse/Perception/CaptureRouter.swift`, `FrameScrubber.swift`, `CloudVisionConsent.swift`, `VisionAttachment.swift` — the local-first perception ladder and cloud-vision boundary
+- `ComputerUse/Perception/ScreenContextDistiller.swift`, `ScreenContextSnapshot.swift`, `ScreenContextSettings.swift`, `FrontmostAppTracker.swift` + `Services/Chat/SystemPromptComposer.swift` (`injectScreenContextPrefix`) — opt-in frozen **Screen context** injected into chat
+- `ComputerUse/Policy/EffectClassifier.swift`, `AutonomyPolicy.swift`, `ComputerUseGate.swift`, `ComputerUsePolicyStore.swift` — effect classification + strictest-wins autonomy gate
+- `ComputerUse/Recipes/AppRecipe.swift` — per-app effect signals + flow hints
+- `Views/Settings/ComputerUseSettingsView.swift`, `Views/Chat/ComputerUseFeedView.swift` — settings panel + live activity feed
+
+**Effect → disposition (autonomy presets):** every action is classified as `read` / `navigate` / `edit` / `consequential` (the classifier can only ever escalate), then resolved to `allow` / `confirm` / `deny`.
+
+| Preset | navigate | edit | consequential |
+|--------|----------|------|---------------|
+| `read_only` | allow | deny | deny |
+| `cautious` | confirm | confirm | confirm |
+| **`balanced`** (default) | allow | confirm | confirm |
+| `trusted` | allow | allow | confirm |
+| `autonomous` | allow | allow | allow |
+
+`read` is always `allow`. The effective disposition merges **strictest-wins** across the global preset, an optional per-app override (can only add caution), and an optional per-agent **ceiling**. An optional **allowlist** — when set — is checked first and rejects any app not on it (the `open` verb is gated the same way).
+
+**Perception ladder:** `ax` (accessibility tree, no pixels) → `som` (AX tree + annotated screenshot; the default capture mode) → `vision` (un-annotated screenshot; the AX tree is still gathered for ids). Escalation past `ax` needs **Screen Recording**; without it the loop stays AX-only. A frame reaches a **cloud** model only via a route that requires **explicit consent** (off by default) and a `ScrubbedFrame` (on-device Vision OCR + `RegexEntityDetector` masking) — making an unconsented or unscrubbed cloud send unrepresentable in the type system.
+
+**Screen context (chat):** a separate global **opt-in** (off by default, `ScreenContextSettings`), independent of the `computer_use` tool. On the first send of a chat session it **freezes** a distilled, text-only, Accessibility-only snapshot of the working app, focused draft, and open windows, then injects it onto the **latest user turn** (`SystemPromptComposer.injectScreenContextPrefix`, the same seam as memory) so it rides through the Privacy Filter before any cloud send. New code lives under `ComputerUse/Perception/ScreenContext*` + `FrontmostAppTracker`. See [COMPUTER_USE.md](COMPUTER_USE.md#screen-context-chat).
+
+**Telemetry:** one coarse, privacy-clean `computer_use_run` event per run (outcome, max tier, bucketed step/confirm counts, ax-resolvable + verify-pass rate buckets, dead-end / block / cloud-vision flags) — no goal text, app names, or per-step detail.
+
+**Storage:**
+
+| Path / key | Purpose |
+|------------|---------|
+| `~/.osaurus/config/computer-use.json` | `AutonomyPolicy` (global preset + per-app overrides + allowlist) via `ComputerUsePolicyStore` |
+| `UserDefaults` `ai.osaurus.computeruse.cloudVisionConsent` | Persisted cloud-vision opt-in (default `false`) |
+| `UserDefaults` `ai.osaurus.computeruse.screenContextInjection` | Persisted screen-context opt-in (default `false`) via `ScreenContextSettings` |
+| `Agent.settings.computerUseEnabled` / `computerUseCeiling` | Per-agent enablement + autonomy ceiling (in the agent JSON) |
 
 ---
 
@@ -1384,6 +1446,7 @@ The post-scrub invariant only re-scans categories whose built-in regex toggle is
 | [MEMORY.md](MEMORY.md)                                         | Memory system and configuration guide            |
 | [PRIVACY_FILTER.md](PRIVACY_FILTER.md)                         | Privacy Filter architecture, detection layers, settings, and verification |
 | [SANDBOX.md](SANDBOX.md)                                       | Sandbox VM and plugin guide                       |
+| [COMPUTER_USE.md](COMPUTER_USE.md)                             | Computer Use harness, autonomy gate, and cloud-vision boundary |
 | [plugins/README.md](plugins/README.md)                         | Creating custom plugins                           |
 | [OpenAI_API_GUIDE.md](OpenAI_API_GUIDE.md)                     | API usage, tool calling, streaming                |
 | [SHARED_CONFIGURATION_GUIDE.md](SHARED_CONFIGURATION_GUIDE.md) | Shared configuration for teams                    |

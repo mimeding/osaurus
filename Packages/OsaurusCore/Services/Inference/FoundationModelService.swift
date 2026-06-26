@@ -55,6 +55,34 @@ actor FoundationModelService: ToolCapableService {
         #endif
     }
 
+    /// Real on-device context window of the system default model, in tokens,
+    /// or `nil` when Foundation Models is unavailable on this device/OS.
+    ///
+    /// `SystemLanguageModel.contextSize` is `@backDeployed(before: macOS 26.4)`:
+    /// it back-deploys to the 26.0 runtime floor, but the *declaration* only ships
+    /// in the macOS 26.4+ SDK, so referencing it fails to compile on older SDKs
+    /// (≤ 26.2). The `HAS_FM_CONTEXT_SIZE` compilation condition — defined in
+    /// Package.swift when building against a 26.4+ SDK — gates the read; on older
+    /// SDKs we fall back to `nil` (window unknown). When present the value is the
+    /// device + OS constant for the life of the process (4096 on the macOS 26.x
+    /// baseline, 8192 on 27.0+ hardware), so it's memoized once: `ContextSizeResolver`
+    /// is a pure, synchronous function called during UI layout and must not pay a
+    /// framework round-trip per resolve. A `static let` is `nonisolated` and its
+    /// initializer runs at most once (thread-safe), so the resolver can read it
+    /// without an actor hop.
+    static let defaultModelContextSize: Int? = {
+        #if canImport(FoundationModels)
+            if #available(macOS 26.0, *) {
+                let model = SystemLanguageModel.default
+                guard model.isAvailable else { return nil }
+                #if HAS_FM_CONTEXT_SIZE
+                    return model.contextSize
+                #endif
+            }
+        #endif
+        return nil
+    }()
+
     nonisolated func isAvailable() -> Bool { Self.isDefaultModelAvailable() }
 
     nonisolated func handles(requestedModel: String?) -> Bool {

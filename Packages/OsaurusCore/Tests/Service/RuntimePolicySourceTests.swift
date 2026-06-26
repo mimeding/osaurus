@@ -193,7 +193,7 @@ struct RuntimePolicySourceTests {
         #expect(!initBody.contains("prewarmCurrentKeyOffCooperativeExecutor()"))
 
         let store = try Self.source("Models/Chat/ChatSessionStore.swift")
-        #expect(store.contains("StorageKeyManager.shared.hasCachedKey"))
+        #expect(store.contains("StorageKeyManager.shared.isStorageReadyForWrites"))
         #expect(store.contains("Chat history unavailable: storage key is not already unlocked"))
         #expect(!store.contains("prewarmCurrentKey()"))
         #expect(store.contains("Sentry APPLE-MACOS-40/41/42"))
@@ -202,7 +202,7 @@ struct RuntimePolicySourceTests {
     @Test("chat history writer skips persistence unless storage key is already unlocked")
     func chatHistoryWriterSkipsPersistenceUnlessStorageKeyCached() throws {
         let source = try Self.source("Storage/ChatHistoryWriter.swift")
-        let gate = try #require(source.range(of: "StorageKeyManager.shared.hasCachedKey"))
+        let gate = try #require(source.range(of: "StorageKeyManager.shared.isStorageReadyForWrites"))
         let open = try #require(source.range(of: "try db.open()"))
 
         #expect(gate.lowerBound < open.lowerBound)
@@ -224,7 +224,9 @@ struct RuntimePolicySourceTests {
     func schedulerStartupDoesNotUnlockStorageKey() throws {
         let source = try Self.source("AppDelegate.swift")
         let schedulerBlock = try #require(
-            source.range(of: "Task { @MainActor in\n            guard StorageKeyManager.shared.hasCachedKey else")
+            source.range(
+                of: "Task { @MainActor in\n            guard StorageKeyManager.shared.isStorageReadyForWrites else"
+            )
         )
         let schedulerStart = try #require(source.range(of: "NextRunScheduler.shared.start()"))
 
@@ -613,7 +615,27 @@ struct RuntimePolicySourceTests {
         // duplicate-product collisions with the app graph while keeping yyjson
         // as one shared C dependency. Osaurus must not carry SwiftPM
         // moduleAliases for that collision.
-        let expectedRuntimeHardenedRevision = "36aebd429dc3e691b2cfad23b89ebb7627361eb4"
+        // plus the quadratic-BPE merge fix (O(n^2) -> O(n log n) on long
+        // whitespace-free pre-tokens) that collapses multi-second prefill on
+        // tool-heavy prompts while staying byte-identical to canonical output
+        // even on non-monotonic whitespace merge ranks,
+        // plus the Gemma nested-object tool-call argument parse fix
+        // (vmlx-swift#76): GemmaFunctionParser now recurses into `{...}` values
+        // so object-typed tool parameters arrive as objects, not raw strings.
+        // plus vmlx-swift#82: BatchEngine drains the GPU (Stream().synchronize)
+        // before finishing the stream so the chat→image handoff cannot race the
+        // async eval tail (fixes the concurrent-GPU SIGSEGV/commit-assert), and
+        // JangLoader loads a standalone chat_template.jinja when
+        // tokenizer_config.json carries no inline template (fixes empty output
+        // on LFM2.5 + VibeThinker bundles),
+        // plus vmlx-swift#84: Mistral3/Pixtral VLM bundles in the standard
+        // Hugging Face layout (flat top-level rope_theta, and image-processor
+        // params split across preprocessor_config.json + processor_config.json)
+        // now load instead of fatally crashing at model-load — the language
+        // attention falls back to flat rope_theta and the processor config
+        // accepts both nested and flat image-processor layouts (fixes the
+        // Sentry EXC_BREAKPOINT on Mistral-Small / Ministral / Pixtral).
+        let expectedRuntimeHardenedRevision = "9e0b60f8288ca682913e0e33c20287af6f57281d"
         let manifestRevision = try Self.vmlxPinRevision(in: manifest)
         let workspaceRevision = try Self.vmlxPinRevision(in: workspaceResolved)
         let appRevision = try Self.vmlxPinRevision(in: appResolved)
@@ -2475,19 +2497,29 @@ struct RuntimePolicySourceTests {
         let afterToolCase = streamWithTools[toolCase.lowerBound...]
 
         #expect(
-            afterToolCase.contains("continuation.finish(")
-                && afterToolCase.contains("throwing: ServiceToolInvocation(")
+            afterToolCase.contains("ServiceToolInvocation(")
                 && afterToolCase.contains("toolName: name")
-                && afterToolCase.contains("jsonArguments: argsJSON"),
-            "The Chat UI must stop the local stream as soon as vMLX emits a parsed tool invocation; otherwise DSV4 can leak pseudo-tool prose after the tool event before Osaurus executes it."
+                && afterToolCase.contains("jsonArguments: argsJSON")
+                && afterToolCase.contains("continuation.finish(throwing: tool)"),
+            "streamWithTools must capture the parsed vMLX tool call (name + args) into the pending ServiceToolInvocation and finish the stream by throwing it so the Chat UI dispatches the tool."
         )
         #expect(
             afterToolCase.contains("return"),
-            "After finishing with the parsed tool invocation, the producer task must return instead of draining post-tool tokens to natural EOS."
+            "After surfacing the parsed tool invocation the producer task must return rather than run on."
+        )
+        // The real no-leak invariant: once a tool call is pending, model text is
+        // gated on `pendingTool == nil` and never yielded, so DSV4 pseudo-tool
+        // prose emitted after the tool event cannot reach the UI/consumer. The
+        // producer keeps draining only to forward the terminal `.completionInfo`
+        // decode stats (tok/s + token count) before throwing — tool-call turns
+        // must not drop their telemetry.
+        #expect(
+            streamWithTools.contains("if pendingTool == nil, !s.isEmpty { continuation.yield(s) }"),
+            "Post-tool model text must be gated on `pendingTool == nil` so pseudo-tool prose is suppressed once a tool call is parsed, even while draining for end-of-step stats."
         )
         #expect(
             !afterToolCase.contains("pendingTools.append"),
-            "The local streaming path must not keep collecting tool invocations after a parsed tool event; batch collection belongs to the non-streaming tool response path."
+            "The local streaming path must not batch-collect tool invocations after a parsed tool event; batch collection belongs to the non-streaming tool response path."
         )
     }
 

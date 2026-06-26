@@ -75,6 +75,40 @@ public struct AgentLoopTranscript: Sendable, Codable {
     public let compacted: Bool
     /// Non-nil when the loop aborted (engine threw, model unroutable).
     public let error: String?
+    /// Token-weighted mean decode speed (tokens/sec) across every
+    /// streaming model step, from the runtime's authoritative
+    /// `StreamingStatsHint`. `nil` for non-streaming or remote runs that
+    /// never surfaced a stats hint. The headline "how fast does this
+    /// model generate on this Mac" number the optimization loop tracks.
+    public let decodeTokensPerSecond: Double?
+    /// First measured prompt-processing (prefill) speed (tokens/sec), from
+    /// the stats hint's `prefill=` flag. Not strictly the first model step:
+    /// an early step that ends in a tool call throws before emitting its
+    /// end-of-step stats, so the first reading often lands on a later step.
+    /// Drives TTFT on long contexts; KV-prefix reuse shows up as a higher
+    /// value once the prefix is warm.
+    public let prefillTokensPerSecond: Double?
+    /// Time-to-first-token for the first model step, in milliseconds —
+    /// wall clock from request dispatch to the first streamed delta.
+    /// `nil` for non-streaming runs.
+    public let ttftMs: Double?
+    /// Total generated tokens across all model steps (sum of per-step
+    /// stats-hint counts). Pairs with `loopDurationMs` for a run-level
+    /// throughput sanity check.
+    public let completionTokens: Int?
+    /// Estimated INPUT (prompt + tool-schema) tokens summed across every
+    /// model step — the context-cost signal the optimization loop drives
+    /// down. Estimated deterministically at compose time (the exact
+    /// messages + frozen tool schema each step), so it is provider-
+    /// independent and reproducible: it does not depend on a runtime stats
+    /// hint and so is populated for remote frontier runs too. `nil` when no
+    /// model step ran.
+    public let promptTokensTotal: Int?
+    /// Largest single-step input estimate — the context-window high-water
+    /// mark for the run (what has to fit the budget at the worst moment).
+    public let peakContextTokens: Int?
+    /// Number of model steps (loop iterations that called the model).
+    public let modelSteps: Int?
 
     public init(
         toolCalls: [ToolInvocation],
@@ -86,7 +120,14 @@ public struct AgentLoopTranscript: Sendable, Codable {
         loopDurationMs: Double = 0,
         notices: [String] = [],
         compacted: Bool = false,
-        error: String?
+        error: String?,
+        decodeTokensPerSecond: Double? = nil,
+        prefillTokensPerSecond: Double? = nil,
+        ttftMs: Double? = nil,
+        completionTokens: Int? = nil,
+        promptTokensTotal: Int? = nil,
+        peakContextTokens: Int? = nil,
+        modelSteps: Int? = nil
     ) {
         self.toolCalls = toolCalls
         self.finalText = finalText
@@ -98,6 +139,13 @@ public struct AgentLoopTranscript: Sendable, Codable {
         self.notices = notices
         self.compacted = compacted
         self.error = error
+        self.decodeTokensPerSecond = decodeTokensPerSecond
+        self.prefillTokensPerSecond = prefillTokensPerSecond
+        self.ttftMs = ttftMs
+        self.completionTokens = completionTokens
+        self.promptTokensTotal = promptTokensTotal
+        self.peakContextTokens = peakContextTokens
+        self.modelSteps = modelSteps
     }
 }
 
@@ -327,6 +375,27 @@ public enum AgentLoopEvaluator {
         var transcriptCalls: [AgentLoopTranscript.ToolInvocation] = []
         var noticesSeen: [String] = []
         var finalText = ""
+        // Per-run generation telemetry, accumulated across model steps
+        // from the streaming `StreamingStatsHint`. Token-weighted so a
+        // long decode step dominates the mean over a 2-token step. TTFT
+        // and prefill speed are recorded from the FIRST step only (the
+        // cold prefill); later steps reuse the KV prefix and aren't
+        // comparable as a TTFT baseline.
+        var decodeTpsWeightedSum = 0.0
+        var decodeTpsTokenWeight = 0
+        var completionTokensTotal = 0
+        var firstStepTtftMs: Double?
+        var firstStepPrefillTps: Double?
+        var sawAnyModelStep = false
+        // Deterministic context-cost accounting, accumulated per model step
+        // from the exact composed prompt + frozen tool schema. Unlike the
+        // runtime-only decode/completion counters above, this does not depend
+        // on a streaming stats hint, so it is populated for remote frontier
+        // runs too — the optimization loop's provider-independent "tokens per
+        // task" signal.
+        var promptTokensTotal = 0
+        var peakContextTokens = 0
+        var modelStepCount = 0
         // Set when a successful `complete` intercept ends the run; the
         // summary becomes the final answer (mirrors the chat surface,
         // where the summary renders as the completion banner).
@@ -354,7 +423,16 @@ public enum AgentLoopEvaluator {
                 loopDurationMs: loopMs,
                 notices: noticesSeen,
                 compacted: watermark.hasCompacted,
-                error: error
+                error: error,
+                decodeTokensPerSecond: decodeTpsTokenWeight > 0
+                    ? decodeTpsWeightedSum / Double(decodeTpsTokenWeight)
+                    : nil,
+                prefillTokensPerSecond: firstStepPrefillTps,
+                ttftMs: firstStepTtftMs,
+                completionTokens: sawAnyModelStep ? completionTokensTotal : nil,
+                promptTokensTotal: modelStepCount > 0 ? promptTokensTotal : nil,
+                peakContextTokens: modelStepCount > 0 ? peakContextTokens : nil,
+                modelSteps: modelStepCount > 0 ? modelStepCount : nil
             )
         }
 
@@ -473,13 +551,25 @@ public enum AgentLoopEvaluator {
                 )
             )
             // Agent-loop intercepts, mirroring the chat surface: a
-            // successful `complete` ends the run and its summary is the
-            // final answer; a successful `clarify` ends the run awaiting
-            // user input (headless: no answer ever arrives). Error
-            // envelopes fall through so the model can retry.
+            // successful `complete` ends the run and a successful `clarify`
+            // ends the run awaiting user input (headless: no answer ever
+            // arrives). Error envelopes fall through so the model can retry.
+            //
+            // Under the agent-loop contract the user-facing ANSWER is the
+            // model's visible prose; `complete`'s summary is only a closing
+            // status. Prefer this turn's assistant prose as `finalText` so
+            // rubric grading judges the real answer, falling back to the
+            // summary when the turn carried no visible text (the older
+            // bare-`complete` behavior the chat banner still renders).
             if inv.toolName == "complete", !isError {
                 completedViaTool = true
-                if let summary = CompleteTool.parseSummary(from: inv.jsonArguments) {
+                let answer =
+                    history.last(where: { $0.role == "assistant" })?
+                    .content?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !answer.isEmpty {
+                    finalText = answer
+                } else if let summary = CompleteTool.parseSummary(from: inv.jsonArguments) {
                     finalText = summary
                 }
                 return AgentLoopToolExecution(result: result, endRun: true)
@@ -508,6 +598,16 @@ public enum AgentLoopEvaluator {
                 )
             },
             modelStep: { effective, _ in
+                // Context-cost accounting: estimate the INPUT tokens for THIS
+                // step (the exact messages the loop composed + the run's
+                // frozen tool schema) before the model call. Deterministic and
+                // provider-independent, so it is captured even when the run
+                // surfaces no runtime stats hint (remote / non-streaming).
+                let stepInputTokens =
+                    ContextBudgetManager.estimateTokens(for: effective) + composed.toolTokens
+                promptTokensTotal += stepInputTokens
+                peakContextTokens = max(peakContextTokens, stepInputTokens)
+                modelStepCount += 1
                 if streaming {
                     // Streaming path (default, matching chat): delta routing
                     // and tool-call assembly — where most local-model parser
@@ -517,16 +617,48 @@ public enum AgentLoopEvaluator {
                     // assistant turns can echo `reasoning_content` back to
                     // providers that require it in thinking mode (DeepSeek).
                     var reasoning = ""
+                    let stepStarted = Date()
+                    let isFirstStep = !sawAnyModelStep
+                    sawAnyModelStep = true
                     do {
                         let stream = try await engine.streamChat(
                             request: makeRequest(effective, stream: true)
                         )
                         for try await delta in stream {
+                            // TTFT: first streamed delta of the FIRST step,
+                            // regardless of channel (reasoning / content /
+                            // tool hint all count as "model produced output").
+                            if isFirstStep, firstStepTtftMs == nil {
+                                firstStepTtftMs = Date().timeIntervalSince(stepStarted) * 1000
+                            }
                             if let fragment = StreamingReasoningHint.decode(delta) {
                                 reasoning += fragment
                                 continue
                             }
-                            if StreamingStatsHint.decode(delta) != nil { continue }
+                            if let stats = StreamingStatsHint.decode(delta) {
+                                // Authoritative end-of-step runtime stats:
+                                // token-weight the decode tps, sum tokens,
+                                // and keep the first step's prefill speed.
+                                if stats.tokensPerSecond > 0, stats.tokenCount > 0 {
+                                    decodeTpsWeightedSum += stats.tokensPerSecond * Double(stats.tokenCount)
+                                    decodeTpsTokenWeight += stats.tokenCount
+                                }
+                                completionTokensTotal += max(0, stats.tokenCount)
+                                // Prefill speed: keep the FIRST measured reading
+                                // (the cold prompt-processing pass). Not gated to
+                                // the first model step — an early step that ends
+                                // in a tool call throws `ServiceToolInvocations`
+                                // before emitting its end-of-step stats hint, so
+                                // the first prefill reading often arrives on a
+                                // later step. Take the first positive value seen.
+                                if firstStepPrefillTps == nil,
+                                    let prefill = stats.prefillTokensPerSecond,
+                                    prefill > 0
+                                {
+                                    firstStepPrefillTps = prefill
+                                }
+                                continue
+                            }
                             if StreamingToolHint.isSentinel(delta) { continue }
                             content += delta
                         }
@@ -672,7 +804,8 @@ public enum AgentLoopEvaluator {
                     policy: AgentLoopPolicy(
                         maxIterations: maxIterations,
                         stopOnToolRejection: stopOnToolRejection,
-                        dedupeNoticeEnabled: true
+                        dedupeNoticeEnabled: true,
+                        maxDataMovementSteps: min(16, maxIterations)
                     ),
                     state: state,
                     hooks: hooks
@@ -723,6 +856,7 @@ public enum AgentLoopEvaluator {
         case .iterationCapReached: return "iterationCapReached"
         case .cancelled: return "cancelled"
         case .overBudget: return "overBudget"
+        case .emptyResponseExhausted: return "emptyResponseExhausted"
         }
     }
 }

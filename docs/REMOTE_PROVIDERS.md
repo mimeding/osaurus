@@ -143,6 +143,26 @@ Providers can be in the following states:
 | **Disabled**     | Gray            | Manually disabled                     |
 | **Error**        | Red             | Connection failed (see error message) |
 
+### Connectivity Center
+
+The Providers screen includes a connectivity center above the provider list.
+It summarizes connected providers, attention items, discovered models, and
+providers that rely on manual model IDs. Use the segmented filter to focus on
+all providers, attention items, connected providers, or disabled providers.
+
+The center also provides:
+
+- a reconnect-all action for enabled providers
+- a safe copyable diagnostics report covering every configured provider
+- inline per-provider reconnect and copy-diagnostics actions
+- expanded diagnostics rows on providers that need attention
+
+Manual model IDs are treated as first-class connectivity evidence for
+OpenAI-compatible and Azure-style providers. If a provider's `/models` endpoint
+is missing or returns a non-OpenAI schema, a configured manual model ID can let
+the connection test and provider connect path proceed without requiring a fake
+model-list endpoint.
+
 ### Troubleshooting Connection Issues
 
 1. **Verify the endpoint** — Check host, port, and base path
@@ -153,11 +173,11 @@ Providers can be in the following states:
 
 ### Provider Diagnostics
 
-Each provider card includes a compact diagnostics section with a copy button.
-The copied report is safe to paste in GitHub or Discord: it lists connection
-state, authentication state, model-discovery path, request format, and global
-proxy state without including API keys, OAuth tokens, request bodies, callback
-URLs, or raw headers.
+Each provider card and the connectivity center include copy buttons. Copied
+reports are safe to paste in GitHub or Discord: they list connection state,
+authentication state, model-discovery path, request format, and global proxy
+state without including API keys, OAuth tokens, request bodies, callback URLs,
+or raw headers.
 
 Useful rows:
 
@@ -191,6 +211,37 @@ servers.
 
 See [Osaurus Router](OSAURUS_ROUTER.md) for the Router request contract,
 streaming diagnostics, billing hints, idempotency behavior, and local ledger.
+
+### Osaurus Agents (paired / discovered)
+
+A native Osaurus peer — paired over the LAN via Bonjour or through a relay
+invite — is added as an `.osaurus` provider and can be used **two ways**:
+
+- **Inference backend (Mode 1).** Treated like any OpenAI-compatible provider:
+  requests go to `/chat/completions`, your selected model and sampling settings
+  are honored, and the **local** agent loop drives any tools. Pick one of the
+  peer's models from the model selector.
+- **Remote agent run (Mode 2).** When you select a paired/discovered *agent*
+  (not just one of its models), the conversation runs **fully server-side** on
+  the peer via `/agents/{address}/run`: the remote agent uses its **own** model,
+  system prompt, memory, and tools, and only text deltas (plus sanitized
+  tool-progress hints) stream back. Tool calls execute on the remote machine and
+  are never forwarded to you.
+
+In Mode 2:
+
+- The model chip is **pinned** to the remote agent's live effective model
+  (resolved on connect from `GET /agents/{address}`) and is read-only — the
+  agent owns its model, so the `/model` command is disabled. The caller's
+  sampling/reasoning settings are intentionally **not** sent: the remote agent's
+  own `generation_config.json` and settings apply.
+- The first message **waits for the connection** to establish and the model to
+  pin, so it can't race the async connect and fail with a misleading "model not
+  found." A connecting/error pill is shown until the peer is ready.
+- All traffic is end-to-end encrypted by the [Secure Channel](SECURE_CHANNEL.md).
+  If the agent's owner granted it a host workspace folder, the remote run can
+  also read and write files there (host **file** tools only — shell and git stay
+  disabled). See [`OpenAI_API_GUIDE.md` → External surface deny list](OpenAI_API_GUIDE.md).
 
 ### OpenAI
 

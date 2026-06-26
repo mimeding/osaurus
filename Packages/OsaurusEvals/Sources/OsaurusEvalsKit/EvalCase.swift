@@ -134,6 +134,40 @@ public struct EvalCase: Sendable, Codable, Identifiable {
         /// (`SandboxManager.checkAvailability` fails or setup is
         /// incomplete) — same semantics as `requirePlugins`.
         public let sandbox: SandboxFixture?
+        /// Custom agents to pre-register in the isolated config store before a
+        /// `default_agent` case runs (and delete afterwards). The
+        /// schedule-create cases name an `agent_id`; without a real agent at
+        /// that id the consolidated `osaurus_schedule` create returns a typed
+        /// not-found error, and a small model can retry against it until it
+        /// hits the iteration cap. Seeding a matching custom agent lets create
+        /// SUCCEED, so the case proves the happy path (correct frequency
+        /// mapping + a real schedule) instead of an error-retry loop. Each
+        /// `id` must be a valid UUID; seeding the exact id the query references
+        /// is the point. Other domains ignore this field.
+        public let seedAgents: [SeedAgent]?
+        /// SQL executed against the run agent's database BEFORE the loop
+        /// starts (requires `agentCapabilities.dbEnabled`). Each entry may be
+        /// a multi-statement script (`CREATE TABLE …; INSERT …;`) and runs
+        /// through the same `db_execute` path the agent uses, so a case can
+        /// stage "yesterday's" rows, a table to soft-delete/restore, or any
+        /// baseline state the query then builds on. Runs after the eval agent
+        /// is installed and before the model sees the task. Other domains
+        /// ignore this.
+        ///
+        /// Gotcha: a bare `CREATE TABLE t (...)` here is a *raw* table — it
+        /// lacks the reserved system columns (`id`, `_created_at`,
+        /// `_updated_at`, `_deleted_at`) that `db_create_table` adds. That's
+        /// fine for cases that only read it back with `db_query`/`db_execute`,
+        /// but the typed tools that stamp/read those columns (`db_import`,
+        /// `db_schema`, soft-delete) will fail with `no such column:
+        /// _updated_at`. If a case seeds a table the model then drives a typed
+        /// tool at, declare the system columns explicitly so the seed matches
+        /// a real agent table:
+        /// `CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, …,`
+        /// `_created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),`
+        /// `_updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),`
+        /// `_deleted_at INTEGER);`
+        public let seedSql: [String]?
 
         public init(
             requirePlugins: [String]? = nil,
@@ -143,7 +177,9 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             ensureToolsDisabled: [String]? = nil,
             workspaceFiles: [WorkspaceFile]? = nil,
             agentCapabilities: AgentCapabilitiesFixture? = nil,
-            sandbox: SandboxFixture? = nil
+            sandbox: SandboxFixture? = nil,
+            seedAgents: [SeedAgent]? = nil,
+            seedSql: [String]? = nil
         ) {
             self.requirePlugins = requirePlugins
             self.seedMethods = seedMethods
@@ -153,6 +189,8 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             self.workspaceFiles = workspaceFiles
             self.agentCapabilities = agentCapabilities
             self.sandbox = sandbox
+            self.seedAgents = seedAgents
+            self.seedSql = seedSql
         }
     }
 
@@ -267,11 +305,26 @@ public struct EvalCase: Sendable, Codable, Identifiable {
     /// may contain directories (`src/main.swift`).
     public struct WorkspaceFile: Sendable, Codable {
         public let path: String
-        public let contents: String
+        /// Inline file body. Optional now that a file can pull its bytes
+        /// from a committed fixture via `contentsFromFixture` — that keeps a
+        /// 500-row CSV out of the case JSON. `contents` wins when both are
+        /// set; an empty file results when neither is.
+        public let contents: String?
+        /// Relative path to a committed fixture whose bytes become this
+        /// file's contents. Resolved by the agent_loop runner under
+        /// `Packages/OsaurusEvals/Fixtures/` (with a `Fixtures/AgentDB/`
+        /// fallback), so large import fixtures live next to the suite
+        /// instead of inline.
+        public let contentsFromFixture: String?
 
-        public init(path: String, contents: String) {
+        public init(
+            path: String,
+            contents: String? = nil,
+            contentsFromFixture: String? = nil
+        ) {
             self.path = path
             self.contents = contents
+            self.contentsFromFixture = contentsFromFixture
         }
     }
 
@@ -314,6 +367,20 @@ public struct EvalCase: Sendable, Codable, Identifiable {
         }
     }
 
+    /// A custom agent to pre-register for a `default_agent` case. `id` must be
+    /// a valid UUID (the create cases reference it as `agent_id`); `name` is
+    /// the display name. The runner seeds it via `AgentStore.save` and removes
+    /// it after the case.
+    public struct SeedAgent: Sendable, Codable {
+        public let id: String
+        public let name: String
+
+        public init(id: String, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
     /// What we score against. All sub-fields are optional so a case can
     /// scope its assertions narrowly. An empty `Expectations` is valid
     /// — it acts as a smoke-test that just records the case without
@@ -353,6 +420,44 @@ public struct EvalCase: Sendable, Codable, Identifiable {
         /// outcomes (file contents, command exit codes) plus an
         /// optional LLM-judge rubric.
         public let agentLoop: AgentLoopExpectations?
+        /// Decision expectation for `domain == "computer_use"` cases.
+        /// Pure-data: feeds a scripted action + resolution context through
+        /// the harness's `EffectClassifier` and `AutonomyPolicy` and pins
+        /// the resulting effect class + gate disposition. No driver, no
+        /// permissions, no LLM — CI-safe like `schema` / `request_validation`.
+        public let computerUse: ComputerUseExpectations?
+        /// Model-driven expectation for `domain == "computer_use_loop"` cases.
+        /// Unlike `computerUse` (a pure-data gate check), this drives the real
+        /// `ComputerUseLoop` against a deterministic in-memory
+        /// `ScriptedCUDriver`: the chosen model perceives a scripted AX tree,
+        /// proposes `agent_action`s, and the driver mutates state in response.
+        /// The case is scored on the OUTCOME (did the goal state get reached)
+        /// plus the loop's telemetry — the lane for "can a small local model
+        /// actually drive Computer Use", with no real Accessibility / Screen
+        /// Recording and no flaky on-screen UI.
+        public let computerUseLoop: ComputerUseLoopExpectations?
+        /// Behaviour expectation for `domain == "default_agent"` cases. Drives
+        /// `DefaultAgentConfigurationEvaluator` (the multi-turn loop pinned to
+        /// the built-in Default configuration agent) and scores deterministic
+        /// transcript assertions — which `osaurus_*` tool the model calls,
+        /// the arguments it passes (`argsMustContain`), and which tools it must
+        /// NOT touch — plus an optional LLM-judge rubric.
+        public let defaultAgent: DefaultAgentExpectations?
+        /// Distillation expectation for `domain == "screen_context"` cases.
+        /// Pure-data: replays a captured/synthetic accessibility tree
+        /// (`ScreenContextFixture`) through `ScreenContextDistiller` via the
+        /// `FixtureCUDriver` and scores deterministic matchers against the
+        /// rendered `[Screen Context]` block (plus an optional LLM-judge
+        /// rubric). The deterministic matchers run with NO model, so the lane
+        /// is CI-safe like `computer_use` / `schema`.
+        public let screenContext: ScreenContextExpectations?
+        /// Outcome expectation for `domain == "subagent"` cases. Drives the
+        /// shared `SubagentSession` host through `SubagentJobEvaluator` in one
+        /// of three lanes (`scripted` model-free, live `spawn`, live `image`)
+        /// and scores the compact result envelope + the unified feed. The
+        /// scripted lane is CI-safe (no model); the spawn/image lanes skip
+        /// gracefully when the host has no spawnable persona / image model.
+        public let subagent: SubagentExpectations?
 
         public init(
             schema: SchemaExpectations? = nil,
@@ -364,7 +469,12 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             capabilitySearch: CapabilitySearchExpectations? = nil,
             sandboxDiagnostics: SandboxDiagnosticsExpectations? = nil,
             capabilityClaims: CapabilityClaimsExpectations? = nil,
-            agentLoop: AgentLoopExpectations? = nil
+            agentLoop: AgentLoopExpectations? = nil,
+            computerUse: ComputerUseExpectations? = nil,
+            computerUseLoop: ComputerUseLoopExpectations? = nil,
+            defaultAgent: DefaultAgentExpectations? = nil,
+            screenContext: ScreenContextExpectations? = nil,
+            subagent: SubagentExpectations? = nil
         ) {
             self.schema = schema
             self.toolEnvelope = toolEnvelope
@@ -376,6 +486,82 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             self.sandboxDiagnostics = sandboxDiagnostics
             self.capabilityClaims = capabilityClaims
             self.agentLoop = agentLoop
+            self.computerUse = computerUse
+            self.computerUseLoop = computerUseLoop
+            self.defaultAgent = defaultAgent
+            self.screenContext = screenContext
+            self.subagent = subagent
+        }
+    }
+
+    /// Expectation for `domain == "screen_context"` cases. Carries the scene
+    /// (a `ScreenContextFixture`, referenced by `fixture` path or inlined as
+    /// `scene`) plus matchers scored against the distiller's rendered block:
+    ///   - **Deterministic** (CI-safe, no model): `mustContain` /
+    ///     `mustNotContain` substring gates, `noiseRegexMustNotMatch` (a regex
+    ///     that must NOT match — e.g. a bare-version-token line), the focused
+    ///     field's `focusedRoleEquals` / `selectedTextContains` /
+    ///     `viewingContains`, the `gistContains` "Doing:" check, and
+    ///     `orderedContains` (A appears before B — pins the editor-beats-chrome
+    ///     ranking).
+    ///   - **LLM judge** (optional, off-CI): every `rubric` condition graded
+    ///     against the rendered block.
+    /// A case passes only when every present matcher passes.
+    public struct ScreenContextExpectations: Sendable, Codable {
+        /// Relative path to a fixture JSON, resolved under
+        /// `Packages/OsaurusEvals/Fixtures/ScreenContext/`. Mutually exclusive
+        /// with `scene` (inline wins when both are present).
+        public let fixture: String?
+        /// An inline fixture — handy for committed synthetic cases that don't
+        /// want a separate file. Takes precedence over `fixture`.
+        public let scene: ScreenContextFixture?
+        /// Substrings the rendered block MUST contain.
+        public let mustContain: [String]?
+        /// Substrings the rendered block must NOT contain (the noise gate).
+        public let mustNotContain: [String]?
+        /// Regular expressions (matched multi-line) that must NOT match the
+        /// rendered block — e.g. `(?m)^- \d+\.\d+\.\d+$` for a standalone
+        /// version-number bullet.
+        public let noiseRegexMustNotMatch: [String]?
+        /// The focused element's friendly role must equal this (e.g. `text area`).
+        public let focusedRoleEquals: String?
+        /// The focused element's selected text must contain this substring.
+        public let selectedTextContains: String?
+        /// Substrings the focused element's "Viewing:" slice must contain.
+        public let viewingContains: [String]?
+        /// Substrings the activity gist ("Doing:" line) must contain.
+        public let gistContains: [String]?
+        /// Ordered-subsequence assertions over the rendered block: for each
+        /// inner array, every element must appear, in order (the first strictly
+        /// before the next). Pins ranking, e.g. editor body before sidebar.
+        public let orderedContains: [[String]]?
+        /// Natural-language conditions for the LLM judge (optional, off-CI).
+        public let rubric: [String]?
+
+        public init(
+            fixture: String? = nil,
+            scene: ScreenContextFixture? = nil,
+            mustContain: [String]? = nil,
+            mustNotContain: [String]? = nil,
+            noiseRegexMustNotMatch: [String]? = nil,
+            focusedRoleEquals: String? = nil,
+            selectedTextContains: String? = nil,
+            viewingContains: [String]? = nil,
+            gistContains: [String]? = nil,
+            orderedContains: [[String]]? = nil,
+            rubric: [String]? = nil
+        ) {
+            self.fixture = fixture
+            self.scene = scene
+            self.mustContain = mustContain
+            self.mustNotContain = mustNotContain
+            self.noiseRegexMustNotMatch = noiseRegexMustNotMatch
+            self.focusedRoleEquals = focusedRoleEquals
+            self.selectedTextContains = selectedTextContains
+            self.viewingContains = viewingContains
+            self.gistContains = gistContains
+            self.orderedContains = orderedContains
+            self.rubric = rubric
         }
     }
 
@@ -478,6 +664,17 @@ public struct EvalCase: Sendable, Codable, Identifiable {
         /// Per-tool transcript hygiene audits (call-count bounds, error
         /// ceilings, argument substrings). The folder-tool discipline lane.
         public let toolUsageAudit: [ToolUsageAudit]?
+        /// Optional context-cost ceiling: the run FAILS if the estimated
+        /// input (prompt + frozen tool schema, summed across every model
+        /// step) exceeds this. Mirrors `computer_use_loop`'s
+        /// `scoredMaxModelTokens`; nil → reported, not scored. Pin this on a
+        /// case once the optimization loop has established a good value so a
+        /// later prompt/tool regression that re-bloats context fails the case
+        /// instead of silently costing tokens.
+        public let scoredMaxPromptTokens: Int?
+        /// Optional total-cost ceiling (input + output, summed across steps).
+        /// nil → reported, not scored.
+        public let scoredMaxTotalTokens: Int?
 
         public init(
             maxIterations: Int? = nil,
@@ -502,7 +699,9 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             artifactShared: ArtifactSharedAssertion? = nil,
             scheduledRun: ScheduledRunAssertion? = nil,
             dbState: [DbStateAssertion]? = nil,
-            toolUsageAudit: [ToolUsageAudit]? = nil
+            toolUsageAudit: [ToolUsageAudit]? = nil,
+            scoredMaxPromptTokens: Int? = nil,
+            scoredMaxTotalTokens: Int? = nil
         ) {
             self.maxIterations = maxIterations
             self.mustCallTools = mustCallTools
@@ -527,6 +726,8 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             self.scheduledRun = scheduledRun
             self.dbState = dbState
             self.toolUsageAudit = toolUsageAudit
+            self.scoredMaxPromptTokens = scoredMaxPromptTokens
+            self.scoredMaxTotalTokens = scoredMaxTotalTokens
         }
 
         /// One workspace-file assertion. `path` is relative to the
@@ -601,21 +802,34 @@ public struct EvalCase: Sendable, Codable, Identifiable {
 
         /// One post-run SQL check against the run agent's database.
         /// `expectRowCountAtLeast` floors the returned row count;
-        /// `expectFirstValue` string-compares the first column of the
-        /// first row (numbers compared by canonical string form).
+        /// `expectRowCountEquals` pins it exactly; `expectFirstValue`
+        /// string-compares the first column of the first row (numbers
+        /// compared by canonical string form); `expectColumns` pins the
+        /// returned column names in order (the shape of a transform/view);
+        /// `expectValues` string-compares the FIRST row column-by-column so a
+        /// computed aggregate row (e.g. a daily trend) can be asserted whole.
         public struct DbStateAssertion: Sendable, Codable {
             public let sql: String
             public let expectRowCountAtLeast: Int?
+            public let expectRowCountEquals: Int?
             public let expectFirstValue: String?
+            public let expectColumns: [String]?
+            public let expectValues: [String]?
 
             public init(
                 sql: String,
                 expectRowCountAtLeast: Int? = nil,
-                expectFirstValue: String? = nil
+                expectRowCountEquals: Int? = nil,
+                expectFirstValue: String? = nil,
+                expectColumns: [String]? = nil,
+                expectValues: [String]? = nil
             ) {
                 self.sql = sql
                 self.expectRowCountAtLeast = expectRowCountAtLeast
+                self.expectRowCountEquals = expectRowCountEquals
                 self.expectFirstValue = expectFirstValue
+                self.expectColumns = expectColumns
+                self.expectValues = expectValues
             }
         }
 
@@ -701,6 +915,71 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             public init(skill: String, beforeTools: [String]) {
                 self.skill = skill
                 self.beforeTools = beforeTools
+            }
+        }
+    }
+
+    /// Expectation for `domain == "default_agent"` cases. The runner drives
+    /// the multi-turn agent loop pinned to the built-in Default
+    /// (configuration) agent via `DefaultAgentConfigurationEvaluator`, then
+    /// scores:
+    ///   1. **Deterministic** transcript checks — `mustCallTools` /
+    ///      `mustNotCallTools` and per-call `argsMustContain` argument
+    ///      assertions (e.g. `osaurus_provider` was called with
+    ///      `action: add` and `provider: anthropic`).
+    ///   2. **LLM judge** — every `rubric` condition (if any) graded against
+    ///      the final assistant text.
+    /// A case passes only when every present layer passes. `rubric` is
+    /// optional so a pure tool-contract case (no natural-language grading)
+    /// can omit it.
+    public struct DefaultAgentExpectations: Sendable, Codable {
+        /// Natural-language conditions the final answer must satisfy, graded
+        /// by the LLM judge. Omit for a pure tool-contract case.
+        public let rubric: [String]?
+        /// Tool names that MUST be called somewhere in the loop.
+        public let mustCallTools: [String]?
+        /// Tool names that must NOT be called anywhere in the loop — used to
+        /// pin isolation (the Default agent must never reach
+        /// `capabilities_discover` / `capabilities_load`, or folder / sandbox /
+        /// db / memory tools) and out-of-scope honesty.
+        public let mustNotCallTools: [String]?
+        /// Per-call argument assertions. Each matcher requires AT LEAST ONE
+        /// call to its `tool` whose parsed arguments satisfy every
+        /// key→substring pair — robust to whitespace and key order because
+        /// the runner parses the arguments JSON rather than substring-matching
+        /// the raw string. The canonical way to pin the chosen `action` and
+        /// the salient fields of a consolidated configure write.
+        public let argsMustContain: [ToolArgsMatcher]?
+        /// Cap on model round-trips. nil → evaluator default.
+        public let maxIterations: Int?
+
+        public init(
+            rubric: [String]? = nil,
+            mustCallTools: [String]? = nil,
+            mustNotCallTools: [String]? = nil,
+            argsMustContain: [ToolArgsMatcher]? = nil,
+            maxIterations: Int? = nil
+        ) {
+            self.rubric = rubric
+            self.mustCallTools = mustCallTools
+            self.mustNotCallTools = mustNotCallTools
+            self.argsMustContain = argsMustContain
+            self.maxIterations = maxIterations
+        }
+
+        /// One per-call argument assertion: at least one call to `tool` whose
+        /// parsed arguments contain every `(key, valueSubstring)` pair in
+        /// `args`. The value match is a case-insensitive substring over the
+        /// stringified argument value, so `{"action": "add"}` matches whether
+        /// the model emitted `add` or `ADD`, and `{"provider": "anthropic"}`
+        /// matches a value of `anthropic`.
+        public struct ToolArgsMatcher: Sendable, Codable {
+            public let tool: String
+            public let args: [String: String]
+
+            public init(tool: String, args: [String: String]) {
+                self.tool = tool
+                self.args = args
             }
         }
     }
@@ -966,6 +1245,453 @@ public struct EvalCase: Sendable, Codable, Identifiable {
             self.responseFormatType = responseFormatType
             self.expectAccept = expectAccept
             self.expectReasonContains = expectReasonContains
+        }
+    }
+
+    /// Expectation for `domain == "computer_use"` cases. Pins the
+    /// Computer Use harness's two deterministic gate inputs end-to-end:
+    ///   1. `EffectClassifier.classify(...)` — how a scripted action +
+    ///      resolution context (resolved role/label, app, optional per-app
+    ///      recipe) is ranked (`read`/`navigate`/`edit`/`consequential`).
+    ///   2. `AutonomyPolicy.disposition(...)` — what the resolved policy
+    ///      (global preset + per-app overrides + optional agent ceiling)
+    ///      does with that effect (`allow`/`confirm`/`deny`), plus the
+    ///      allowlist gate (`isAppAllowed`).
+    /// All inputs are plain data, so the case runs with no driver, no
+    /// permissions, and no model — exactly the lane CI can run on every PR
+    /// to lock the safe-by-default gate against regressions.
+    public struct ComputerUseExpectations: Sendable, Codable {
+        // --- Action under test (mirrors `AgentAction`) ---
+        /// `AgentVerb` raw value: observe, find, click, type, set_value,
+        /// clear, press_key, scroll, open, done, give_up.
+        public let verb: String
+        /// `target.describe` natural-language phrase (optional).
+        public let describe: String?
+        /// `target.mark` (optional; presence makes the target non-empty).
+        public let mark: Int?
+        /// Payload for type / set_value (optional).
+        public let text: String?
+        /// Key name for press_key (optional).
+        public let key: String?
+        /// Modifier names for press_key (optional).
+        public let modifiers: [String]?
+        /// Rationale/narration — scanned for recipient signals (optional).
+        public let note: String?
+
+        // --- Resolution context (what `TargetResolver` would surface) ---
+        /// The resolved element role, e.g. `AXButton` (optional).
+        public let resolvedRole: String?
+        /// The resolved element label, e.g. `Send` (optional).
+        public let resolvedLabel: String?
+        /// The focused app name, e.g. `Safari` (optional).
+        public let appName: String?
+        /// When true, merge `AppRecipes.signals(for: appName)` into the
+        /// classifier (per-app refinements). Default false.
+        public let useRecipes: Bool?
+
+        // --- Policy under test (mirrors `AutonomyPolicy` + ceiling) ---
+        /// `AutonomyPreset` raw value for the global stance. Default
+        /// `balanced` when omitted.
+        public let preset: String?
+        /// Per-app overrides: app name → `AutonomyPreset` raw value.
+        public let perApp: [String: String]?
+        /// App allowlist (normalized-compared). Empty/omitted = allow all.
+        public let allowlist: [String]?
+        /// `AutonomyPreset` raw value to cap the agent at (via
+        /// `AutonomyCeiling.cappedAt`). Omitted = no ceiling.
+        public let ceiling: String?
+
+        // --- Expectations (any subset; an empty set just records) ---
+        /// Expected `EffectClass` raw value from the classifier.
+        public let expectEffect: String?
+        /// Expected `AutonomyDisposition` raw value from the policy.
+        public let expectDisposition: String?
+        /// Expected `isAppAllowed` result for the allowlist gate.
+        public let expectAllowed: Bool?
+
+        public init(
+            verb: String,
+            describe: String? = nil,
+            mark: Int? = nil,
+            text: String? = nil,
+            key: String? = nil,
+            modifiers: [String]? = nil,
+            note: String? = nil,
+            resolvedRole: String? = nil,
+            resolvedLabel: String? = nil,
+            appName: String? = nil,
+            useRecipes: Bool? = nil,
+            preset: String? = nil,
+            perApp: [String: String]? = nil,
+            allowlist: [String]? = nil,
+            ceiling: String? = nil,
+            expectEffect: String? = nil,
+            expectDisposition: String? = nil,
+            expectAllowed: Bool? = nil
+        ) {
+            self.verb = verb
+            self.describe = describe
+            self.mark = mark
+            self.text = text
+            self.key = key
+            self.modifiers = modifiers
+            self.note = note
+            self.resolvedRole = resolvedRole
+            self.resolvedLabel = resolvedLabel
+            self.appName = appName
+            self.useRecipes = useRecipes
+            self.preset = preset
+            self.perApp = perApp
+            self.allowlist = allowlist
+            self.ceiling = ceiling
+            self.expectEffect = expectEffect
+            self.expectDisposition = expectDisposition
+            self.expectAllowed = expectAllowed
+        }
+    }
+
+    /// Expectation for `domain == "computer_use_loop"` cases. Carries BOTH
+    /// the scripted world (`app` + `elements`) the `ScriptedCUDriver` serves
+    /// and the success predicate scored against that world after the real
+    /// `ComputerUseLoop` finishes. The model only ever sees the rendered
+    /// `AgentView` (numbered marks, roles, labels, values) — never the
+    /// element ids or this scene definition.
+    public struct ComputerUseLoopExpectations: Sendable, Codable {
+
+        /// One scripted element in the fake accessibility tree. `role` mirrors
+        /// the compact roles the harness renders (`textfield`, `button`,
+        /// `checkbox`, `switch`, `statictext`). Keep every `label` UNIQUE
+        /// within a scene: the harness matches elements across snapshots by
+        /// `(role|label)` for change detection and resolves `describe`
+        /// targets by label substring, so duplicate labels blur both.
+        public struct SceneElement: Sendable, Codable {
+            /// Harness-internal stable id (never shown to the model). Used by
+            /// the success predicate and the driver's action routing.
+            public let id: String
+            public let role: String
+            public let label: String?
+            public let value: String?
+            public let placeholder: String?
+            /// When true, `type` / `set_value` / `clear` mutate this element's
+            /// value. Non-editable elements reject edits with feedback the
+            /// model can read.
+            public let editable: Bool?
+            /// When true, the element is absent from captures until a click
+            /// effect `reveal`s it — the lever for multi-step flows where a
+            /// control only appears after an earlier action.
+            public let hidden: Bool?
+            /// What a click on this element does (buttons / toggles). Omitted
+            /// for plain fields and static text.
+            public let onClick: ClickEffect?
+            /// Lowest capture tier at which this element is visible: `ax`
+            /// (default), `som`, or `vision`. An element gated to `som`/`vision`
+            /// is INVISIBLE in a plain AX capture — the Electron / custom-drawn
+            /// shape that forces the loop's empty-AX → vision escalation. A scene
+            /// whose actionable controls are all `som`-gated starts empty at AX.
+            public let minTier: String?
+            /// Element-addressed clicks on this element fail as a stale/removed
+            /// ref this many times before succeeding (the signature Electron
+            /// failure). A COORDINATE click (the loop's fallback) always lands,
+            /// so this exercises the coordinate-fallback recovery end to end.
+            public let clickFailures: Int?
+            /// When a click `reveal`s this element, it stays hidden for this many
+            /// further captures (async load) — so the model must `wait`/`observe`
+            /// for it to appear rather than seeing it instantly.
+            public let revealAfterCaptures: Int?
+            /// The element is below the fold: absent until the loop performs a
+            /// `scroll`, then it stays visible. Exercises scroll-to-find.
+            public let revealOnScroll: Bool?
+
+            public init(
+                id: String,
+                role: String,
+                label: String? = nil,
+                value: String? = nil,
+                placeholder: String? = nil,
+                editable: Bool? = nil,
+                hidden: Bool? = nil,
+                onClick: ClickEffect? = nil,
+                minTier: String? = nil,
+                clickFailures: Int? = nil,
+                revealAfterCaptures: Int? = nil,
+                revealOnScroll: Bool? = nil
+            ) {
+                self.id = id
+                self.role = role
+                self.label = label
+                self.value = value
+                self.placeholder = placeholder
+                self.editable = editable
+                self.hidden = hidden
+                self.onClick = onClick
+                self.minTier = minTier
+                self.clickFailures = clickFailures
+                self.revealAfterCaptures = revealAfterCaptures
+                self.revealOnScroll = revealOnScroll
+            }
+        }
+
+        /// The side effects a click produces in the scripted world. All
+        /// optional and applied in order toggle → setValues → reveal.
+        public struct ClickEffect: Sendable, Codable {
+            /// Flip this element's value between `"off"` and `"on"` (the
+            /// checkbox / switch primitive). Initial value should be `"off"`.
+            public let toggle: Bool?
+            /// Set OTHER elements' values (e.g. a Send button stamping a
+            /// status element to `"sent"`).
+            public let setValues: [SetValue]?
+            /// Un-hide element ids (multi-step reveal).
+            public let reveal: [String]?
+
+            public init(
+                toggle: Bool? = nil,
+                setValues: [SetValue]? = nil,
+                reveal: [String]? = nil
+            ) {
+                self.toggle = toggle
+                self.setValues = setValues
+                self.reveal = reveal
+            }
+        }
+
+        public struct SetValue: Sendable, Codable {
+            public let id: String
+            public let value: String
+
+            public init(id: String, value: String) {
+                self.id = id
+                self.value = value
+            }
+        }
+
+        /// A check against one element's FINAL value in the scripted world.
+        /// `equals` is exact (trimmed); `contains` is a case-insensitive
+        /// substring. Provide at most one.
+        public struct ValuePredicate: Sendable, Codable {
+            public let id: String
+            public let contains: String?
+            public let equals: String?
+
+            public init(id: String, contains: String? = nil, equals: String? = nil) {
+                self.id = id
+                self.contains = contains
+                self.equals = equals
+            }
+        }
+
+        /// App name the scene presents (focused on entry, so the model can
+        /// act without `open`).
+        public let app: String
+        /// The scripted accessibility tree, in render order (mark = index+1).
+        public let elements: [SceneElement]
+        /// Productive-step budget. nil → 16. The loop also terminates on the
+        /// invalid-action and dead-end ceilings regardless.
+        public let maxSteps: Int?
+        /// `AutonomyPreset` raw value for the gate. nil → `autonomous`, which
+        /// auto-runs every effect so the case isolates the MODEL's planning
+        /// from gate friction. Set `balanced` (etc.) to also exercise the
+        /// confirm path (the harness auto-approves confirmations in evals).
+        public let preset: String?
+        /// `RunOutcome` short names that count as acceptable
+        /// (`done`/`gaveUp`/`stepCapReached`/`deadEnd`/`interrupted`/`failed`).
+        /// nil → `["done"]` (the model must self-declare success).
+        public let expectOutcome: [String]?
+        /// Final-state value predicates — the substantive "did it work" check.
+        public let successValues: [ValuePredicate]?
+        /// Element ids that must have been clicked at least once during the run.
+        public let successClicked: [String]?
+        /// Element ids that must NOT be clicked — the precision / safety lever
+        /// (e.g. "Archive, do not Delete"). Any click on these fails the case.
+        public let failIfClicked: [String]?
+        /// Case-insensitive substrings the run's terminal summary (the model's
+        /// `done`/`give_up` reason) must contain. The way to score a
+        /// read-and-report scenario whose answer never lands in the tree —
+        /// the model has to surface the value in its closing reason.
+        public let finalSummaryContains: [String]?
+        /// Ceiling on invalid `agent_action` re-asks (the JSON-discipline
+        /// signal). nil → not scored, but always reported.
+        public let maxInvalidActions: Int?
+        /// Step-efficiency floor/ceiling, scored against the loop's productive
+        /// step count. `scoredMaxSteps` catches a model that thrashes its way
+        /// to the goal; `scoredMinSteps` catches a scene that's trivially
+        /// solvable in fewer steps than intended (a scene-design smell). Both
+        /// nil → efficiency is reported but not scored.
+        public let scoredMinSteps: Int?
+        public let scoredMaxSteps: Int?
+        /// Verbs that must appear, IN THIS RELATIVE ORDER, in the executed verb
+        /// trace (subsequence match, not contiguous). Encodes a required plan
+        /// shape, e.g. `["scroll","click"]` (scroll into view, then click) or
+        /// `["click","wait","set_value"]` (reveal, await async, then fill).
+        public let expectVerbsInOrder: [String]?
+        /// Ceiling on total model tokens (prompt + completion, summed across
+        /// every model step) the run may spend. The cost lever for the
+        /// live-model lane — a model that reaches the goal but burns the budget
+        /// to get there fails. `0` for scripted runs (no model call), so this
+        /// is effectively only scored on live cases. nil → reported, not scored.
+        public let scoredMaxModelTokens: Int?
+        /// Optional scripted model: a sequence of `agent_action` arguments-JSON
+        /// strings that DRIVE the loop deterministically in place of a live
+        /// model (via the `AgentStepProvider` seam). Lets failure-recovery and
+        /// gate/verb scenarios run in CI with no model. When present, the model
+        /// is never called; when nil, the case uses the live `modelId`.
+        public let scriptedActions: [String]?
+
+        public init(
+            app: String,
+            elements: [SceneElement],
+            maxSteps: Int? = nil,
+            preset: String? = nil,
+            expectOutcome: [String]? = nil,
+            successValues: [ValuePredicate]? = nil,
+            successClicked: [String]? = nil,
+            failIfClicked: [String]? = nil,
+            finalSummaryContains: [String]? = nil,
+            maxInvalidActions: Int? = nil,
+            scoredMinSteps: Int? = nil,
+            scoredMaxSteps: Int? = nil,
+            expectVerbsInOrder: [String]? = nil,
+            scoredMaxModelTokens: Int? = nil,
+            scriptedActions: [String]? = nil
+        ) {
+            self.app = app
+            self.elements = elements
+            self.maxSteps = maxSteps
+            self.preset = preset
+            self.expectOutcome = expectOutcome
+            self.successValues = successValues
+            self.successClicked = successClicked
+            self.failIfClicked = failIfClicked
+            self.finalSummaryContains = finalSummaryContains
+            self.maxInvalidActions = maxInvalidActions
+            self.scoredMinSteps = scoredMinSteps
+            self.scoredMaxSteps = scoredMaxSteps
+            self.expectVerbsInOrder = expectVerbsInOrder
+            self.scoredMaxModelTokens = scoredMaxModelTokens
+            self.scriptedActions = scriptedActions
+        }
+    }
+
+    /// Expectation for `domain == "subagent"` cases. Selects one of three
+    /// lanes via `lane` and scores the resulting `SubagentJobTranscript`:
+    ///   - `scripted` — model-free. A `ScriptedSubagentKind` drives the real
+    ///     `SubagentSession` host so the WHOLE lifecycle (resolve →
+    ///     permission → handoff → run → normalize → cleanup), the unified
+    ///     recursion guard, and the feed lifecycle run in CI with no tokens.
+    ///   - `spawn` — live. Invokes the real `SpawnTool` (host +
+    ///     `TextSubagentKind`) against a user-configured spawnable persona.
+    ///   - `image` — live. Invokes the real `ImageTool` (host +
+    ///     `ImageSubagentKind`); `sourcePaths` non-empty selects edit mode.
+    /// Live lanes SKIP (not fail) when the host can't satisfy them (no
+    /// spawnable persona / image delegation off / model not ready), mirroring
+    /// `requirePlugins`. Every present matcher must pass.
+    public struct SubagentExpectations: Sendable, Codable {
+        /// `"scripted"` | `"spawn"` | `"image"`. Selects the lane.
+        public let lane: String
+
+        // --- scripted lane inputs ---
+        /// Opt the scripted kind into the residency-handoff middleware.
+        public let needsHandoff: Bool?
+        /// Permission verdict: `"allow"` | `"deny"` | `"userDeny"`.
+        public let decision: String?
+        /// Typed failure thrown at resolve time (reject-before-evict). One of
+        /// the `SubagentError` cases: `denied` / `userDenied` / `unavailable` /
+        /// `invalidArgs` / `timedOut` / `iterationCap` / `toolRejected` /
+        /// `overBudget` / `emptyExhausted` / `executionFailed`.
+        public let resolveFailure: String?
+        /// Typed failure thrown inside `run` (same value set as above).
+        public let runFailure: String?
+        /// When true, the scripted run attempts a nested sub-agent so the
+        /// unified recursion guard refuses it (paired with `expectNestedRefused`).
+        public let recurse: Bool?
+        /// Lifecycle phases the scripted kind emits onto the feed.
+        public let phases: [String]?
+
+        // --- live spawn lane inputs ---
+        /// Spawnable persona name for the `spawn` lane.
+        public let agent: String?
+        /// Task/query handed to the spawned persona.
+        public let input: String?
+
+        // --- live image lane inputs ---
+        /// Prompt for the `image` lane (also the edit instruction).
+        public let prompt: String?
+        /// One to four local source image paths — non-empty selects edit mode.
+        public let sourcePaths: [String]?
+        /// Optional local image model id override.
+        public let model: String?
+
+        // --- expectations (any subset; an empty set just records) ---
+        /// Whether the run must end in a success envelope.
+        public let expectSuccess: Bool?
+        /// Expected envelope kind: `"success"` or a failure discriminator
+        /// (`rejected` / `user_denied` / `unavailable` / `invalid_args` /
+        /// `timeout` / `execution_error`).
+        public let expectEnvelopeKind: String?
+        /// Expected result payload discriminator (`spawn_result` /
+        /// `native_image_generation_job` / the scripted kind's `resultKind`).
+        public let expectResultKind: String?
+        /// Case-insensitive substrings the terminal summary must contain.
+        public let summaryContains: [String]?
+        /// Feed event kinds that must all appear (e.g. `["phase"]`).
+        public let expectFeedKinds: [String]?
+        /// Feed phase titles that must appear IN ORDER (subsequence) — the
+        /// live-progress proof.
+        public let expectPhasesInOrder: [String]?
+        /// Scripted lane: assert the residency handoff wrapped the run.
+        public let expectHandoffWrapped: Bool?
+        /// Scripted lane: assert the nested sub-agent attempt was refused.
+        public let expectNestedRefused: Bool?
+        /// Image lane: expected mode (`"generate"` | `"edit"`).
+        public let expectImageMode: String?
+        /// Image lane: minimum number of images on success.
+        public let minImages: Int?
+
+        public init(
+            lane: String,
+            needsHandoff: Bool? = nil,
+            decision: String? = nil,
+            resolveFailure: String? = nil,
+            runFailure: String? = nil,
+            recurse: Bool? = nil,
+            phases: [String]? = nil,
+            agent: String? = nil,
+            input: String? = nil,
+            prompt: String? = nil,
+            sourcePaths: [String]? = nil,
+            model: String? = nil,
+            expectSuccess: Bool? = nil,
+            expectEnvelopeKind: String? = nil,
+            expectResultKind: String? = nil,
+            summaryContains: [String]? = nil,
+            expectFeedKinds: [String]? = nil,
+            expectPhasesInOrder: [String]? = nil,
+            expectHandoffWrapped: Bool? = nil,
+            expectNestedRefused: Bool? = nil,
+            expectImageMode: String? = nil,
+            minImages: Int? = nil
+        ) {
+            self.lane = lane
+            self.needsHandoff = needsHandoff
+            self.decision = decision
+            self.resolveFailure = resolveFailure
+            self.runFailure = runFailure
+            self.recurse = recurse
+            self.phases = phases
+            self.agent = agent
+            self.input = input
+            self.prompt = prompt
+            self.sourcePaths = sourcePaths
+            self.model = model
+            self.expectSuccess = expectSuccess
+            self.expectEnvelopeKind = expectEnvelopeKind
+            self.expectResultKind = expectResultKind
+            self.summaryContains = summaryContains
+            self.expectFeedKinds = expectFeedKinds
+            self.expectPhasesInOrder = expectPhasesInOrder
+            self.expectHandoffWrapped = expectHandoffWrapped
+            self.expectNestedRefused = expectNestedRefused
+            self.expectImageMode = expectImageMode
+            self.minImages = minImages
         }
     }
 

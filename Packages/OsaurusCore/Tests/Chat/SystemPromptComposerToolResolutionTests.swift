@@ -76,6 +76,35 @@ struct SystemPromptComposerToolResolutionTests {
         FolderToolManager.shared.unregisterFolderTools()
     }
 
+    /// Minimal snapshot for the gate tests that exercise `resolveTools`
+    /// directly (no `AgentManager` round-trip). A fresh random `agentId`
+    /// keeps it off the Default-agent allowlist path so the only thing
+    /// under test is the per-capability gate.
+    private func makeSnapshot(
+        toolMode: ToolSelectionMode = .auto,
+        manualToolNames: [String]? = nil,
+        computerUseEnabled: Bool = false,
+        spawnDelegationEnabled: Bool = false,
+        imageEnabled: Bool = false,
+        spawnableAgentNames: [String] = []
+    ) -> AgentConfigSnapshot {
+        AgentConfigSnapshot(
+            agentId: UUID(),
+            toolsDisabled: false,
+            memoryDisabled: true,
+            autonomousConfig: nil,
+            toolMode: toolMode,
+            model: nil,
+            manualToolNames: manualToolNames,
+            systemPrompt: "",
+            dbEnabled: false,
+            computerUseEnabled: computerUseEnabled,
+            spawnDelegationEnabled: spawnDelegationEnabled,
+            imageEnabled: imageEnabled,
+            spawnableAgentNames: spawnableAgentNames
+        )
+    }
+
     // MARK: - Auto mode
 
     @Test
@@ -204,6 +233,69 @@ struct SystemPromptComposerToolResolutionTests {
             let names = Set(tools.map { $0.function.name })
             #expect(names.contains("db_schema"))
         }
+    }
+
+    // MARK: - Computer Use gate (authoritative; auto-injected, never discovered)
+
+    @Test
+    func autoMode_injectsComputerUseWhenEnabled() {
+        // Opting in must auto-inject `computer_use` into the baseline schema —
+        // the user should never have to discover/load it via capabilities.
+        let tools = SystemPromptComposer.resolveTools(
+            snapshot: makeSnapshot(computerUseEnabled: true),
+            executionMode: .none
+        )
+        let names = Set(tools.map { $0.function.name })
+        #expect(names.contains(ComputerUseTool.toolName))
+    }
+
+    @Test
+    func autoMode_stripsComputerUseWhenDisabled() {
+        let tools = SystemPromptComposer.resolveTools(
+            snapshot: makeSnapshot(computerUseEnabled: false),
+            executionMode: .none
+        )
+        let names = Set(tools.map { $0.function.name })
+        #expect(!names.contains(ComputerUseTool.toolName))
+    }
+
+    @Test
+    func computerUseHasNoCapabilitiesLoadCarveOut() {
+        // Unlike the lean-by-default built-ins, `computer_use` is stripped even
+        // when a stray `capabilities_load` names it — the gate is authoritative.
+        let tools = SystemPromptComposer.resolveTools(
+            snapshot: makeSnapshot(computerUseEnabled: false),
+            executionMode: .none,
+            additionalToolNames: [ComputerUseTool.toolName]
+        )
+        let names = Set(tools.map { $0.function.name })
+        #expect(!names.contains(ComputerUseTool.toolName))
+    }
+
+    @Test
+    func manualMode_injectsComputerUseWhenEnabled() {
+        let tools = SystemPromptComposer.resolveTools(
+            snapshot: makeSnapshot(
+                toolMode: .manual,
+                manualToolNames: ["render_chart"],
+                computerUseEnabled: true
+            ),
+            executionMode: .none
+        )
+        let names = Set(tools.map { $0.function.name })
+        #expect(names.contains(ComputerUseTool.toolName))
+    }
+
+    @Test
+    func computerUseIsBuiltInButExcludedFromDiscovery() {
+        // Registered as a built-in so the runtime can execute it and ChatView
+        // can intercept its feed, but it must stay out of the dynamic discovery
+        // catalog (`listDynamicTools`) and be flagged non-discoverable so the
+        // index sync keeps it out of `capabilities_discover`.
+        #expect(ToolRegistry.shared.builtInToolNames.contains(ComputerUseTool.toolName))
+        #expect(ToolRegistry.nonDiscoverableBuiltInToolNames.contains(ComputerUseTool.toolName))
+        let dynamicNames = Set(ToolRegistry.shared.listDynamicTools().map(\.name))
+        #expect(!dynamicNames.contains(ComputerUseTool.toolName))
     }
 
     @Test
@@ -527,6 +619,95 @@ struct SystemPromptComposerToolResolutionTests {
             #expect(!names.contains("cancel_next_run"))
             #expect(!names.contains("notify"))
         }
+    }
+
+    // MARK: - Delegation gates (spawn / image — per-capability, per-agent)
+
+    /// Run `body` in an isolated subagent-store sandbox with a default global
+    /// config, then reset. There is no master switch anymore; delegation
+    /// visibility is driven entirely by the per-agent snapshot in `resolveTools`.
+    /// Mirrors `SubagentToolAvailabilityTests`' cross-suite lock so the global
+    /// config stays stable while we read the delegation-gated schema.
+    private func withSubagentSandbox(_ body: @MainActor @Sendable () async -> Void) async {
+        let lease = await acquireSubagentStoreSandbox("composer-delegation")
+        defer { lease.release() }
+        SubagentConfigurationStore.save(SubagentConfiguration())
+        await body()
+    }
+
+    /// A custom agent surfaces `image` purely on its OWN `imageEnabled` toggle,
+    /// independent of spawn — `image` is its own per-agent flag now, and
+    /// `resolveTools` resolves each delegation capability separately.
+    @Test
+    func autoMode_customAgentSurfacesImageIndependentlyOfSpawn() async {
+        await withSubagentSandbox {
+            let names = Set(
+                SystemPromptComposer.resolveTools(
+                    snapshot: makeSnapshot(imageEnabled: true),
+                    executionMode: .none
+                ).map { $0.function.name }
+            )
+            #expect(names.contains("image"))
+            // No spawn toggle / list → spawn stays hidden even though image is on.
+            #expect(!names.contains("spawn"))
+        }
+    }
+
+    /// A custom agent surfaces `spawn` only with its own toggle AND a non-empty
+    /// per-agent spawnable list (nothing to spawn ⇒ hidden); `image` stays hidden
+    /// when its own toggle is off.
+    @Test
+    func autoMode_customAgentSurfacesSpawnOnlyWithToggleAndTargets() async {
+        await withSubagentSandbox {
+            let withTargets = Set(
+                SystemPromptComposer.resolveTools(
+                    snapshot: makeSnapshot(
+                        spawnDelegationEnabled: true,
+                        spawnableAgentNames: ["Helper"]
+                    ),
+                    executionMode: .none
+                ).map { $0.function.name }
+            )
+            #expect(withTargets.contains("spawn"))
+            #expect(!withTargets.contains("image"))
+
+            // Toggle on but EMPTY list → nothing to spawn → spawn hidden.
+            let noTargets = Set(
+                SystemPromptComposer.resolveTools(
+                    snapshot: makeSnapshot(
+                        spawnDelegationEnabled: true,
+                        spawnableAgentNames: []
+                    ),
+                    executionMode: .none
+                ).map { $0.function.name }
+            )
+            #expect(!noTargets.contains("spawn"))
+        }
+    }
+
+    /// Off-by-default now lives at the per-agent level (there is no master kill
+    /// switch): a custom agent that opted into nothing surfaces no delegation
+    /// tools — even when the main chat's OWN pool / image switch are populated,
+    /// they must not leak to another agent.
+    @Test
+    func autoMode_customAgentWithNoOptInHidesAllDelegationTools() async {
+        let lease = await acquireSubagentStoreSandbox("composer-no-optin")
+        defer { lease.release() }
+        SubagentConfigurationStore.save(
+            SubagentConfiguration(spawnableAgentNames: ["Helper"], imageDelegationEnabled: true)
+        )
+        let names = Set(
+            SystemPromptComposer.resolveTools(
+                snapshot: makeSnapshot(
+                    spawnDelegationEnabled: false,
+                    imageEnabled: false,
+                    spawnableAgentNames: []
+                ),
+                executionMode: .none
+            ).map { $0.function.name }
+        )
+        #expect(!names.contains("image"))
+        #expect(!names.contains("spawn"))
     }
 
     // MARK: - canonicalToolOrder

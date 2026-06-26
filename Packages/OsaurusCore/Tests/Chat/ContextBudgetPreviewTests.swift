@@ -41,6 +41,7 @@ struct ContextBudgetPreviewTests {
         toolSelectionMode: ToolSelectionMode? = nil,
         manualToolNames: [String]? = nil,
         autonomous: Bool = false,
+        computerUseEnabled: Bool = false,
         body: @MainActor @Sendable (UUID) async -> Void
     ) async {
         await SandboxTestLock.runWithStoragePaths {
@@ -79,6 +80,8 @@ struct ContextBudgetPreviewTests {
                 try? FileManager.default.removeItem(at: root)
             }
 
+            var settings = AgentSettings.defaultDisabled
+            settings.computerUseEnabled = computerUseEnabled
             let agent = Agent(
                 name: "PreviewTestAgent-\(UUID().uuidString.prefix(6))",
                 systemPrompt: "Test identity",
@@ -87,7 +90,8 @@ struct ContextBudgetPreviewTests {
                 toolSelectionMode: toolSelectionMode,
                 manualToolNames: manualToolNames,
                 toolsEnabled: !toolsDisabled,
-                memoryEnabled: !memoryDisabled
+                memoryEnabled: !memoryDisabled,
+                settings: settings
             )
             AgentManager.shared.add(agent)
             await body(agent.id)
@@ -308,6 +312,65 @@ struct ContextBudgetPreviewTests {
             )
             #expect(context.tools.contains { $0.function.name == "todo" })
             #expect(sectionIds(context).contains("agentLoopGuidance"))
+        }
+    }
+
+    // MARK: - Computer Use
+
+    /// The reported gap: enabling Computer Use injected the `computer_use`
+    /// tool (folded into the aggregate `Tools` line) but added no prompt
+    /// section, so the budget popover showed nothing labelled "Computer Use".
+    /// Now an enabled custom agent surfaces a dedicated `computerUse` section
+    /// AND the tool, so the capability is visible in the context list.
+    @Test("preview: computer use enabled surfaces computerUse section + tool")
+    func computerUseEnabled_surfacesSectionAndTool() async {
+        await withAgent(toolSelectionMode: .auto, computerUseEnabled: true) { agentId in
+            let preview = SystemPromptComposer.composePreviewContext(
+                agentId: agentId,
+                executionMode: .none
+            )
+            #expect(sectionIds(preview).contains("computerUse"))
+            #expect(preview.tools.contains { $0.function.name == ComputerUseTool.toolName })
+        }
+    }
+
+    /// Default (disabled) custom agent: no `computer_use` tool, no section —
+    /// the prompt never advertises a capability the agent hasn't opted into.
+    @Test("preview: computer use disabled omits computerUse section + tool")
+    func computerUseDisabled_omitsSectionAndTool() async {
+        await withAgent(toolSelectionMode: .auto, computerUseEnabled: false) { agentId in
+            let preview = SystemPromptComposer.composePreviewContext(
+                agentId: agentId,
+                executionMode: .none
+            )
+            #expect(sectionIds(preview).contains("computerUse") == false)
+            #expect(preview.tools.contains { $0.function.name == ComputerUseTool.toolName } == false)
+        }
+    }
+
+    /// Parity: the section the welcome-screen preview prices is the exact
+    /// one the next real send emits, so the popover can't drift on the
+    /// Computer Use row.
+    @Test("parity: computerUse section matches between preview and composeChatContext")
+    func computerUse_previewMatchesCompose() async {
+        await withAgent(
+            memoryDisabled: true,
+            toolSelectionMode: .auto,
+            computerUseEnabled: true
+        ) { agentId in
+            let preview = SystemPromptComposer.composePreviewContext(
+                agentId: agentId,
+                executionMode: .none,
+                model: "gpt-5"
+            )
+            let real = await SystemPromptComposer.composeChatContext(
+                agentId: agentId,
+                executionMode: .none,
+                model: "gpt-5",
+                query: ""
+            )
+            #expect(sectionIds(preview) == real.manifest.sections.map(\.id))
+            #expect(sectionIds(preview).contains("computerUse"))
         }
     }
 
@@ -679,5 +742,58 @@ struct ContextBudgetSegmentWidthsTests {
             fillsTrack: true
         )
         #expect(zeroTotal == [0, 0, 0])
+    }
+}
+
+// MARK: - Screen Context budget row
+
+/// The frozen `[Screen Context]` snapshot rides on the latest user message
+/// (like Memory) and must surface as its own "Screen Context" budget row —
+/// plumbed through `ContextBreakdown.from(..., screenContextTokens:)` and the
+/// live `ContextBudgetTracker`, never silently folded into Conversation.
+@Suite(.serialized)
+@MainActor
+struct ScreenContextBudgetRowTests {
+
+    private func baseManifest() -> PromptManifest {
+        PromptManifest(sections: [
+            .static(id: "platform", label: "Platform", content: "identity")
+        ])
+    }
+
+    @Test("breakdown: screen-context tokens surface as a dedicated context row")
+    func breakdown_addsDedicatedRow() {
+        let bd = ContextBreakdown.from(
+            manifest: baseManifest(),
+            screenContextTokens: 137
+        )
+        #expect(bd.allEntries.first { $0.id == "screenContext" }?.tokens == 137)
+        // Grouped with the other system-context rows (Memory/Tools), not messages.
+        #expect(bd.context.contains { $0.id == "screenContext" })
+        #expect(bd.messages.contains { $0.id == "screenContext" } == false)
+    }
+
+    @Test("breakdown: zero screen-context tokens add no phantom row")
+    func breakdown_zeroOmitsRow() {
+        let bd = ContextBreakdown.from(
+            manifest: baseManifest(),
+            screenContextTokens: 0
+        )
+        #expect(bd.allEntries.contains { $0.id == "screenContext" } == false)
+    }
+
+    /// During streaming the tracker carries the screen-context block as its own
+    /// row; conversation is measured before the prefix is injected, so the two
+    /// never double-count.
+    @Test("tracker: screen-context row stays separate from conversation")
+    func tracker_separateFromConversation() {
+        let tracker = ContextBudgetTracker()
+        tracker.snapshot(manifest: baseManifest(), toolTokens: 0)
+        tracker.updateScreenContext(tokens: 88)
+        tracker.updateConversation(tokens: 200)
+
+        let bd = tracker.activeBreakdown(isActive: true, outputTurn: nil)
+        #expect(bd?.allEntries.first { $0.id == "screenContext" }?.tokens == 88)
+        #expect(bd?.allEntries.first { $0.id == "conversation" }?.tokens == 200)
     }
 }

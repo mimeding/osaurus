@@ -13,6 +13,7 @@ struct ModelPickerItem: Identifiable, Hashable {
     enum Source: Hashable {
         case foundation
         case local  // MLX models
+        case imageGeneration  // on-device image models (vMLXFlux)
         case remote(providerName: String, providerId: UUID)
 
         var displayName: String {
@@ -21,6 +22,8 @@ struct ModelPickerItem: Identifiable, Hashable {
                 return "Foundation"
             case .local:
                 return "Local Models"
+            case .imageGeneration:
+                return "Image Models"
             case .remote(let providerName, _):
                 return providerName
             }
@@ -31,6 +34,7 @@ struct ModelPickerItem: Identifiable, Hashable {
             switch self {
             case .foundation: return "foundation"
             case .local: return "local"
+            case .imageGeneration: return "image"
             case .remote(_, let providerId): return "remote-\(providerId.uuidString)"
             }
         }
@@ -41,9 +45,18 @@ struct ModelPickerItem: Identifiable, Hashable {
                 return 0
             case .local:
                 return 1
-            case .remote:
+            case .imageGeneration:
                 return 2
+            case .remote:
+                return 3
             }
+        }
+
+        /// True for the on-device image-generation source. Chat routes these
+        /// through `ImageGenerationService` instead of the LLM engine.
+        var isImageGeneration: Bool {
+            if case .imageGeneration = self { return true }
+            return false
         }
     }
 
@@ -64,6 +77,13 @@ struct ModelPickerItem: Identifiable, Hashable {
 
     /// Whether this is a Vision Language Model
     let isVLM: Bool
+
+    /// Whether the local bundle is in MLX format and therefore loadable by the
+    /// local engine. Set from `MLXModel.isMLXFormat` for local items so the
+    /// picker can grey out (and refuse to select) co-mingled non-MLX bundles
+    /// that would otherwise fail at load. Always `true` for non-local sources
+    /// (foundation, remote) and undownloaded catalog entries.
+    let isMLXFormat: Bool
 
     /// Whether this is an embedding/encoder-only model (BERT family,
     /// model2vec, etc.). Set from `MLXModel.isEmbedding` for local items so
@@ -86,6 +106,13 @@ struct ModelPickerItem: Identifiable, Hashable {
     /// filter the Osaurus tab by context limit; `nil` when unknown.
     let contextLength: Int?
 
+    /// Image-generation metadata. Nil for text/remote chat models.
+    let imageKind: String?
+    let imageCapabilities: ImageModelCapabilities?
+    let imageDefaultSteps: Int?
+    let imageDefaultGuidance: Float?
+    let imageReady: Bool
+
     init(
         id: String,
         displayName: String,
@@ -93,11 +120,17 @@ struct ModelPickerItem: Identifiable, Hashable {
         parameterCount: String? = nil,
         quantization: String? = nil,
         isVLM: Bool = false,
+        isMLXFormat: Bool = true,
         isEmbedding: Bool = false,
         description: String? = nil,
         inputPriceMicroPerMTok: Int64? = nil,
         outputPriceMicroPerMTok: Int64? = nil,
-        contextLength: Int? = nil
+        contextLength: Int? = nil,
+        imageKind: String? = nil,
+        imageCapabilities: ImageModelCapabilities? = nil,
+        imageDefaultSteps: Int? = nil,
+        imageDefaultGuidance: Float? = nil,
+        imageReady: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -105,11 +138,17 @@ struct ModelPickerItem: Identifiable, Hashable {
         self.parameterCount = parameterCount
         self.quantization = quantization
         self.isVLM = isVLM
+        self.isMLXFormat = isMLXFormat
         self.isEmbedding = isEmbedding
         self.description = description
         self.inputPriceMicroPerMTok = inputPriceMicroPerMTok
         self.outputPriceMicroPerMTok = outputPriceMicroPerMTok
         self.contextLength = contextLength
+        self.imageKind = imageKind
+        self.imageCapabilities = imageCapabilities
+        self.imageDefaultSteps = imageDefaultSteps
+        self.imageDefaultGuidance = imageDefaultGuidance
+        self.imageReady = imageReady
     }
 
     /// Check if model matches search query using fuzzy matching.
@@ -141,8 +180,25 @@ extension ModelPickerItem {
             parameterCount: model.parameterCount,
             quantization: model.quantization,
             isVLM: model.isVLM,
+            isMLXFormat: model.isMLXFormat,
             isEmbedding: model.isEmbedding,
             description: model.description
+        )
+    }
+
+    /// Create an on-device image-generation model picker item.
+    static func fromImageModel(_ model: ImageModelInfo) -> ModelPickerItem {
+        ModelPickerItem(
+            id: model.id,
+            displayName: model.displayName,
+            source: .imageGeneration,
+            quantization: model.quantizationBits.map { "\($0)-bit" },
+            description: model.ready ? nil : model.blockedReasons.first,
+            imageKind: model.kind,
+            imageCapabilities: model.capabilities,
+            imageDefaultSteps: model.defaultSteps,
+            imageDefaultGuidance: model.defaultGuidance,
+            imageReady: model.ready
         )
     }
 
@@ -274,10 +330,23 @@ extension ModelPickerItem {
             // bundles (HF cache, LM Studio), not just the curated chat
             // catalog, so an embedding repo can appear here. The flag is
             // detected from the bundle's config.json at item construction.
-            return !isEmbedding
+            // Non-MLX bundles can't load locally, so never auto-pick one.
+            return !isEmbedding && isMLXFormat
+        case .imageGeneration:
+            // Image models produce images, not chat completions — never a
+            // default chat pick (but still selectable to enter image mode).
+            return false
         case .remote:
             return !Self.isLikelyEmbeddingOrRerankerID(id)
         }
+    }
+
+    var isImageGenerationDelegateCandidate: Bool {
+        source.isImageGeneration && imageReady && (imageCapabilities?.textToImage == true)
+    }
+
+    var isImageEditDelegateCandidate: Bool {
+        source.isImageGeneration && imageReady && (imageCapabilities?.imageEdit == true)
     }
 
     /// Ranking used only when Chat needs an automatic fallback selection.
@@ -289,6 +358,8 @@ extension ModelPickerItem {
     var defaultChatSelectionRank: Int {
         let lower = id.lowercased()
         switch source {
+        case .imageGeneration:
+            return 40
         case .local:
             if lower.contains("gemma-4"), lower.contains("qat"),
                 lower.contains("osaurusai--"),
@@ -496,6 +567,37 @@ extension Array where Element == ModelPickerItem {
         return ranked?.element ?? first
     }
 
+    var imageGenerationDelegateCandidates: [ModelPickerItem] {
+        filter(\.isImageGenerationDelegateCandidate)
+    }
+
+    var imageEditDelegateCandidates: [ModelPickerItem] {
+        filter(\.isImageEditDelegateCandidate)
+    }
+
+    func subagentModelCandidate(
+        id: String?,
+        kind: SubagentModelKind
+    ) -> ModelPickerItem? {
+        guard let id else { return nil }
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return candidates(for: kind).first { $0.id == trimmed }
+    }
+
+    func defaultSubagentModelCandidate(kind: SubagentModelKind) -> ModelPickerItem? {
+        candidates(for: kind).first
+    }
+
+    private func candidates(for kind: SubagentModelKind) -> [ModelPickerItem] {
+        switch kind {
+        case .imageGeneration:
+            return imageGenerationDelegateCandidates
+        case .imageEdit:
+            return imageEditDelegateCandidates
+        }
+    }
+
     /// Group models by source for display in sections
     func groupedBySource() -> [(source: ModelPickerItem.Source, models: [ModelPickerItem])] {
         var groups: [ModelPickerItem.Source: [ModelPickerItem]] = [:]
@@ -526,7 +628,8 @@ extension Array where Element == ModelPickerItem {
             switch model.source {
             case .foundation:
                 foundationModels.append(model)
-            case .local:
+            case .local, .imageGeneration:
+                // On-device image models live in the Local tab alongside LLMs.
                 localModels.append(model)
             case .remote(let providerName, _):
                 let key = model.source.uniqueKey

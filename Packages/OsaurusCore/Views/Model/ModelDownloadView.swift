@@ -91,6 +91,10 @@ struct ModelDownloadView: View {
     /// Model to show in the detail sheet
     @State private var modelToShowDetails: MLXModel? = nil
 
+    /// Drives the "model can't be used" alert shown when a greyed (non-MLX)
+    /// card is tapped, instead of opening its detail sheet.
+    @State private var unsupportedModelName: String? = nil
+
     /// Content has appeared (for entrance animation)
     @State private var hasAppeared = false
 
@@ -109,6 +113,12 @@ struct ModelDownloadView: View {
     /// mice can't scroll horizontally, so the carousel is driven by these
     /// buttons; the index is clamped to the model count on every step.
     @State private var topPicksIndex = 0
+
+    /// Which edge arrows the Top Picks carousel can offer, derived from the live
+    /// scroll geometry so each arrow hides the moment there's no room to scroll
+    /// that way (e.g. the right arrow disappears at the far right).
+    @State private var topPicksCanScrollLeft = false
+    @State private var topPicksCanScrollRight = false
 
     /// Cached output of `gridLists`. We used to recompute four filter +
     /// sort passes from a body computed property, which would re-run on
@@ -159,8 +169,13 @@ struct ModelDownloadView: View {
             )
             .opacity(hasAppeared ? 1 : 0)
 
-            modelListView(lists: lists)
-                .opacity(hasAppeared ? 1 : 0)
+            if selectedTab == .images {
+                ImageModelsDownloadView()
+                    .opacity(hasAppeared ? 1 : 0)
+            } else {
+                modelListView(lists: lists)
+                    .opacity(hasAppeared ? 1 : 0)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.primaryBackground)
@@ -235,12 +250,16 @@ struct ModelDownloadView: View {
                     showImportSheet = false
                     selectedTab = .all
                     searchText = repoId
+                },
+                onImportedImage: { _ in
+                    showImportSheet = false
+                    selectedTab = .images
                 }
             )
             .environment(\.theme, themeManager.currentTheme)
         }
         .themedAlert(
-            modelManager.downloadAlert?.title ?? "Model download failed",
+            modelManager.downloadAlert?.title ?? L("Model download failed"),
             isPresented: Binding(
                 get: { modelManager.downloadAlert != nil },
                 set: { if !$0 { modelManager.downloadAlert = nil } }
@@ -249,7 +268,7 @@ struct ModelDownloadView: View {
                 "\(info.message)\n\nDetails (tap Copy to share):\n\(info.details)"
             },
             buttons: [
-                .cancel("Copy details") {
+                .cancel(L("Copy details")) {
                     if let details = modelManager.downloadAlert?.details {
                         let pb = NSPasteboard.general
                         pb.clearContents()
@@ -257,8 +276,19 @@ struct ModelDownloadView: View {
                     }
                     modelManager.downloadAlert = nil
                 },
-                .primary("OK") { modelManager.downloadAlert = nil },
+                .primary(L("OK")) { modelManager.downloadAlert = nil },
             ]
+        )
+        .themedAlert(
+            L("Model not supported"),
+            isPresented: Binding(
+                get: { unsupportedModelName != nil },
+                set: { if !$0 { unsupportedModelName = nil } }
+            ),
+            message: L(
+                "\(unsupportedModelName ?? "") isn't an MLX model, so it can't be used in Osaurus. The local engine runs MLX-format models only."
+            ),
+            primaryButton: .primary(L("OK")) { unsupportedModelName = nil }
         )
     }
 
@@ -324,7 +354,7 @@ struct ModelDownloadView: View {
                     .foregroundColor(theme.secondaryText)
                 }
                 .buttonStyle(PlainButtonStyle())
-                .localizedHelp("Import an MLX model from Hugging Face")
+                .localizedHelp("Import a model from Hugging Face")
 
                 // Download status indicator (shown when downloads are active)
                 if modelManager.activeDownloadsCount > 0 {
@@ -648,11 +678,11 @@ struct ModelDownloadView: View {
     /// stays identical.
     private func modelCard(for model: MLXModel) -> some View {
         ModelRowView(
-            model: model,
+            content: ModelCardContent(model: model, totalMemoryGB: systemMonitor.totalMemoryGB),
             downloadState: modelManager.effectiveDownloadState(for: model),
             metrics: modelManager.downloadMetrics[model.id],
-            totalMemoryGB: systemMonitor.totalMemoryGB,
             onViewDetails: { modelToShowDetails = model },
+            onUnsupportedTap: { unsupportedModelName = model.name },
             onCancel: { modelManager.cancelDownload(model.id) },
             onPause: { modelManager.pauseDownload(model.id) },
             onResume: { modelManager.resumeDownload(model.id) }
@@ -699,8 +729,25 @@ struct ModelDownloadView: View {
                     .padding(.horizontal, 2)
                     .padding(.bottom, 4)
                 }
+                // Derive arrow visibility from the actual scroll position so an
+                // arrow hides the instant there's no more room to scroll its way.
+                // The tolerance absorbs the 2pt content inset (a leading-anchored
+                // scroll to the first card lands at offset ~2, not 0) plus rounding.
+                .onScrollGeometryChange(for: TopPicksScrollEdges.self) { geo in
+                    let edgeTolerance: CGFloat = 4
+                    let maxOffsetX = geo.contentSize.width - geo.containerSize.width
+                    return TopPicksScrollEdges(
+                        canScrollLeft: geo.contentOffset.x > edgeTolerance,
+                        canScrollRight: geo.contentOffset.x < maxOffsetX - edgeTolerance
+                    )
+                } action: { _, edges in
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        topPicksCanScrollLeft = edges.canScrollLeft
+                        topPicksCanScrollRight = edges.canScrollRight
+                    }
+                }
                 .overlay(alignment: .leading) {
-                    if topPicksIndex > 0 {
+                    if topPicksCanScrollLeft {
                         topPicksArrow("chevron.left") {
                             scrollTopPicks(to: topPicksIndex - step, ids: ids, proxy: proxy)
                         }
@@ -709,7 +756,7 @@ struct ModelDownloadView: View {
                     }
                 }
                 .overlay(alignment: .trailing) {
-                    if topPicksIndex < models.count - 1 {
+                    if topPicksCanScrollRight {
                         topPicksArrow("chevron.right") {
                             scrollTopPicks(to: topPicksIndex + step, ids: ids, proxy: proxy)
                         }
@@ -741,6 +788,14 @@ struct ModelDownloadView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// Which directions the Top Picks carousel can still scroll, recomputed from
+    /// the live scroll geometry. Equatable so `onScrollGeometryChange` only fires
+    /// the action when an edge actually flips.
+    private struct TopPicksScrollEdges: Equatable {
+        var canScrollLeft = false
+        var canScrollRight = false
     }
 
     private func scrollTopPicks(to index: Int, ids: [String], proxy: ScrollViewProxy) {
@@ -804,6 +859,9 @@ struct ModelDownloadView: View {
                                     catalogContent(lists: lists)
                                 case .downloaded:
                                     modelGrid(models: lists.downloaded)
+                                case .images:
+                                    // Rendered by the body's `.images` branch.
+                                    EmptyView()
                                 }
                             }
                         }
@@ -1154,6 +1212,8 @@ struct ModelDownloadView: View {
             return "cube.box"
         case .downloaded:
             return "internaldrive"
+        case .images:
+            return "photo"
         }
     }
 
@@ -1166,6 +1226,8 @@ struct ModelDownloadView: View {
             return L("No models available")
         case .downloaded:
             return L("No models on device yet")
+        case .images:
+            return L("No image models")
         }
     }
 
@@ -1430,6 +1492,18 @@ struct ModelDownloadView: View {
         switch input.selectedTab {
         case .all: displayed = topPicks + others
         case .downloaded: displayed = downloaded
+        case .images: displayed = []  // image tab renders its own view
+        }
+
+        // Warm disk-backed verdicts while still off the main actor. The catalog
+        // cards (`ModelCardContent.init`) read `isVLM` and `isMLXFormat` during
+        // SwiftUI body evaluation on the main thread; without this a cold cache
+        // would fault config.json / safetensors-header reads per card on main
+        // (the Sentry app-hang path). `makeGridLists` always runs inside a
+        // `Task.detached`, so these reads stay off the main thread.
+        for model in displayed {
+            _ = model.isVLM
+            _ = model.isMLXFormat
         }
 
         return GridLists(suggested: topPicks, others: others, downloaded: downloaded, displayed: displayed)
@@ -1450,9 +1524,46 @@ struct ModelDownloadView: View {
             // A superseded task must not touch the snapshot or the handle —
             // the task that cancelled it now owns both.
             guard !Task.isCancelled else { return }
-            gridListsSnapshot = lists
+            applyGridLists(lists)
             gridListsRefreshTask = nil
         }
+    }
+
+    /// Swap in a freshly computed grid snapshot, animating the mosaic when the
+    /// membership change is bounded.
+    ///
+    /// The heavy filter/sort already ran off-main (`makeGridLists`), so the
+    /// `withAnimation` closure is only the assignment — there is no synchronous
+    /// recompute inside the transaction (the shape that caused earlier
+    /// `withAnimation` app hangs). The guard is purely about transition volume:
+    /// animating a wholesale swap (e.g. clearing a search to reveal the full
+    /// catalog) would build and transition a large batch of cells in one spring
+    /// transaction on the main thread — a hang risk, and not legible anyway —
+    /// so past `maxAnimatedGridChurn` inserted+removed cells we swap instantly.
+    /// Reorders of surviving cells are cheap and don't count, so a pure sort
+    /// always animates.
+    private func applyGridLists(_ lists: GridLists) {
+        let churn = Self.membershipChurn(gridListsSnapshot.displayed, lists.displayed)
+        if churn <= Self.maxAnimatedGridChurn {
+            withAnimation(GridDiff.spring) {
+                gridListsSnapshot = lists
+            }
+        } else {
+            gridListsSnapshot = lists
+        }
+    }
+
+    /// Above this many inserted + removed cells, a grid swap applies without the
+    /// mosaic spring to keep the animation off the main thread's critical path.
+    private static let maxAnimatedGridChurn = 40
+
+    /// Count of models that must insert or remove between two lists. Survivors
+    /// that merely change position are excluded — those animate cheaply and are
+    /// the heart of the mosaic.
+    private static func membershipChurn(_ a: [MLXModel], _ b: [MLXModel]) -> Int {
+        let aIds = Set(a.map(\.id))
+        let bIds = Set(b.map(\.id))
+        return aIds.symmetricDifference(bIds).count
     }
 
     /// Debounced refresh for `modelManager.objectWillChange` bursts so
@@ -1746,6 +1857,9 @@ private struct HuggingFaceImportSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let onImported: (String) -> Void
+    /// Called when the pasted repo is an image bundle, staged via the image
+    /// store instead of the LLM path.
+    let onImportedImage: (String) -> Void
 
     @State private var inputText: String = ""
     @State private var errorMessage: String? = nil
@@ -1814,7 +1928,7 @@ private struct HuggingFaceImportSheet: View {
                 .foregroundColor(theme.accentColor)
                 .padding(.top, 1)
             Text(
-                "Osaurus only runs MLX models. Try a repo from `OsaurusAI` or `mlx-community`.",
+                "Paste an MLX language model (try `OsaurusAI` or `mlx-community`) or an mflux image model — each is routed to the right place automatically.",
                 bundle: .module
             )
             .font(.system(size: 12))
@@ -1918,6 +2032,19 @@ private struct HuggingFaceImportSheet: View {
         errorMessage = nil
         isResolving = true
         Task { @MainActor in
+            // Image bundles use a diffusers/mflux layout and a separate engine,
+            // so route them to the image store before the LLM compatibility
+            // check (which would reject them and stage to the wrong directory).
+            if await ImageModelDownloadService.isImageRepo(repoId) {
+                ImageModelDownloadService.shared.download(
+                    repoId: repoId,
+                    displayName: ImageModelDownload.directoryName(forRepoId: repoId)
+                )
+                isResolving = false
+                onImportedImage(repoId)
+                return
+            }
+
             let resolved = await ModelManager.shared.resolveModelIfMLXCompatible(byRepoId: repoId)
             isResolving = false
             if resolved != nil {

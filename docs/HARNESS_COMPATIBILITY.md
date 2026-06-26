@@ -521,6 +521,7 @@ connect these providers through a custom endpoint.
 | OpenAI reasoning models (o-series, gpt-5+) | Require `max_completion_tokens` (reject `max_tokens`); forbid `temperature`/`top_p`. | Detected by model-id profile; parameters switched/omitted automatically. |
 | Mistral, Groq, OpenRouter, DeepSeek, … (strict OpenAI-compat) | Reject `max_completion_tokens` (HTTP 422). | `max_tokens` emitted by default for non-reasoning models. |
 | xAI, Groq, OpenRouter | Accept full JSON Schema in tool parameters. | No sanitization — full schemas sent as-is. |
+| OpenAI-compatible streaming (xAI/Grok, Azure OpenAI) | Per-request token `usage` is only returned mid-stream when `stream_options.include_usage` is set, and the final usage chunk arrives **after** `finish_reason` (including on tool-call turns). Without it, streamed remote runs report 0 completion tokens. | Osaurus sets `stream_options.include_usage` on streaming requests to these upstreams, briefly defers the tool-call dispatch so the trailing usage chunk lands first, then surfaces the real `completion_tokens` as the same in-band stats hint the local runtime emits. Throughput (`tok/s`) is the provider's value when present, else left nil — never fabricated. Other providers and the non-streaming path are byte-identical on the wire. |
 
 ## Known model findings
 
@@ -583,14 +584,19 @@ export OPENROUTER_API_KEY=. # openrouter/<model>
 # 2. Optional: fixed judge for cross-model comparability
 export JUDGE_MODEL=xai/grok-4.3   # needs XAI_API_KEY
 
-# 3. Run both suites
-swift run --package-path Packages/OsaurusEvals osaurus-evals run \
-  --suite Packages/OsaurusEvals/Suites/AgentLoopFrontier \
-  --model <prefix>/<model-id> --out build/eval-reports/<model>-frontier.json
-swift run --package-path Packages/OsaurusEvals osaurus-evals run \
-  --suite Packages/OsaurusEvals/Suites/AgentLoop \
-  --model <prefix>/<model-id> --out build/eval-reports/<model>-agentloop.json
+# 3. Run the regression lab against a saved baseline
+scripts/evals/agent-loop-regression-lab.sh \
+  --baseline build/eval-baselines/<model>/agent-loop \
+  --model <prefix>/<model-id> \
+  --out-dir build/eval-reports/<model>-agent-loop-lab
 ```
+
+The lab runs `AgentLoop` and `AgentLoopFrontier` by default, captures raw
+per-suite JSON under `reports/`, and writes `regression-summary.json` plus
+`regression-summary.md`. Use the Markdown summary as the short proof block for
+new rows; keep the JSON paths for failure attribution and later comparisons. To
+compare already-captured reports without rerunning a model, pass `--current
+<path>` alongside `--baseline <path>`.
 
 Keys ride in ephemeral in-memory providers — never written to disk or
 Keychain. New providers need a preset in

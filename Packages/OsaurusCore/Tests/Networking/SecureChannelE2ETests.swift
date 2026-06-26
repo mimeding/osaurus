@@ -312,6 +312,164 @@ struct SecureChannelE2ETests {
         #expect(String(decoding: body, as: UTF8.self).contains("built_in_agent_not_exposable"))
     }
 
+    // MARK: - Agent Run Addressed By Crypto Address
+
+    /// The regression that broke share+accept streaming: a paired peer
+    /// addresses the remote agent by its **crypto address** — the only
+    /// identity the invite carries, since the peer never learns the
+    /// host-local UUID — authenticated by an **agent-scoped** key. The host's
+    /// `/agents/{id}/run` must resolve that address to its local agent and let
+    /// the matching agent-scoped key through, then stream encrypted SSE
+    /// deltas. Before the fix the address failed `UUID(uuidString:)`, the
+    /// agent-scope check failed closed with `403 agent_scope_denied`, and the
+    /// streaming client surfaced a misleading `streamTruncated`.
+    @Test func secureRun_byCryptoAddress_agentScopedKey_streamsSSE() async throws {
+        // The host-local UUID the peer never sees; it only holds `agentAddress`.
+        let hostAgentId = UUID()
+
+        // Agent-scoped key (iss == aud == the agent address, signed by the
+        // agent child key): NOT master-scoped, so the route's agent-scope
+        // check actually runs instead of being waved through.
+        let scopedKey = try TokenBuilder.build(
+            privateKey: agentKey,
+            iss: agentAddress,
+            aud: agentAddress
+        )
+        let validator = APIKeyValidator.forAlice(
+            agentAddress: agentAddress,
+            extraWhitelist: [agentAddress]
+        )
+
+        let server = try await startSecureTestServer(
+            engine: MockChatEngine(deltas: ["alpha", "beta"], completeText: "", model: "fake"),
+            trustLoopback: true,
+            validator: validator
+        )
+        defer { Task { await server.shutdown() } }
+
+        // Publish the host's address→UUID mapping while the server-test lease
+        // is held (it serializes with the other registry-mutating tests), so
+        // the run endpoint resolves the crypto address to this local agent.
+        AgentIdentityRegistry.shared.update(
+            addresses: [agentAddress],
+            indices: [0],
+            addressByAgentId: [hostAgentId: agentAddress]
+        )
+
+        let session = try establishSession()
+
+        let chatBody = Data(
+            #"{"model":"fake","stream":true,"messages":[{"role":"user","content":"hi"}]}"#.utf8
+        )
+        let inner = SecureChannel.InnerRequest(
+            method: "POST",
+            path: "/agents/\(agentAddress)/run",
+            authorization: "Bearer \(scopedKey)",
+            accept: "text/event-stream",
+            contentType: "application/json",
+            headers: ["X-Persist": "false"],
+            body: chatBody.base64urlEncoded
+        )
+        let (call, requestSeq) = try session.sealCall(innerRequest: JSONEncoder().encode(inner))
+        var request = try secureCallRequest(server: server, call: call, accept: "text/event-stream")
+        // Arrive as a relayed (remote) caller, exactly like a paired peer does.
+        request.setValue("1", forHTTPHeaderField: HTTPHandler.relayOriginHeaderName)
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        let http = resp as? HTTPURLResponse
+        #expect(http?.statusCode == 200)
+        // Resolution + agent-scope both passed, so the route entered streaming
+        // mode: the outer envelope is SSE, not a buffered error frame.
+        #expect(
+            http?.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("text/event-stream") == true
+        )
+
+        // The wire stays opaque; deltas appear only after authenticated decrypt.
+        let rawBody = String(decoding: data, as: UTF8.self)
+        #expect(!rawBody.contains("alpha"))
+        #expect(!rawBody.contains("agent_scope_denied"))
+
+        let decoder = SecureFrameStreamDecoder(
+            opener: session.makeResponseOpener(requestSeq: requestSeq)
+        )
+        let plaintext = try decoder.feed(data)
+        try decoder.verifyCompleted()
+        let sse = String(decoding: plaintext, as: UTF8.self)
+        #expect(sse.contains("alpha"))
+        #expect(sse.contains("beta"))
+    }
+
+    /// `GET /agents/{id}` must enforce the same per-agent scope as
+    /// `/agents/{id}/run`: an agent-scoped key (agent A) must NOT read a
+    /// DIFFERENT agent's (agent B) metadata — name, description,
+    /// `effective_model`. Before the fix the run route was scoped but the
+    /// metadata route was not, so a paired peer could enumerate every agent.
+    @Test func secureGetAgent_crossAgentScopedKey_returns403() async throws {
+        // Caller is agent A (index 0 == `agentAddress`); the GET targets a
+        // different agent B (index 1) the caller's key is not scoped to.
+        let callerAgentId = UUID()
+        let otherAgentId = UUID()
+        let otherAgentAddress = try AgentKey.deriveAddress(
+            masterKey: TestKeys.alicePrivateKey,
+            index: 1
+        )
+
+        // Agent-scoped key (iss == aud == agent A): NOT master-scoped, so the
+        // route's agent-scope check actually runs instead of being waved through.
+        let scopedKey = try TokenBuilder.build(
+            privateKey: agentKey,
+            iss: agentAddress,
+            aud: agentAddress
+        )
+        let validator = APIKeyValidator.forAlice(
+            agentAddress: agentAddress,
+            extraWhitelist: [agentAddress]
+        )
+
+        let server = try await startSecureTestServer(
+            trustLoopback: true,
+            validator: validator
+        )
+        defer { Task { await server.shutdown() } }
+
+        // Both addresses resolve via the registry (held under the server-test
+        // lease, which serializes registry mutation). The GET target (B) must
+        // resolve to a UUID so the scope gate runs before any existence check.
+        AgentIdentityRegistry.shared.update(
+            addresses: [agentAddress, otherAgentAddress],
+            indices: [0, 1],
+            addressByAgentId: [callerAgentId: agentAddress, otherAgentId: otherAgentAddress]
+        )
+        defer {
+            AgentIdentityRegistry.shared.update(addresses: [], indices: [], addressByAgentId: [:])
+        }
+
+        let session = try establishSession()
+
+        let inner = SecureChannel.InnerRequest(
+            method: "GET",
+            path: "/agents/\(otherAgentAddress)",
+            authorization: "Bearer \(scopedKey)",
+            accept: "application/json"
+        )
+        let (call, requestSeq) = try session.sealCall(innerRequest: JSONEncoder().encode(inner))
+        var request = try secureCallRequest(server: server, call: call)
+        // Arrive as a relayed (remote) caller so the Bearer audience — not
+        // loopback trust — drives the scope check, exactly like a paired peer.
+        request.setValue("1", forHTTPHeaderField: HTTPHandler.relayOriginHeaderName)
+
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        // Outer secure envelope is 200; the rejection rides INSIDE the ciphertext.
+        #expect((resp as? HTTPURLResponse)?.statusCode == 200)
+        #expect(!String(decoding: data, as: UTF8.self).contains("agent_scope_denied"))
+
+        let opener = session.makeResponseOpener(requestSeq: requestSeq)
+        let innerResponse = try SecureChannelClient.openBufferedResponse(data, opener: opener)
+        #expect(innerResponse.status == 403)
+        let body = innerResponse.body.flatMap { Data(base64urlEncoded: $0) } ?? Data()
+        #expect(String(decoding: body, as: UTF8.self).contains("agent_scope_denied"))
+    }
+
     // MARK: - Inner Auth Still Enforced
 
     @Test func secureCall_missingInnerBearer_401Inside() async throws {
@@ -375,7 +533,8 @@ private struct SecureTestServer {
 /// `SecureChannelResponseEncryptor` → `HTTPHandler` (armed encryptor wiring).
 private func startSecureTestServer(
     engine: ChatEngineProtocol = MockChatEngine(),
-    trustLoopback: Bool = false
+    trustLoopback: Bool = false,
+    validator: APIKeyValidator = TestAuth.validator
 ) async throws -> SecureTestServer {
     let lease = await HTTPServerTestLock.shared.acquire()
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -390,7 +549,7 @@ private func startSecureTestServer(
                         encryptor,
                         HTTPHandler(
                             configuration: .default,
-                            apiKeyValidator: TestAuth.validator,
+                            apiKeyValidator: validator,
                             eventLoop: channel.eventLoop,
                             chatEngine: engine,
                             trustLoopback: trustLoopback,

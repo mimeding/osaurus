@@ -35,10 +35,17 @@ extension EvalRunner {
             )
         }
 
-        // Sandbox skip gating (same semantics as `requirePlugins`): a
-        // host without a working sandbox SKIPS the case instead of
-        // failing it, so contributors without Apple Containerization
-        // can still run the rest of the suite.
+        // Sandbox availability gate (same "didn't apply" semantics as
+        // `requirePlugins`): a host without a working, fully-set-up sandbox
+        // SKIPS the case instead of failing it, so contributors without
+        // Apple Containerization can still run the rest of the suite. This
+        // cheap OS/setup check runs BEFORE the tiny-context skip below so
+        // that for sandbox cases an unusable host reports an honest
+        // "sandbox unavailable" reason for EVERY model — including
+        // tiny-context ones (Apple Foundation) that would otherwise mask it
+        // as "tools auto-disabled". Runtime boot/cool-down failures this
+        // cheap check can't see are caught later at the registrar probe and
+        // likewise mapped to SKIP.
         let sandboxFixture = testCase.fixtures.sandbox
         let sandboxMode: AgentLoopSandboxMode? = sandboxFixture.map {
             $0.hostFolder == true ? .combined : .pure
@@ -61,6 +68,31 @@ extension EvalRunner {
             }
         }
 
+        // Capability skip (same "didn't apply, not regressed" semantics): a
+        // model whose context size class auto-disables tool calling — Apple
+        // Foundation and any other ≤4K-token-window model
+        // (`ContextSizeClass.tiny`) — cannot be handed the folder/sandbox
+        // tools every `agent_loop` case requires. Osaurus strips the entire
+        // tool schema at compose time for such models, so the run would
+        // otherwise score a wall of FAILs against an empty toolset (a
+        // capability mismatch, not an agentic-quality result). Surface it as
+        // SKIP with the resolved size class so cross-model reports stay honest.
+        let contextWindow = ContextSizeResolver.resolve(modelId: modelId)
+        if contextWindow.sizeClass.disablesTools {
+            return .terminal(
+                id: testCase.id,
+                label: label,
+                domain: testCase.domain,
+                outcome: .skipped,
+                notes: [
+                    "tools auto-disabled for '\(modelId)': context size class "
+                        + "\(contextWindow.sizeClass) (≤\(ContextSizeResolver.tinyCeiling)-token "
+                        + "window) strips the tool schema; agent_loop requires folder tools"
+                ],
+                modelId: modelId
+            )
+        }
+
         // Fresh per-case workspace. Deleted in all exits below.
         let workspace = FileManager.default.temporaryDirectory
             .appendingPathComponent("osaurus-agentloop-eval-\(UUID().uuidString)", isDirectory: true)
@@ -72,7 +104,8 @@ extension EvalRunner {
                     at: target.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try file.contents.write(to: target, atomically: true, encoding: .utf8)
+                let body = try workspaceFileContents(file)
+                try body.write(to: target, atomically: true, encoding: .utf8)
             }
         } catch {
             try? FileManager.default.removeItem(at: workspace)
@@ -139,8 +172,39 @@ extension EvalRunner {
                 )
             }
 
+            /// Host can't provide a sandbox at all (no container, boot
+            /// failed, or in failure cool-down): tear down and SKIP — the
+            /// same "didn't apply" signal as a missing plugin, not a model
+            /// failure. Distinct from `sandboxSetupFailed` so a real
+            /// per-agent provisioning bug still ERRORs.
+            func sandboxUnavailableSkip(_ note: String) async -> EvalCaseReport {
+                await cleanupSandboxCase(
+                    agentId: evalAgentId,
+                    pluginIdsBeforeRun: pluginIdsBeforeRun
+                )
+                return .terminal(
+                    id: testCase.id,
+                    label: label,
+                    domain: testCase.domain,
+                    outcome: .skipped,
+                    notes: [note],
+                    modelId: modelId
+                )
+            }
+
             await SandboxToolRegistrar.shared.registerTools(for: evalAgentId)
             if let reason = SandboxToolRegistrar.shared.unavailabilityReason(for: evalAgentId) {
+                // Host-capability failures (no container, startup/boot
+                // failed, or in failure cool-down) mean this host simply
+                // can't provide a sandbox — SKIP, don't ERROR, matching the
+                // OS/setup gate above and `requirePlugins` semantics. A
+                // per-agent `provisioningFailed` is a real setup bug worth
+                // surfacing, so it still ERRORs.
+                if Self.sandboxKindIsHostCapability(reason.kind) {
+                    return await sandboxUnavailableSkip(
+                        "sandbox unavailable (\(reason.kind.rawValue)): \(reason.message)"
+                    )
+                }
                 return await sandboxSetupFailed(
                     "sandbox boot/provision failed (\(reason.kind.rawValue)): \(reason.message)"
                 )
@@ -163,7 +227,50 @@ extension EvalRunner {
             }
         }
 
-        let judgeModel = ProcessInfo.processInfo.environment["JUDGE_MODEL"]
+        // Pre-seed the agent DB (requires dbEnabled). Each entry runs through
+        // the same multi-statement `db_execute` path the agent uses, so a
+        // case can stage baseline rows ("yesterday") before the model sees
+        // the task. Runs after the eval agent + any sandbox setup so the
+        // per-agent DB exists; failures error the case rather than scoring a
+        // misleading FAIL against an unseeded DB.
+        if let seeds = testCase.fixtures.seedSql, !seeds.isEmpty {
+            guard let seedAgentId = evalAgentId else {
+                return .terminal(
+                    id: testCase.id,
+                    label: label,
+                    domain: testCase.domain,
+                    outcome: .errored,
+                    notes: ["seedSql requires fixtures.agentCapabilities.dbEnabled"],
+                    modelId: modelId
+                )
+            }
+            do {
+                for sql in seeds {
+                    _ = try LocalAgentBridge.shared.execute(
+                        agentId: seedAgentId,
+                        sql: sql,
+                        params: []
+                    )
+                }
+            } catch {
+                if sandboxFixture != nil {
+                    await cleanupSandboxCase(
+                        agentId: seedAgentId,
+                        pluginIdsBeforeRun: pluginIdsBeforeRun
+                    )
+                }
+                return .terminal(
+                    id: testCase.id,
+                    label: label,
+                    domain: testCase.domain,
+                    outcome: .errored,
+                    notes: ["seedSql failed: \(error.localizedDescription)"],
+                    modelId: modelId
+                )
+            }
+        }
+
+        let judgeModel = EvalJudgeModel.resolveAndWarnOnce(runModelId: modelId)
         let started = Date()
         let transcript = await AgentLoopEvaluator.run(
             task: testCase.query,
@@ -204,7 +311,8 @@ extension EvalRunner {
                 notes: ["agent loop error: \(err)"],
                 modelId: modelId,
                 latencyMs: latency,
-                toolUsage: toolUsageStats(transcript)
+                toolUsage: toolUsageStats(transcript),
+                telemetry: telemetry(from: transcript)
             )
         }
 
@@ -226,6 +334,25 @@ extension EvalRunner {
         for audit in exp.toolUsageAudit ?? [] {
             let result = scoreToolUsageAudit(audit, transcript: transcript)
             score.record(result.passed, note: result.note)
+        }
+
+        // 2d. Context-cost ceilings (advisory pins). Estimated input (prompt
+        // + frozen tool schema, summed across model steps) and input+output.
+        // Only scored when the case opts in AND a measurement exists.
+        if let maxPrompt = exp.scoredMaxPromptTokens, let prompt = transcript.promptTokensTotal {
+            score.check(
+                prompt <= maxPrompt,
+                pass: "ctx tokens \(prompt) <= max \(maxPrompt)",
+                fail: "ctx tokens \(prompt) > max \(maxPrompt)"
+            )
+        }
+        if let maxTotal = exp.scoredMaxTotalTokens, let prompt = transcript.promptTokensTotal {
+            let total = prompt + (transcript.completionTokens ?? 0)
+            score.check(
+                total <= maxTotal,
+                pass: "total tokens \(total) <= max \(maxTotal)",
+                fail: "total tokens \(total) > max \(maxTotal)"
+            )
         }
 
         // 2c. Capability-store outcomes (isolated per-eval-agent stores;
@@ -325,8 +452,32 @@ extension EvalRunner {
             notes: score.notes,
             modelId: modelId,
             latencyMs: latency,
-            toolUsage: toolUsageStats(transcript)
+            toolUsage: toolUsageStats(transcript),
+            telemetry: telemetry(from: transcript)
         )
+    }
+
+    /// Project the agent-loop transcript's generation metrics into the
+    /// report's telemetry block (resource metrics — peak RAM, KV delta —
+    /// are folded in later by `EvalRunner.runOne`). Returns nil when the
+    /// run captured no streaming stats (remote/non-streaming).
+    private static func telemetry(from transcript: AgentLoopTranscript) -> EvalCaseTelemetry? {
+        // Total = input + output. Only meaningful once we have an input
+        // estimate; completion is 0 on remote/non-streaming runs that never
+        // surfaced a stats hint, which is the existing `completionTokens`
+        // semantic — so the total there is the input estimate alone.
+        let total = transcript.promptTokensTotal.map { $0 + (transcript.completionTokens ?? 0) }
+        let t = EvalCaseTelemetry(
+            decodeTokensPerSecond: transcript.decodeTokensPerSecond,
+            prefillTokensPerSecond: transcript.prefillTokensPerSecond,
+            ttftMs: transcript.ttftMs,
+            completionTokens: transcript.completionTokens,
+            promptTokensTotal: transcript.promptTokensTotal,
+            peakContextTokens: transcript.peakContextTokens,
+            totalModelTokens: total,
+            modelSteps: transcript.modelSteps
+        )
+        return t.isEmpty ? nil : t
     }
 
     // MARK: - Capability fixtures (temp eval agent)
@@ -362,6 +513,26 @@ extension EvalRunner {
         return agent.id
     }
 
+    /// Stand up an isolated, fully-enabled auto-mode eval agent for a
+    /// `capability_claims` abstention case. Its allowlist is the live
+    /// dynamic-tool registry minus the case's `ensureToolsDisabled` names,
+    /// so `effectiveEnabledToolNames` is authoritative (non-nil) and the
+    /// must-be-absent tools are verifiably absent. This makes the
+    /// `ensureToolsDisabled` gate satisfiable instead of force-skipping on
+    /// the Default agent's legacy global tool mode. Auto mode + an allowlist
+    /// mirrors a real fully-enabled agent (manifest grounds "do you have X";
+    /// the lean hot set + always-loaded `capabilities_discover`/`_load` let
+    /// the model discover/abstain). Tear down with `removeEvalAgent`.
+    static func installCapabilityClaimsAgent(excluding forbidden: [String]) -> UUID {
+        let agentId = installEvalAgent(nil)
+        AgentManager.shared.updateToolSelectionMode(.auto, for: agentId)
+        let forbiddenSet = Set(forbidden)
+        let allowlist = EvalHostBootstrap.dynamicToolNames()
+            .filter { !forbiddenSet.contains($0) }
+        AgentManager.shared.updateEnabledToolNames(allowlist, for: agentId)
+        return agentId
+    }
+
     // MARK: - Sandbox fixtures
 
     /// Skip-decision for sandbox cases: a host without a working,
@@ -378,6 +549,23 @@ extension EvalRunner {
             return "sandbox setup incomplete on this host"
         }
         return nil
+    }
+
+    /// Which `SandboxToolRegistrar.UnavailabilityReason.Kind`s mean "this
+    /// host can't provide a sandbox at all" (so the case SKIPS, same as a
+    /// missing plugin) vs a real per-run setup bug (which ERRORs). The
+    /// cheap `sandboxSkipReason` gate above only sees OS version + setup
+    /// flag; the registrar surfaces actual boot/cool-down failures only
+    /// after a `registerTools` probe, so this classifies that result.
+    static func sandboxKindIsHostCapability(
+        _ kind: SandboxToolRegistrar.UnavailabilityReason.Kind
+    ) -> Bool {
+        switch kind {
+        case .containerUnavailable, .startupFailed:
+            return true
+        case .provisioningFailed:
+            return false
+        }
     }
 
     /// Map the case's sandbox fixture onto the eval agent's
@@ -401,6 +589,46 @@ extension EvalRunner {
     /// tools later read/write). Contents ride base64 so arbitrary code
     /// fixtures survive the shell pipeline. Returns an error string on
     /// failure, nil on success.
+    /// Resolve a `WorkspaceFile`'s body: inline `contents` wins; otherwise
+    /// load `contentsFromFixture` from the committed fixtures tree; an empty
+    /// file when neither is set.
+    static func workspaceFileContents(_ file: EvalCase.WorkspaceFile) throws -> String {
+        if let inline = file.contents { return inline }
+        if let fixture = file.contentsFromFixture, !fixture.isEmpty {
+            return try resolveFixtureFileContents(fixture)
+        }
+        return ""
+    }
+
+    /// Load a fixture file's text, trying the candidate locations in order.
+    private static func resolveFixtureFileContents(_ relative: String) throws -> String {
+        let candidates = fixtureContentCandidateURLs(relative)
+        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+            return try String(contentsOf: url, encoding: .utf8)
+        }
+        throw NSError(
+            domain: "OsaurusEvals",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "contentsFromFixture '\(relative)' not found (looked in: "
+                    + candidates.map(\.path).joined(separator: ", ") + ")"
+            ]
+        )
+    }
+
+    /// On-disk candidates for a `contentsFromFixture` path, most specific
+    /// first. Evals run from the repo root (`make evals`), so the
+    /// package-relative `Fixtures/` locations resolve there; an absolute or
+    /// CWD-relative path is honored as-is.
+    private static func fixtureContentCandidateURLs(_ relative: String) -> [URL] {
+        [
+            URL(fileURLWithPath: relative),
+            URL(fileURLWithPath: "Packages/OsaurusEvals/Fixtures/\(relative)"),
+            URL(fileURLWithPath: "Packages/OsaurusEvals/Fixtures/AgentDB/\(relative)"),
+        ]
+    }
+
     private static func seedSandboxFile(
         _ file: EvalCase.WorkspaceFile,
         agentName: String
@@ -408,7 +636,13 @@ extension EvalRunner {
         let home = OsaurusPaths.inContainerAgentHome(agentName)
         let absolute = home + "/" + file.path
         let directory = (absolute as NSString).deletingLastPathComponent
-        let encoded = Data(file.contents.utf8).base64EncodedString()
+        let contents: String
+        do {
+            contents = try workspaceFileContents(file)
+        } catch {
+            return error.localizedDescription
+        }
+        let encoded = Data(contents.utf8).base64EncodedString()
         do {
             let result = try await SandboxManager.shared.execAsAgent(
                 agentName,
@@ -455,7 +689,9 @@ extension EvalRunner {
     /// scheduled (so the host app's scheduler never wakes a deleted
     /// agent), then delete the agent record — `AgentStore.delete` also
     /// drops the per-agent database directory and scheduler rows.
-    private static func removeEvalAgent(_ agentId: UUID) {
+    /// Internal (not private) so the capability_claims path in
+    /// `EvalRunner.swift` can tear down its isolated eval agent too.
+    static func removeEvalAgent(_ agentId: UUID) {
         _ = try? LocalAgentBridge.shared.cancelNextRun(agentId: agentId)
         AgentStore.delete(id: agentId)
         AgentManager.shared.refresh()
@@ -687,13 +923,21 @@ extension EvalRunner {
                 failures.append("errors \(errs) > max \(maxErrors)")
             }
         }
-        if let needle = audit.argsMustContain,
-            !calls.contains(where: { $0.arguments.contains(needle) })
-        {
-            failures.append("no call args contain '\(needle)'")
+        // Substring checks are case-INSENSITIVE, matching the sibling
+        // default-agent matcher (`scoreArgsMustContain`): the model's
+        // arg/value casing must not flake the assertion. e.g. a model that
+        // pages with SQL `... LIMIT 1 OFFSET 22` satisfies `offset` just as
+        // one that passes the typed `offset` parameter does — both are real
+        // offset paging, and the audit shouldn't reject one on casing alone.
+        if let needle = audit.argsMustContain {
+            let lowerNeedle = needle.lowercased()
+            if !calls.contains(where: { $0.arguments.lowercased().contains(lowerNeedle) }) {
+                failures.append("no call args contain '\(needle)'")
+            }
         }
         if let forbidden = audit.argsMustNotContain {
-            let offenders = calls.filter { $0.arguments.contains(forbidden) }
+            let lowerForbidden = forbidden.lowercased()
+            let offenders = calls.filter { $0.arguments.lowercased().contains(lowerForbidden) }
             if !offenders.isEmpty {
                 failures.append("\(offenders.count) call(s) args contain forbidden '\(forbidden)'")
             }
@@ -766,6 +1010,18 @@ extension EvalRunner {
                 "dbState (\(assertion.sql)): \(result.rows.count) rows < required \(floor)"
             )
         }
+        if let exact = assertion.expectRowCountEquals, result.rows.count != exact {
+            return (
+                false,
+                "dbState (\(assertion.sql)): \(result.rows.count) rows != expected \(exact)"
+            )
+        }
+        if let expectedColumns = assertion.expectColumns, result.columns != expectedColumns {
+            return (
+                false,
+                "dbState (\(assertion.sql)): columns \(result.columns) != expected \(expectedColumns)"
+            )
+        }
         if let expected = assertion.expectFirstValue {
             guard let first = result.rows.first?.first else {
                 return (false, "dbState (\(assertion.sql)): no rows, expected first value '\(expected)'")
@@ -776,6 +1032,31 @@ extension EvalRunner {
                     false,
                     "dbState (\(assertion.sql)): first value '\(actual)' != expected '\(expected)'"
                 )
+            }
+        }
+        if let expectedValues = assertion.expectValues {
+            guard let firstRow = result.rows.first else {
+                return (
+                    false,
+                    "dbState (\(assertion.sql)): no rows, expected values \(expectedValues)"
+                )
+            }
+            guard firstRow.count >= expectedValues.count else {
+                return (
+                    false,
+                    "dbState (\(assertion.sql)): row has \(firstRow.count) columns, "
+                        + "expected at least \(expectedValues.count) values"
+                )
+            }
+            for (index, expected) in expectedValues.enumerated() {
+                let actual = canonicalSQLValueString(firstRow[index])
+                guard actual == expected else {
+                    return (
+                        false,
+                        "dbState (\(assertion.sql)): value[\(index)] '\(actual)' "
+                            + "!= expected '\(expected)'"
+                    )
+                }
             }
         }
         return (true, "dbState ok (\(assertion.sql)): \(result.rows.count) rows")

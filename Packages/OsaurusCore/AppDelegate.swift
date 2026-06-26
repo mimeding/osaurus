@@ -159,6 +159,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
             NSApp.setActivationPolicy(hideDockIcon ? .accessory : .regular)
         }
 
+        // Consolidate any agent records stranded in the legacy `Personas/`
+        // directory into `agents/` before the first agent load. Enabling a
+        // per-agent Database (or writing a custom avatar) creates `agents/`,
+        // which used to flip path resolution away from `Personas/` and make
+        // those agents vanish from Settings. Idempotent + conflict-safe.
+        OsaurusPaths.migrateLegacyPersonasIfNeeded()
+
         // Make MLX C++ errors recoverable instead of process-fatal. Must run
         // before any model load can call into MLX so the first forward pass
         // is already protected. See `MLXErrorRecovery` for the rationale and
@@ -170,9 +177,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
         DocumentAdaptersBootstrap.registerBuiltIns()
 
         // Register every default-agent configure-tool domain. This is what
-        // wires `osaurus_provider_add`, `osaurus_model_download`, etc. into
-        // `ToolRegistry` and feeds the system-prompt domain menu. Adding a
-        // new domain is one new file under `Tools/Configuration/` plus one
+        // wires the consolidated `osaurus_provider`, `osaurus_model`, etc.
+        // into `ToolRegistry` and feeds the system-prompt domain menu. Adding
+        // a new domain is one new file under `Tools/Configuration/` plus one
         // register call in `ConfigurationDomainBootstrap`.
         ConfigurationDomainBootstrap.registerBuiltIns()
 
@@ -233,6 +240,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
 
         // Set up observers for server state changes
         setupObservers()
+
+        // Start tracking the user's most-recently-active (non-Osaurus) app so
+        // the opt-in screen-context snapshot can recover "what they were doing"
+        // even when Osaurus is itself frontmost at send time. Cheap: a single
+        // NSWorkspace activation observer.
+        FrontmostAppTracker.shared.start()
 
         // Set up distributed control listeners (local-only management)
         setupControlNotifications()
@@ -306,8 +319,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
             ModelPickerItemCache.shared.prewarm()
         }
 
-        Task.detached(priority: .utility) {
-            try? await StorageKeyManager.shared.prewarmCurrentKeyOffCooperativeExecutor()
+        // Only warm the storage key when the user opted in to encryption.
+        // The default plaintext posture needs no key, so launch never touches
+        // the Keychain in that case.
+        if StorageEncryptionPolicy.shared.isEncryptionEnabled {
+            Task.detached(priority: .utility) {
+                try? await StorageKeyManager.shared.prewarmCurrentKeyOffCooperativeExecutor()
+            }
         }
 
         // Seed the identity-existence memo off the main thread so the first
@@ -334,26 +352,38 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
         // `EncryptedSQLiteOpener`; each `*Database.shared.open()` only parks
         // on `StorageMutationGate` while a key rotation is in flight.
         let embeddingInitTask = Task.detached(priority: .utility) {
-            // Await the key prewarm before the cache gate so storage-dependent
-            // init isn't skipped purely because the (separately dispatched)
-            // launch prewarm hasn't landed yet. Uses the off-cooperative
-            // variant so it never pins a Swift cooperative thread inside the
-            // synchronous Keychain read, and stays off the launch-critical
-            // main-actor path. Idempotent with the prewarm above.
-            try? await StorageKeyManager.shared.prewarmCurrentKeyOffCooperativeExecutor()
-            guard StorageKeyManager.shared.hasCachedKey else {
-                MemoryLogger.database.error(
-                    "Storage-dependent search/index services disabled — storage key is not already unlocked"
-                )
-                return
+            // Converge on-disk storage to the selected posture (default:
+            // plaintext) before opening anything. For existing encrypted
+            // installs this decrypts in place while the key is still available;
+            // for plaintext installs it is a fast no-op. Runs under the storage
+            // mutation gate so lazy opens park until it finishes.
+            await StorageMigrationCoordinator.shared.convergeOnLaunch()
+
+            // Only encrypted mode needs the Keychain key resident before we
+            // open SQLCipher databases. Await the prewarm before the cache gate
+            // so storage-dependent init isn't skipped purely because the
+            // (separately dispatched) launch prewarm hasn't landed yet. Uses
+            // the off-cooperative variant so it never pins a Swift cooperative
+            // thread inside the synchronous Keychain read. In plaintext mode
+            // no key is required, so storage-dependent services always come up.
+            if StorageEncryptionPolicy.shared.isEncryptionEnabled {
+                try? await StorageKeyManager.shared.prewarmCurrentKeyOffCooperativeExecutor()
+                guard StorageKeyManager.shared.hasCachedKey else {
+                    MemoryLogger.database.error(
+                        "Storage-dependent search/index services disabled — storage key is not already unlocked"
+                    )
+                    return
+                }
             }
             var memoryDBOpened = false
+            var lastMemoryOpenError: Error?
             for attempt in 1 ... 3 {
                 do {
                     try MemoryDatabase.shared.open()
                     memoryDBOpened = true
                     break
                 } catch {
+                    lastMemoryOpenError = error
                     MemoryLogger.database.error("Memory database open attempt \(attempt)/3 failed: \(error)")
                     if attempt < 3 {
                         try? await Task.sleep(nanoseconds: UInt64(attempt) * 500_000_000)
@@ -364,23 +394,35 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
                 await MemorySearchService.shared.initialize()
             } else {
                 MemoryLogger.database.error("Memory system disabled — database failed to open after 3 attempts")
+                // Preserve the real cause so diagnostics can classify it
+                // (key-locked vs corrupt vs migration) and offer recovery.
                 PersistenceHealth.shared.recordDatabaseOpenFailure(
-                    subsystem: "memory",
-                    error: MemoryDatabaseError.failedToOpen("open failed after 3 attempts")
+                    subsystem: StorageRecoveryService.Store.memory.rawValue,
+                    error: lastMemoryOpenError
+                        ?? MemoryDatabaseError.failedToOpen("open failed after 3 attempts"),
+                    path: OsaurusPaths.memoryDatabaseFile().path
                 )
             }
 
             do {
                 try MethodDatabase.shared.open()
             } catch {
-                PersistenceHealth.shared.recordDatabaseOpenFailure(subsystem: "method", error: error)
+                PersistenceHealth.shared.recordDatabaseOpenFailure(
+                    subsystem: StorageRecoveryService.Store.method.rawValue,
+                    error: error,
+                    path: OsaurusPaths.methodsDatabaseFile().path
+                )
             }
             await MethodSearchService.shared.initialize()
 
             do {
                 try ToolDatabase.shared.open()
             } catch {
-                PersistenceHealth.shared.recordDatabaseOpenFailure(subsystem: "tool", error: error)
+                PersistenceHealth.shared.recordDatabaseOpenFailure(
+                    subsystem: StorageRecoveryService.Store.tool.rawValue,
+                    error: error,
+                    path: OsaurusPaths.toolIndexDatabaseFile().path
+                )
             }
             await ToolSearchService.shared.initialize()
 
@@ -431,10 +473,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
         // Initialize WatcherManager to start file system watchers
         _ = WatcherManager.shared
 
-        // Start the self-scheduling loop only if encrypted storage is already
-        // unlocked. Startup must not trigger a Keychain/password prompt.
+        // Start the self-scheduling loop once storage is ready. In plaintext
+        // mode (the default) that's immediate; in opt-in encrypted mode it
+        // waits until the key is resident so startup never triggers a
+        // Keychain/password prompt.
         Task { @MainActor in
-            guard StorageKeyManager.shared.hasCachedKey else {
+            guard StorageKeyManager.shared.isStorageReadyForWrites else {
                 NSLog("[Osaurus] Scheduler disabled: storage key is not already unlocked")
                 return
             }
@@ -1173,6 +1217,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
         // keep the UI snappy; drain it here so a toggle made right before quit
         // isn't lost when `_exit` skips the pending write.
         ToolConfigurationStore.flushPendingWrites()
+
+        // Same for the Computer Use autonomy policy (its own coalescing writer).
+        ComputerUsePolicyStore.flushPendingWrites()
 
         // Aptabase batches analytics in an in-memory queue and normally drains
         // it from its own `willTerminate` observer — but that flush is async and
@@ -2014,8 +2061,15 @@ extension AppDelegate {
         initialTab: ManagementTab? = nil,
         deeplinkModelId: String? = nil,
         deeplinkFile: String? = nil,
-        deeplinkAgentId: UUID? = nil
+        deeplinkAgentId: UUID? = nil,
+        deeplinkRemoteAgentId: UUID? = nil
     ) {
+        // Remote-agent detail navigation rides the shared management state
+        // (mirrors `pendingPluginDetailId`) so it works for both a freshly
+        // created window and a reused one without rebuilding the SwiftUI graph.
+        if let deeplinkRemoteAgentId {
+            ManagementStateManager.shared.pendingRemoteAgentDetailId = deeplinkRemoteAgentId
+        }
         closePopoverAndPerform { [weak self] in
             guard let self = self else { return }
             // Reopening a reused window doesn't rebuild the SwiftUI graph, so

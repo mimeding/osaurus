@@ -169,13 +169,22 @@ repro path. The copied text is safe to paste in an issue or Discord thread; it
 does not include bearer tokens, OAuth tokens, request bodies, env values, or raw
 headers.
 
+The top of the Providers page includes an **MCP Server Hub** summary when at
+least one provider exists. It aggregates connected, attention, tool, stdio, and
+host-stdio counts, and the segmented filter lets you narrow the row list to all,
+attention, connected, stdio, HTTP, or disabled providers. The hub actions can
+probe every enabled provider, reconnect every enabled provider, or copy a single
+redacted support report for the whole provider set.
+
 For stdio providers, diagnostics distinguish sandbox vs host execution and point
 command-not-found failures at the executable path/PATH fix. For HTTP/SSE
 providers, diagnostics show whether the global proxy is active, disabled, or
 ignored because the saved URL failed validation. Local MCP rows also include the
 last explicit health snapshot and a capture-policy row. The capture row is policy
-only: screenshot/capture access remains off unless a trusted plugin is installed,
-enabled, opted in by the user, granted permission, and invoked interactively.
+only for remote-provider tools: screenshot/capture access remains off unless a
+trusted plugin is installed, enabled, opted in by the user, granted permission,
+and invoked interactively. The in-app `/screenshot` command is separate from
+remote MCP providers and is not exposed through external tool surfaces.
 
 ---
 

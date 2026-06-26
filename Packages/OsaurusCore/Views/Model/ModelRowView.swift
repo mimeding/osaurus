@@ -19,8 +19,9 @@ struct ModelRowView: View {
 
     // MARK: - Properties
 
-    /// The model to display
-    let model: MLXModel
+    /// Presentation values for the card. Built from an `MLXModel` for the LLM
+    /// tabs and directly for image models, so both render identically.
+    let content: ModelCardContent
 
     /// Current download state (not started, downloading, completed, or failed)
     let downloadState: DownloadState
@@ -28,11 +29,13 @@ struct ModelRowView: View {
     /// Optional download metrics (speed, ETA, bytes transferred)
     let metrics: ModelDownloadService.DownloadMetrics?
 
-    /// Total system unified memory in GB, used for compatibility assessment
-    var totalMemoryGB: Double = 0
-
     /// Callback when user taps the Details button
     let onViewDetails: () -> Void
+
+    /// Callback when the user taps a non-MLX (greyed) card. When set and the
+    /// card is unsupported, this fires instead of `onViewDetails` so the host
+    /// can explain that the model can't be used rather than open its details.
+    var onUnsupportedTap: (() -> Void)? = nil
 
     /// Optional cancel action when downloading or paused
     let onCancel: (() -> Void)?
@@ -49,7 +52,13 @@ struct ModelRowView: View {
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: onViewDetails) {
+        Button(action: {
+            if content.isUnsupportedFormat, let onUnsupportedTap {
+                onUnsupportedTap()
+            } else {
+                onViewDetails()
+            }
+        }) {
             VStack(spacing: 0) {
                 gradientHeader
 
@@ -58,8 +67,8 @@ struct ModelRowView: View {
 
                     statStrip
 
-                    if !model.description.isEmpty {
-                        Text(model.description)
+                    if !content.description.isEmpty {
+                        Text(content.description)
                             .font(.system(size: 12))
                             .foregroundColor(theme.secondaryText)
                             .lineLimit(2)
@@ -97,12 +106,18 @@ struct ModelRowView: View {
                 y: isHovering ? 4 : theme.cardShadowY
             )
             .contentShape(RoundedRectangle(cornerRadius: 14))
+            // Grey out bundles the local engine can't load (non-MLX format)
+            // while keeping the card tappable so its detail sheet can explain
+            // why. Desaturate + fade so it reads as "present but unavailable".
+            .saturation(content.isUnsupportedFormat ? 0 : 1)
+            .opacity(content.isUnsupportedFormat ? 0.6 : 1)
         }
         .buttonStyle(PlainButtonStyle())
         .animation(.easeOut(duration: 0.15), value: isHovering)
         .onHover { hovering in
             isHovering = hovering
         }
+        .localizedHelp(content.isUnsupportedFormat ? "Not an MLX model — the local engine can't load this bundle" : "")
     }
 
     // MARK: - Gradient Header
@@ -110,7 +125,7 @@ struct ModelRowView: View {
     private var gradientHeader: some View {
         ZStack {
             LinearGradient(
-                colors: ModelCardGradient.colors(for: model),
+                colors: content.gradientColors,
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -124,7 +139,7 @@ struct ModelRowView: View {
                 endRadius: 240
             )
 
-            Text(model.name)
+            Text(content.name)
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
                 .lineLimit(2)
@@ -140,7 +155,7 @@ struct ModelRowView: View {
                     // shifts as state changes.
                     stateChip
                     Spacer(minLength: 0)
-                    if model.isTopSuggestion {
+                    if content.isTopSuggestion {
                         topPickRibbon
                     }
                 }
@@ -289,7 +304,7 @@ struct ModelRowView: View {
                 text: "\(L("Paused")) \(Int(progress * 100))%"
             )
         default:
-            if model.isDownloaded {
+            if content.isDownloaded {
                 headerChip(icon: "checkmark.circle.fill", text: L("Downloaded"))
             }
         }
@@ -319,7 +334,7 @@ struct ModelRowView: View {
     /// lands on "what is it / will it run" before raw specs.
     private var leadTags: some View {
         FlowLayout(spacing: 6) {
-            if let useCase = model.useCase {
+            if let useCase = content.useCase {
                 // Tint + icon come from `ModelUseCase` so the vocabulary
                 // matches the onboarding picker's `.useCase(...)` chip.
                 TintedPill(
@@ -328,9 +343,16 @@ struct ModelRowView: View {
                     color: useCase.tintColor
                 )
             }
+            if content.isUnsupportedFormat {
+                TintedPill(
+                    icon: "exclamationmark.octagon",
+                    label: Text(L("Not MLX")),
+                    color: theme.errorColor
+                )
+            }
             compatibilityBadge
-            if model.useCase != .vision {
-                modelTypeBadge
+            if let type = content.type {
+                modelTypeBadge(type)
             }
         }
     }
@@ -340,11 +362,11 @@ struct ModelRowView: View {
     /// side-by-side comparison.
     private var statStrip: some View {
         HStack(spacing: 0) {
-            StatSegment(label: L("Size"), value: model.formattedDownloadSize)
+            StatSegment(label: L("Size"), value: content.size)
             statDivider
-            StatSegment(label: L("Params"), value: model.parameterCount)
+            StatSegment(label: L("Params"), value: content.params)
             statDivider
-            StatSegment(label: L("Quant"), value: model.quantization)
+            StatSegment(label: L("Quant"), value: content.quant)
         }
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
@@ -364,8 +386,8 @@ struct ModelRowView: View {
     /// bottom of the card via a `Spacer` so it aligns across rows.
     @ViewBuilder
     private var cardFooter: some View {
-        let downloads = model.formattedDownloads
-        let released = model.formattedReleaseMonth
+        let downloads = content.downloadsText
+        let released = content.releaseText
         if downloads != nil || released != nil {
             HStack(spacing: 8) {
                 if let downloads {
@@ -398,7 +420,7 @@ struct ModelRowView: View {
 
     @ViewBuilder
     private var compatibilityBadge: some View {
-        switch model.compatibility(totalMemoryGB: totalMemoryGB) {
+        switch content.compatibility {
         case .compatible:
             TintedPill(icon: "checkmark.shield", label: Text(L("Runs Well")), color: theme.successColor)
         case .tight:
@@ -410,16 +432,75 @@ struct ModelRowView: View {
         }
     }
 
-    /// Badge showing whether model is LLM or VLM
-    private var modelTypeBadge: some View {
-        let isVLM = model.isVLM
-        return TintedPill(
-            icon: isVLM ? "eye" : "text.bubble",
-            label: Text(isVLM ? "VLM" : "LLM"),
-            color: isVLM ? .purple : theme.accentColor
-        )
+    /// Badge showing whether the model is an LLM, VLM, or image generator.
+    @ViewBuilder
+    private func modelTypeBadge(_ type: ModelCardType) -> some View {
+        switch type {
+        case .llm:
+            TintedPill(icon: "text.bubble", label: Text(L("LLM")), color: theme.accentColor)
+        case .vlm:
+            TintedPill(icon: "eye", label: Text(L("VLM")), color: .purple)
+        case .image:
+            TintedPill(icon: "photo", label: Text(L("Image")), color: theme.accentColor)
+        }
     }
 
+}
+
+// MARK: - Card Presentation Model
+
+/// Theme-free display values for a model card. Built from an `MLXModel` for
+/// the LLM tabs and directly for image models so both render through the same
+/// `ModelRowView`. Colors that depend on the theme (compatibility, type pill)
+/// stay as enums and are resolved inside the view.
+struct ModelCardContent {
+    let name: String
+    let description: String
+    let gradientColors: [Color]
+    let isTopSuggestion: Bool
+    let isDownloaded: Bool
+    /// True when the bundle is on disk but not in MLX format, so the local
+    /// engine can't load it. Greys the card and shows an explanatory badge.
+    var isUnsupportedFormat: Bool = false
+    let useCase: ModelUseCase?
+    let compatibility: ModelCompatibility
+    /// LLM / VLM / Image pill; `nil` to omit.
+    let type: ModelCardType?
+    let size: String?
+    let params: String?
+    let quant: String?
+    /// Raw popularity / release strings; the footer applies its own wording.
+    let downloadsText: String?
+    let releaseText: String?
+}
+
+enum ModelCardType {
+    case llm
+    case vlm
+    case image
+}
+
+extension ModelCardContent {
+    /// LLM/VLM card content, preserving the exact values the catalog cards
+    /// rendered before the presentation-model refactor.
+    init(model: MLXModel, totalMemoryGB: Double) {
+        self.init(
+            name: model.name,
+            description: model.description,
+            gradientColors: ModelCardGradient.colors(for: model),
+            isTopSuggestion: model.isTopSuggestion,
+            isDownloaded: model.isDownloaded,
+            isUnsupportedFormat: model.isDownloaded && !model.isMLXFormat,
+            useCase: model.useCase,
+            compatibility: model.compatibility(totalMemoryGB: totalMemoryGB),
+            type: model.useCase == .vision ? nil : (model.isVLM ? .vlm : .llm),
+            size: model.formattedDownloadSize,
+            params: model.parameterCount,
+            quant: model.quantization,
+            downloadsText: model.formattedDownloads,
+            releaseText: model.formattedReleaseMonth
+        )
+    }
 }
 
 // MARK: - Stat Segment Component
@@ -485,9 +566,14 @@ private struct TintedPill: View {
 /// distinguishable at a glance without a manual mapping
 enum ModelCardGradient {
     static func colors(for model: MLXModel) -> [Color] {
-        let key = model.family.lowercased()
+        colors(family: model.family, id: model.id)
+    }
+
+    /// Same palette selection without an `MLXModel`, for image-model cards.
+    static func colors(family: String, id: String) -> [Color] {
+        let key = family.lowercased()
         if let palette = curated[key] { return palette }
-        return hashed(for: model.id)
+        return hashed(for: id)
     }
 
     /// Two-stop gradients tuned for white text. Stops sit roughly at

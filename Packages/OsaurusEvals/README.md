@@ -20,10 +20,14 @@ Packages/OsaurusEvals/
     ArgumentCoercion/   — ArgumentCoercion.{stringArray,int,bool} pinning
     CapabilityClaims/   — agent-loop "do you have X" behaviour + LLM judge (LLM)
     CapabilitySearch/   — index-only recall measurements (no LLM)
+    ComputerUse/        — single-action gate / effect classification (no LLM)
+    ComputerUseLoop/    — E2E Computer Use over a scripted screen (LLM or scripted)
     PrefixHash/         — KV-cache prefix-hash stability
     RequestValidation/  — RequestValidator.unsupportedSamplerReason
+    ScreenContext/      — deterministic AX-text screen-context distillation (no LLM)
     Schema/             — SchemaValidator.validate pinning
     StreamingHint/      — StreamingToolHint encode/decode round-trips
+    Subagent/           — SubagentSession host lifecycle (scripted model-free + live spawn/image)
     ToolEnvelope/       — ToolEnvelope.{success,failure} JSON shape
 ```
 
@@ -46,6 +50,35 @@ make evals-report EVALS_OUT=reports/today.json      # custom output path
 make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/AgentLoop  # other suite
 ```
 
+### Asset prerequisites (handled automatically)
+
+Local MLX model evals and `capability_search` need two assets that the SwiftPM
+CLI can't bundle for itself:
+
+- **MLX metallib** — local MLX model loads fail with "Failed to load the default
+  metallib" unless `default.metallib` sits next to the `osaurus-evals` binary
+  (SwiftPM CLI builds don't embed the Cmlx Metal library the way `make app`
+  does).
+- **`minishlab/potion-base-4M` embedder** — without it the capability_search
+  semantic index is empty and retrieval results are unreliable.
+
+Every `make evals*` target now runs `make evals-prep` first, which executes
+`scripts/evals/prepare-evals-env.sh` to colocate the metallib (from an existing
+`make app` / Xcode build, or `OSAURUS_MLX_METALLIB`) and download the embedder
+into the Hugging Face cache (via `hf` or `uvx`). It's idempotent and a no-op
+once both assets are in place. Skip it with `OSAURUS_EVALS_SKIP_PREP=1` (or run
+`make evals-prep` standalone). When you invoke `swift run osaurus-evals`
+directly, the CLI falls back to colocating the metallib at startup and logs a
+loud warning if the embedder is missing.
+
+The `CapabilityClaims` browser cases additionally need the `osaurus.browser`
+native plugin installed. Because installing it mutates `~/.osaurus`, the prep
+step does it only when you opt in with `OSAURUS_EVALS_INSTALL_BROWSER=1`
+(`osaurus` CLI required); otherwise those cases skip as "missing plugins". When
+a selected case declares `fixtures.requirePlugins`, the runner now
+auto-bootstraps installed plugins (no `--bootstrap-plugins` needed); pass
+`--no-plugin-bootstrap` to force-skip them.
+
 Or call the CLI directly if you need flags the Makefile doesn't expose:
 
 ```bash
@@ -55,13 +88,183 @@ swift run osaurus-evals run --suite Suites/CapabilitySearch --filter browser --o
 swift run osaurus-evals run --suite Suites/CapabilitySearch --bootstrap-plugins
 ```
 
+### Screen Context capture lab
+
+`ScreenContext` cases replay a frozen Accessibility-tree fixture through the
+production `ScreenContextDistiller`. This keeps the suite deterministic and
+CI-safe while still matching the live text-only screen-context path.
+
+Use `capture-screen` locally when tuning a new desktop shape:
+
+```bash
+# Capture the frontmost app into the gitignored local fixture directory.
+swift run --package-path Packages/OsaurusEvals osaurus-evals capture-screen --render
+
+# Capture a named running app.
+swift run --package-path Packages/OsaurusEvals osaurus-evals capture-screen \
+  --app Safari --out Packages/OsaurusEvals/Fixtures/ScreenContext/local/safari.json --render
+
+# Inspect a fixture without Accessibility permission.
+swift run --package-path Packages/OsaurusEvals osaurus-evals capture-screen \
+  --describe Packages/OsaurusEvals/Fixtures/ScreenContext/local/safari.json
+
+# Create a sanitized promotion candidate before hand-editing and committing.
+swift run --package-path Packages/OsaurusEvals osaurus-evals capture-screen \
+  --promote Packages/OsaurusEvals/Fixtures/ScreenContext/local/safari.json --render
+```
+
+Real captures contain local screen text and stay under
+`Packages/OsaurusEvals/Fixtures/ScreenContext/local/`, which is ignored. Only
+commit hand-reviewed synthetic or sanitized fixtures. The promotion helper keeps
+roles, geometry, actions, and focus shape, but redacts captured strings, drops
+secure-field values, removes AX paths, and rewrites element ids.
+
+For maintainer proof on agent-loop changes, use the regression lab. It runs
+selected `agent_loop` suites, writes per-suite JSON artifacts, compares the
+current run against a saved baseline report or report directory, and emits a
+concise JSON + Markdown summary:
+
+```bash
+scripts/evals/agent-loop-regression-lab.sh \
+  --baseline reports/main-agentloop-baseline \
+  --model foundation
+
+# Compare saved reports without running a model (useful for smoke/fixtures):
+swift run --package-path Packages/OsaurusEvals osaurus-evals agent-loop-lab \
+  --baseline baseline.json \
+  --current current.json \
+  --out-dir build/evals/lab-smoke
+```
+
+The default run selection is `Suites/AgentLoop` plus `Suites/AgentLoopFrontier`.
+Pass `--suite <dir>` repeatedly to narrow or expand it. Artifacts land under
+`build/evals/agent-loop-regression-lab/<timestamp>/` unless `--out-dir` is set:
+
+- `reports/<Suite>.json` — raw `EvalReport` output for each suite run.
+- `regression-summary.json` — machine-readable case deltas.
+- `regression-summary.md` — PR-ready maintainer summary with regressions,
+  new failures, fixed cases, persistent failures, and suite drift separated.
+
+The lab exits `1` only for blocking regressions: a baseline-passing case that
+no longer passes, or a new case that fails/errors. Existing failures that stay
+red are reported as persistent failures without blocking the comparison.
+
+### Optimization loop (all-domain, cross-model)
+
+The agent-loop lab only diffs `agent_loop` rows. For the full maintainer
+pipeline — measure → scoreboard → diff vs baseline → fix → re-measure across
+*every* domain and model — use the optimization loop:
+
+```bash
+# One command: prep → run all suites per model → cross-model matrix → diff.
+make evals-loop                       # local default: foundation + qwen3-4b
+make evals-loop MODELS="foundation qwen3-4b xai/grok-4.3" \
+                BASELINE=build/evals/loop/<previous-run>   # gate vs a baseline
+```
+
+Each run lands in `build/evals/loop/<timestamp>/` (also symlinked as
+`build/evals/loop/latest`) with:
+
+- `det-<Suite>.json` — deterministic / embedder-only suites, run once.
+- `llm-<label>-<Suite>.json` — per-model LLM + sandbox suites.
+- `matrix.json` / `matrix.md` — cross-model scoreboard (domains × models,
+  `passed/scored` cells, plus a decode tok/s · TTFT · peak-RAM ·
+  `ctx tok/task` · `total tok/task` rollup).
+- `diff.json` / `diff.md` — when `BASELINE` is set: all-domain pass→fail /
+  fail→pass classification + decode-tps and peak-RAM movements.
+
+The underlying subcommands are usable directly:
+
+```bash
+# Cross-model scoreboard from any dir of *.json reports.
+swift run --package-path Packages/OsaurusEvals osaurus-evals matrix <reports-dir> \
+  --markdown matrix.md
+
+# All-domain before/after diff (exit 1 on blocking regressions with the flag).
+swift run --package-path Packages/OsaurusEvals osaurus-evals diff <baseline> <current> \
+  --markdown diff.md --fail-on-regression
+```
+
+`make evals-matrix DIR=…` and `make evals-diff BASELINE=… CURRENT=…` wrap these.
+
+### Recording a run (committed snapshot + history)
+
+Raw per-case reports are **not** committed — they are large, regenerate every
+run, and merge-conflict when several maintainers run evals. Only two small,
+merge-friendly artifacts live in version control (see `reports/README.md`):
+
+- `reports/SNAPSHOT.{md,json}` — the **latest** cross-model scoreboard,
+  overwritten on each recorded run.
+- `reports/history.jsonl` — an **append-only** trend log, one compact row per
+  model per run (totals + decode tok/s · TTFT · peak RAM · commit · label).
+
+```bash
+# Run the loop AND refresh the committed scoreboard + append a trend row:
+RECORD=1 LABEL="qwen tool-call fix" \
+  MODELS="foundation qwen3-4b xai/grok-4.3" make evals-loop
+
+# Then publish just the small committed files:
+git add reports/SNAPSHOT.md reports/SNAPSHOT.json reports/history.jsonl
+git commit -m "evals: record <what changed>"
+```
+
+Without `RECORD=1` nothing under version control changes (use for throwaway
+experiments). JSONL appends merge cleanly across maintainers; sort by `ts` for
+the timeline. `osaurus-evals matrix … --history <path> --label <str>` is the
+underlying primitive.
+
+### Crowdsourced model compatibility
+
+Anyone can contribute a model-compatibility result from their own Mac — the
+long tail of models/quants/hardware no single maintainer can cover. Each
+contribution is one conflict-free file under `reports/community/`; a maintainer
+folds them into `reports/COMPATIBILITY.md`. See `reports/community/README.md`.
+
+```bash
+# Contributor: run ONE model on your hardware, then PR the single file it writes.
+MODEL=mlx-community/Qwen3-4B-4bit make evals-contribute
+
+# Maintainer: rebuild the leaderboard (or gate a PR's contributions).
+make evals-compat                 # reports/community/* -> COMPATIBILITY.{md,json}
+VALIDATE=1 make evals-compat      # PR gate: every contribution carries provenance
+```
+
+Every report now carries a `RunEnvironment` provenance block (chip, RAM, macOS,
+Osaurus build/commit, judge, KV regime, and a `catalogHash` that proves two runs
+graded the same case set). `osaurus-evals compat <dir> [--validate]` is the
+underlying primitive.
+
+### Per-case telemetry
+
+Model-driven rows (`agent_loop`, `capability_claims`, `computer_use_loop`,
+`capability_search`) carry an optional `telemetry` block: token-weighted
+**decode tok/s**, **TTFT ms**, first-step **prefill tok/s** (from the runtime
+stats hint), **peak physical footprint MB** (Activity-Monitor "Memory", the
+value the `AGENTS.md` RAM gate reads — sampled on a timer across the case), and
+the **KV prefix-hit delta** (before/after `ModelRuntime.batchDiagnosticsSnapshot`,
+proving prefix reuse across loop iterations). `agent_loop` rows additionally
+carry **deterministic context-cost** counters — `promptTokensTotal` (input
+tokens summed across every model step: the re-sent prefix + accumulated tool
+results), `peakContextTokens` (largest single-step input), `totalModelTokens`
+(input + output), and `modelSteps` — estimated provider-independently so local
+and frontier columns compare 1:1; the matrix surfaces them as `ctx tok/task` /
+`total tok/task`. The human-readable report prints a `perf:` line per row and a
+suite-wide rollup; the matrix aggregates per model. Fields are nil when not
+measurable (deterministic rows; non-streaming runs), so a missing metric reads
+as "not measured", never a zeroed regression. Remote OpenAI-compatible upstreams
+(xAI/Grok, Azure OpenAI) now report real **completion tokens** too: Osaurus
+requests `stream_options.include_usage` and surfaces the provider's `usage` as
+the same in-band stats hint the local runtime emits (decode tok/s stays nil when
+the provider omits it, rather than being fabricated).
+
 Startup bootstrap is domain-aware. Suites that require installed native plugins
 load them and rebuild search indices so they mirror the host app. `capability_search`
 suites initialize only the selected tool / method / skill index lanes without
 loading native plugins; those index-only runs use isolated temporary storage so
-fixtures never touch the user's real encrypted databases. Debug builds also use
+fixtures never touch the user's real databases. Debug builds also use
 a deterministic in-process storage key; release builds still use OsaurusCore's
-normal noninteractive storage-key path against the isolated database files.
+normal noninteractive storage-key path against the isolated database files
+(used only when a run opts in to encrypted fixtures; plaintext fixtures need no key).
 Plugin-required cases are skipped unless you pass `--bootstrap-plugins`. A
 filtered run that only selects plugin-required cases skips without index
 bootstrap.
@@ -75,19 +278,29 @@ Exit codes:
 
 ## Case schema
 
-Every case file shares a top-level shape: `id`, `domain`, optional `label` and `notes`, `query`, `fixtures`, `expect`. The `domain` field selects which runner branch handles the case and which `expect.<sub>` block is required. Ten domains exist today:
+Every case file shares a top-level shape: `id`, `domain`, optional `label` and `notes`, `query`, `fixtures`, `expect`. The `domain` field selects which runner branch handles the case and which `expect.<sub>` block is required. Thirteen domains exist today:
 
 | Domain | Hits LLM? | Runner branch | Required expectation block |
 |---|---|---|---|
 | `agent_loop` | yes | `runAgentLoopCase` | `expect.agentLoop` |
 | `capability_claims` | yes | `runCapabilityClaimsCase` | `expect.capabilityClaims` |
 | `capability_search` | no | `runCapabilitySearchCase` | `expect.capabilitySearch` |
+| `computer_use` | no | `runComputerUseCase` | `expect.computerUse` |
+| `computer_use_loop` | yes¹ | `runComputerUseLoopCase` | `expect.computerUseLoop` |
+| `subagent` | mixed³ | `runSubagentCase` | `expect.subagent` |
+| `screen_context` | no² | `runScreenContextCase` | `expect.screenContext` |
 | `schema` | no | `runSchemaCase` | `expect.schema` |
 | `tool_envelope` | no | `runToolEnvelopeCase` | `expect.toolEnvelope` |
 | `streaming_hint` | no | `runStreamingHintCase` | `expect.streamingHint` |
 | `prefix_hash` | no | `runPrefixHashCase` | `expect.prefixHash` |
 | `argument_coercion` | no | `runArgumentCoercionCase` | `expect.argumentCoercion` |
 | `request_validation` | no | `runRequestValidationCase` | `expect.requestValidation` |
+
+¹ `computer_use_loop` drives a live model by default, but a case that supplies `scriptedActions` runs **model-free** (deterministic, CI-safe) via the loop's `AgentStepProvider` seam.
+
+² `screen_context` deterministic matchers are model-free (CI-safe); an optional per-case `rubric` is graded by an LLM judge **only** when a strong/explicit judge resolves (`JUDGE_MODEL` or a `*_API_KEY`), so CI stays free.
+
+³ `subagent` has both lanes: a `scripted` lane drives the `SubagentSession` host through a deterministic `ScriptedSubagentKind` seam with **no model call** (CI-safe), while the `spawn` / `image` lanes exercise the live tools and **skip** when no model / delegation host is configured.
 
 The non-LLM domains are pure-data and run in single-digit ms each — safe to keep growing. `capability_claims` is the LLM-burning domain; keep it off CI.
 
@@ -124,6 +337,7 @@ Field notes:
 - `expect.capabilitySearch.expectedTools` / `expectedMethods` / `expectedSkills` — `{ anyOf: [...names], minMatches: N }` matchers. Each matched name must appear in the **accepted** hit set for its lane (i.e. above the lane's threshold).
 - `expect.capabilitySearch.maxAccepted` — caps total accepted hits across all three lanes. `0` is the abstain-style assertion: any accepted hit fails the case.
 - `expect.capabilitySearch.thresholdOverride` — per-case sweep value. **Tools-lane only** (RRF fused-score scale, max ≈ 0.033). Methods + skills lanes always use their own production embed-cosine constants — sweeping a fused-score value into the cosine lane would silently disable the cosine quality gate.
+- `--embed-cosine-floor <float>` (CLI flag, not a fixture) — sweep the **tools-lane** embed-cosine quality gate applied inside RRF fusion (`ToolSearchService.searchHybrid(minEmbedCosine:)`). An embed candidate below this cosine contributes zero to its fused score, so low-similarity tool noise can't rank-fuse past the cutoff. `nil` uses the shipped `CapabilitySearch.minimumEmbedCosineForTools` (0.25); pass `0` to disable the gate and record raw pre-gate cosines. Orthogonal to `--threshold` (the final fused cutoff). The calibration that set 0.25 is recorded in `Config/capability-search-sweep.md`.
 
 ### `capability_claims` domain
 
@@ -211,6 +425,7 @@ Field notes:
 - `expect.agentLoop.stopOnToolRejection` — loop policy: `true` runs the chat surface's policy (first error envelope ends the run with `toolRejected`); default `false` keeps the headless policy (the model gets the error and keeps looping). Lets cases pin BOTH behaviours.
 - `expect.agentLoop.todoUpdatedBeforeComplete` — todo discipline: some `todo` call with at least one checked (`[x]`) box must appear before the first `complete` call (or before the run ends). A single list creation with all boxes unchecked does not pass.
 - `expect.agentLoop.finalTextContains` / `rubric` — cheap substring checks vs. LLM-judge grading of the final answer (same `JUDGE_MODEL` override as `capability_claims`).
+- `expect.agentLoop.scoredMaxPromptTokens` / `scoredMaxTotalTokens` — optional context-cost ceilings for the "saving context" lane. `scoredMaxPromptTokens` **fails the case** when `promptTokensTotal` (input summed across steps, including the frozen tool schema) exceeds the budget, so a later prompt/tool regression that re-bloats context can't pass while silently burning tokens; `scoredMaxTotalTokens` gates input + output. Both are omitted by default (reported via telemetry, not scored), and only bite a live model — scripted/deterministic runs spend `0`.
 
 Reported `latencyMs` for this domain is **loop-only** wall time (model steps + tool execution), excluding workspace setup and judge calls.
 
@@ -222,9 +437,180 @@ make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/AgentLoop MODEL=mlx-communit
 make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/AgentLoop MODEL=openai/gpt-4o-mini JUDGE_MODEL=openai/gpt-4o
 ```
 
+For release or PR proof against a known-good row, prefer the regression lab so
+the raw reports and summary stay together:
+
+```bash
+scripts/evals/agent-loop-regression-lab.sh \
+  --baseline build/eval-baselines/<model>/agent-loop \
+  --suite Packages/OsaurusEvals/Suites/AgentLoop \
+  --suite Packages/OsaurusEvals/Suites/AgentLoopFrontier \
+  --model <prefix>/<model-id>
+```
+
+### `computer_use_loop` domain
+
+End-to-end Computer Use evals: the real `ComputerUseLoop` drives a deterministic, in-memory `ScriptedCUDriver` (a fake macOS accessibility tree that mutates in response to actions), then the runner scores the **resulting world state** (field values, toggles, clicks) plus loop telemetry. The model only ever sees the rendered `AgentView` (numbered marks, roles, labels, values) — never element ids or the scene definition. Perception and actuation are fully scripted, so a failure attributes to the model (planning / targeting / JSON-shape), not to flaky AX.
+
+Two ways to drive the loop:
+
+- **Live model** (default): omit `scriptedActions` and the chosen `--model` proposes each `agent_action`. This is the "can a small local model operate the screen" lane. LLM-burning; keep off CI.
+- **Scripted model** (deterministic): set `scriptedActions` to a list of `agent_action` arguments-JSON strings and the loop is driven through the `AgentStepProvider` seam with **no model call**. Used for failure-recovery and per-verb mechanics that need to run in CI. The strings are the exact bytes the "model" emits, so a deliberately malformed entry (`"{ not valid json"`) exercises the re-ask path.
+
+```json
+{
+  "id": "computer_use_loop.recover-after-driver-error",
+  "domain": "computer_use_loop",
+  "query": "Turn on Mute.",
+  "fixtures": {},
+  "expect": {
+    "computerUseLoop": {
+      "app": "Slack",
+      "elements": [
+        { "id": "mute", "role": "switch", "label": "Mute", "value": "off", "onClick": { "toggle": true }, "clickFailures": 1 }
+      ],
+      "successValues": [{ "id": "mute", "equals": "on" }],
+      "successClicked": ["mute"],
+      "scriptedActions": [
+        "{\"verb\":\"click\",\"target\":{\"mark\":1}}",
+        "{\"verb\":\"done\",\"reason\":\"muted\"}"
+      ]
+    }
+  }
+}
+```
+
+Scene field notes (`expect.computerUseLoop`):
+
+- `app` / `elements` — the scripted world. The app is focused on entry so the model can act without `open`. Each element is `{ id, role, label?, value?, placeholder?, editable?, hidden?, onClick? }` plus the driver knobs below. `id` is never shown to the model (it addresses the 1-based `mark`); keep labels UNIQUE per scene unless you're deliberately testing duplicates.
+- `onClick` — `{ toggle?, setValues?: [{id,value}], reveal?: [id] }`, applied toggle → setValues → reveal. The lever for buttons / switches / multi-step reveals.
+- `minTier` — lowest capture tier (`ax` default, `som`, `vision`) at which the element is visible. A scene whose controls are all `som`-gated starts EMPTY at AX and forces the loop's empty-AX → vision escalation (Screen Recording is always granted in the scripted world).
+- `clickFailures` — element-addressed clicks fail as a stale/removed ref this many times before succeeding (the Electron failure). A coordinate click — the loop's fallback — always lands, so this exercises coordinate-fallback recovery.
+- `revealAfterCaptures` — a revealed element stays hidden for this many further captures (async load), so the model must `wait`/`observe` for it.
+- `revealOnScroll` — the element is below the fold until the loop performs a `scroll`.
+- `preset` — `AutonomyPreset` raw value for the gate (default `autonomous`, which auto-runs every effect). The runner auto-approves confirmations.
+- `expectOutcome` — `RunOutcome` short names that pass (`done`/`gaveUp`/`stepCapReached`/`deadEnd`/`interrupted`/`failed`); default `["done"]`.
+- `successValues` / `successClicked` / `failIfClicked` — final-state value predicates, required clicks, and forbidden clicks (the safety lever, e.g. "Archive, do not Delete").
+- `finalSummaryContains` — substrings the terminal `done`/`give_up` reason must contain (the read-and-report check).
+- `maxInvalidActions` — ceiling on invalid `agent_action` re-asks (JSON-discipline).
+- `scoredMinSteps` / `scoredMaxSteps` — step-efficiency floor / ceiling, scored against the loop's productive step count. The ceiling catches thrashing; the floor catches a scene solvable too cheaply.
+- `expectVerbsInOrder` — verbs that must appear, in this relative order (a subsequence, gaps allowed), in the executed verb trace. Encodes a required plan shape, e.g. `["scroll","click"]`.
+- `scoredMaxModelTokens` — cost ceiling on total model tokens (prompt + completion, summed across every step). Scripted runs spend `0`, so this only bites a live model that reaches the goal but over-spends. The report always prints `tokens=…` and `latencyMs=…` alongside the step telemetry.
+- `scriptedActions` — see above; when present the model is never called.
+
+The suite covers (under `Suites/ComputerUseLoop/`): `type-into-field`, `compose-and-send`, `toggle-switch`, `reveal-then-set`, `archive-not-delete`, `read-and-report`, `impossible-give-up` (live-model planning), plus the new `scroll-to-find`, `press-key-submit`, `replace-note`, `find-among-duplicates` (live-model, new verbs / large+duplicate trees) and the deterministic, model-free `recover-after-invalid`, `recover-after-driver-error`, `async-wait-load`, `drag-reorder` (scripted). See `Suites/ComputerUseLoop/README.md` for the full per-case map.
+
+```bash
+make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/ComputerUseLoop MODEL=foundation
+# The scripted (model-free) cases also run deterministically under the eval-kit
+# unit tests in Packages/OsaurusEvals/Tests/OsaurusEvalsKitTests.
+```
+
+### `subagent` domain
+
+End-to-end evals over the **unified sub-agent framework** — the shared `SubagentSession` host + `SubagentKind` protocol that `spawn`, `image`, `computer_use`, and `sandbox_reduce` all now run through (one recursion guard, one activity feed, one optional residency handoff, one compact-result envelope). Drives the public `SubagentJobEvaluator` facade in OsaurusCore (mirrors `AgentLoopEvaluator` / `CapabilityClaimsEvaluator`). Three lanes, selected by `expect.subagent.lane`:
+
+- **`scripted`** (model-free, **CI-safe**): a deterministic `ScriptedSubagentKind` is driven through the real `SubagentSession` host with **no model call** — the host-lifecycle analogue of `computer_use_loop`'s `scriptedActions` seam. Pins the whole contract: scope-id resolution, the single recursion guard (`activeKindId`), reject-before-evict model resolution, the permission verdict → envelope mapping, the optional residency-handoff wrap, feed registration, compact-result normalization, and `defer` cleanup. These cases also run as eval-kit unit tests in `Packages/OsaurusEvals/Tests/OsaurusEvalsKitTests/SubagentEvalTests.swift`.
+- **`spawn`** (live): runs the real `SpawnTool` against a spawnable persona and scores the compact `spawn_result`. LLM-burning; **skips** when no spawnable agent / model is configured.
+- **`image`** (live): runs the real unified `image` tool — `sourcePaths` non-empty routes to **edit**, otherwise **generate** — and scores the `native_image_generation_job` result. **Skips** when image delegation / a local image model isn't configured.
+
+The live lanes skip (never fail) on an unconfigured host: a case that expects success but gets a `rejected` / `unavailable` / `user_denied` availability envelope it didn't explicitly ask for is reported `skipped`, the same `requirePlugins`-style semantics the other live domains use. So the whole suite is green on a bare checkout (10 scripted pass, 3 live skip).
+
+```json
+{
+  "id": "subagent.scripted-run-failure",
+  "domain": "subagent",
+  "query": "scripted run failure surfaces execution_error with a feed phase",
+  "notes": "Model-free. The kind emits a phase then throws .executionFailed inside run; the host maps it to `execution_error` AND the feed still carries the phase emitted before failing.",
+  "fixtures": {},
+  "expect": {
+    "subagent": {
+      "lane": "scripted",
+      "phases": ["running"],
+      "runFailure": "executionFailed",
+      "expectSuccess": false,
+      "expectEnvelopeKind": "execution_error",
+      "expectFeedKinds": ["phase"]
+    }
+  }
+}
+```
+
+Field notes (`expect.subagent`):
+
+- `lane` — `"scripted"` | `"spawn"` | `"image"` (required; selects which inputs below apply).
+- Scripted inputs: `decision` (`"allow"` | `"deny"` | `"userDeny"` permission verdict), `resolveFailure` / `runFailure` (a `SubagentError` case thrown at resolve time vs inside `run` — `denied` / `userDenied` / `unavailable` / `invalidArgs` / `timedOut` / `iterationCap` / `toolRejected` / `overBudget` / `emptyExhausted` / `executionFailed`), `needsHandoff` (opt the scripted kind into the residency-handoff middleware), `recurse` (attempt a nested sub-agent so the unified guard refuses it), and `phases` (lifecycle phases the kind emits onto the feed).
+- Live `spawn` inputs: `agent` (persona name), `input` (task).
+- Live `image` inputs: `prompt`, `sourcePaths` (1–4 local paths; **non-empty ⇒ edit mode**), `model` (optional id override).
+- Assertions (any subset; an empty set just records): `expectSuccess`, `expectEnvelopeKind` (the `success` / failure discriminator above), `expectResultKind` (`spawn_result` / `native_image_generation_job` / the scripted kind's payload), `summaryContains`, `expectFeedKinds` (kinds that must all appear), `expectPhasesInOrder` (feed phase titles as an ordered subsequence — the live-progress proof), `expectHandoffWrapped`, `expectNestedRefused`, `expectImageMode` (`"generate"` | `"edit"`), `minImages`.
+
+The suite covers (under `Suites/Subagent/`) ten model-free scripted cases — `scripted-happy-path`, `scripted-policy-denied`, `scripted-user-denied`, `scripted-resolve-unavailable`, `scripted-run-failure`, `scripted-handoff-wraps`, `scripted-recursion-guard`, `scripted-multi-phase-feed`, `scripted-invalid-args`, `scripted-timeout` — plus three live cases: `spawn-live-digest`, `image-generate-live`, and `image-edit-routing` (`sourcePaths` → edit).
+
+```bash
+# Scripted lane only (model-free, CI-safe) — runs everywhere:
+swift run --package-path Packages/OsaurusEvals osaurus-evals run \
+  --suite Packages/OsaurusEvals/Suites/Subagent --filter scripted
+# Whole suite (live cases skip without a configured model/delegation host):
+make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/Subagent MODEL=foundation
+```
+
+### `computer_use` domain
+
+Pure-data (no LLM): rebuilds a single `agent_action` exactly as the loop hands it to the gate and pins the `EffectClassifier` / gate decision against `expect.computerUse`. Pick a sibling under `Suites/ComputerUse/` as a template.
+
+### `screen_context` domain
+
+Replays a frozen macOS screen state (a `ScreenContextFixture`) through the real `ScreenContextDistiller` via the read-only `FixtureCUDriver`, then scores the rendered `[Screen Context]` block. This is the "is the ambient snapshot useful" lane: it guards that the distiller surfaces what the user is looking at (focused editor/input, selection, on-screen content) and drops chrome noise — the Xcode package-version sidebar that motivated the overhaul. The distiller is pure over `MacDriver`, so a fixture replay is fully deterministic — no real Accessibility, SkyLight, or Screen Recording.
+
+```json
+{
+  "id": "screen_context.xcode-editor-over-version-noise",
+  "domain": "screen_context",
+  "label": "Screen context • Xcode editor beats package-version sidebar",
+  "query": "(ambient capture)",
+  "fixtures": {},
+  "expect": {
+    "screenContext": {
+      "fixture": "xcode-storagemutationgate.json",
+      "focusedRoleEquals": "text area",
+      "viewingContains": ["func gate("],
+      "mustContain": ["In Xcode", "Viewing:"],
+      "mustNotContain": ["9.15.0", "0.3.11"],
+      "noiseRegexMustNotMatch": ["(?m)^- v?\\d+\\.\\d+(\\.\\d+)?$"],
+      "rubric": ["The context shows the user is viewing Swift code in Xcode"]
+    }
+  }
+}
+```
+
+Field notes (`expect.screenContext`):
+
+- Scene source (one required): `fixture` — a path resolved under `Fixtures/ScreenContext/` (CWD-independent; the runner also looks beside the suite and at the repo-root-relative path) — **or** `scene`, an inline `ScreenContextFixture`. Inline wins when both are present. A fixture carries `apps`, `activeWindow`, `windowsByPid` (string pid → windows), `snapshot` (`app`, `focusedWindow`, `truncated`, `windows`, `elements`), and `focusedContent` (the direct focused-element read: `role`, `label?`, `value?`, `selectedText?`, `viewport?`). Collections are optional on decode, so a synthetic fixture can omit empty parts.
+- Deterministic matchers (model-free, the CI floor): `mustContain` / `mustNotContain` substrings over the rendered block; `noiseRegexMustNotMatch` (regexes, matched multi-line, that must NOT match — e.g. a bare-version-token bullet); `focusedRoleEquals` / `selectedTextContains` / `viewingContains` on the focused element; `gistContains` on the "Doing:" line; and `orderedContains` (each inner array must appear in order — pins editor-beats-chrome ranking).
+- `rubric` — optional natural-language conditions for the LLM judge. Graded **only** when a strong/explicit judge resolves (`JUDGE_MODEL` or a `*_API_KEY`); otherwise skipped and noted, so CI stays deterministic and free.
+- The rendered block is always echoed into the report `notes` (`rendered:` …), so `--verbose` shows exactly what the distiller produced — the tuning signal.
+
+```bash
+make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/ScreenContext
+```
+
+**Capturing real apps for tuning.** `osaurus-evals capture-screen` reads a real app (the frontmost, or `--app <name>`) via `NativeMacDriver` and writes a `ScreenContextFixture` JSON. It needs Accessibility permission for the process running it (grant your terminal in System Settings → Privacy & Security → Accessibility) and is **local-only** — never CI. Real captures contain your actual on-screen code/text, so the default output dir (`Fixtures/ScreenContext/local/`) is gitignored; committed fixtures alongside it are hand-authored/sanitized.
+
+```bash
+make evals-capture-screen APP=Xcode       # → Fixtures/ScreenContext/local/xcode-<ts>.json
+# Add --render to print the exact injected block in one shot (the fast diagnose loop):
+swift run --package-path Packages/OsaurusEvals osaurus-evals capture-screen --app Xcode --render
+# point a scratch case's `fixture` at it (relative to Fixtures/ScreenContext/), then:
+make evals EVALS_SUITE=Packages/OsaurusEvals/Suites/ScreenContext FILTER=my-scratch
+```
+
+Real captures exposed three app families the distiller now handles: **native** apps (Xcode, TextEdit) carry the editor/buffer over AX (code surfaces as `Viewing:`); **browsers** (Chrome/Safari) now read the page body — `prepareAndAwaitTree` waits for a built `AXWebArea` (not a bare node count, which the toolbar satisfies instantly), WebKit gets `AXEnhancedUserInterface` alongside `AXManualAccessibility`, and a targeted `find(statictext/heading/webarea)` recovers the body when the budget exhausts on chrome, so headings + paragraphs surface while nav/version/ARIA-`true` chrome is dropped; **Electron** apps (Cursor/VS Code, Slack) build their tree asynchronously too — Monaco's "editor is not accessible" sentinel and Slack's virtualized message rows are genuine text-only ceilings (not materialized into AX without an active screen reader), so for these shells the distiller mines the **reliable interactive/titled layer** (the same surface Computer Use *acts* on) into two behavior lines: `Active:` (channel/file parsed from the window title with high-precision patterns only) and `Status:` (git branch, problems, language, cursor position read from the bottom status-bar strip — geometry-gated, with bare version/commit tokens still dropped). `cursor-working-state` and the slack cases pin these.
+
+See `Suites/ScreenContext/README.md` for the per-case map and the capture/privacy boundary.
+
 ### Other domains
 
-The five pure-data domains (`schema`, `tool_envelope`, `streaming_hint`, `prefix_hash`, `argument_coercion`, `request_validation`) follow the same shape — pick one of the existing `Suites/<domain>/*.json` cases as a template and copy it.
+The pure-data domains (`schema`, `tool_envelope`, `streaming_hint`, `prefix_hash`, `argument_coercion`, `request_validation`) follow the same shape — pick one of the existing `Suites/<domain>/*.json` cases as a template and copy it.
 
 ## Recall floors gate
 
@@ -252,7 +638,9 @@ This package is a **separate Swift package**. CI / Xcode builds run `swift build
 
 ## Future hooks (deliberately stubbed)
 
-- `osaurus-evals diff baseline.json current.json` — regression check against a stored baseline.
-- Per-model scoreboards under `reports/<model>/<date>.json`.
 - Auto-run on new model release (CI workflow listening for HF releases).
 - Domain growth: `Suites/ToolCalling/`, `Suites/SkillInjection/`.
+
+Implemented (see "Optimization loop" above): `osaurus-evals diff` (all-domain
+regression check), cross-model scoreboards (`osaurus-evals matrix`), and the
+one-command `make evals-loop` pipeline.

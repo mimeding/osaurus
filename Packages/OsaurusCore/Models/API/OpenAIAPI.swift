@@ -597,7 +597,16 @@ extension ChatMessage {
 /// tools (Continue, etc.) rely on for `<|fim_*|>` prompts.
 struct CompletionRequest: Decodable, Sendable {
     let model: String
+    /// Raw prompt sent to the generation path. For OpenAI insertion/FIM
+    /// clients that send `prefix` instead of `prompt`, this falls back to the
+    /// prefix because the local raw completion contract accepts one string.
     let prompt: String
+    /// OpenAI-compatible FIM/insertion request fields. `suffix` and `middle`
+    /// are decoded so callers get a precise compatibility error instead of the
+    /// field being silently ignored by the raw left-to-right completion path.
+    let prefix: String?
+    let suffix: String?
+    let middle: String?
     let maxTokens: Int?
     let temperature: Float?
     let topP: Float?
@@ -606,7 +615,7 @@ struct CompletionRequest: Decodable, Sendable {
     let stream: Bool?
 
     private enum CodingKeys: String, CodingKey {
-        case model, prompt, temperature, stop, stream
+        case model, prompt, prefix, suffix, middle, temperature, stop, stream
         case maxTokens = "max_tokens"
         case topP = "top_p"
         case topK = "top_k"
@@ -615,15 +624,15 @@ struct CompletionRequest: Decodable, Sendable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         model = (try? c.decode(String.self, forKey: .model)) ?? ""
+        let decodedPrefix = Self.decodeStringOrFirstArray(from: c, forKey: .prefix)
+        prefix = decodedPrefix
+        suffix = Self.decodeStringOrFirstArray(from: c, forKey: .suffix)
+        middle = Self.decodeStringOrFirstArray(from: c, forKey: .middle)
         // `prompt` may be a string or an array of strings. FIM clients send a
-        // single string; for an array we take the first entry.
-        if let s = try? c.decode(String.self, forKey: .prompt) {
-            prompt = s
-        } else if let arr = try? c.decode([String].self, forKey: .prompt) {
-            prompt = arr.first ?? ""
-        } else {
-            prompt = ""
-        }
+        // single string; for an array we take the first entry. Some OpenAI-
+        // compatible insertion clients use `prefix` instead of `prompt`; treat
+        // that as the raw prompt only when `prompt` is absent.
+        prompt = Self.decodeStringOrFirstArray(from: c, forKey: .prompt) ?? decodedPrefix ?? ""
         maxTokens = try? c.decodeIfPresent(Int.self, forKey: .maxTokens)
         temperature = try? c.decodeIfPresent(Float.self, forKey: .temperature)
         topP = try? c.decodeIfPresent(Float.self, forKey: .topP)
@@ -639,10 +648,44 @@ struct CompletionRequest: Decodable, Sendable {
         stream = try? c.decodeIfPresent(Bool.self, forKey: .stream)
     }
 
+    private static func decodeStringOrFirstArray(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> String? {
+        if let s = try? container.decode(String.self, forKey: key) {
+            return s
+        }
+        if let arr = try? container.decode([String].self, forKey: key) {
+            return arr.first
+        }
+        return nil
+    }
+
     /// FIM completions are short; default generously when the client omits
     /// `max_tokens` (OpenAI's legacy default of 16 is too small for most
     /// autocomplete use).
     var resolvedMaxTokens: Int { maxTokens ?? 256 }
+
+    /// The current local raw-completion generation contract accepts one prompt
+    /// string. A prompt that already contains model-native FIM tokens is routed
+    /// verbatim; separate `suffix` / `middle` fields cannot be honored without
+    /// a runtime-level suffix channel, so reject them explicitly instead of
+    /// ignoring suffix context and generating a misleading left-to-right
+    /// continuation.
+    var unsupportedFIMReason: String? {
+        var unsupportedFields: [String] = []
+        if let suffix, !suffix.isEmpty {
+            unsupportedFields.append("suffix")
+        }
+        if let middle, !middle.isEmpty {
+            unsupportedFields.append("middle")
+        }
+        guard !unsupportedFields.isEmpty else { return nil }
+        let fields = unsupportedFields.map { "'\($0)'" }.joined(separator: ", ")
+        return "FIM fields \(fields) are not supported by the local /v1/completions runtime. "
+            + "Send a single raw prompt containing the model's native FIM tokens, or omit "
+            + "separate suffix/middle fields."
+    }
 }
 
 struct ChatCompletionRequest: Codable, Sendable {
@@ -706,6 +749,28 @@ struct ChatCompletionRequest: Codable, Sendable {
     /// Osaurus Router can dedupe billing on a re-POST. Not decoded from inbound
     /// OpenAI JSON; forwarded ONLY to the router (in the signed request body).
     var idempotencyKey: String? = nil
+    /// Local-only marker set by a chat session that targets a paired/discovered
+    /// remote Osaurus *agent* (Mode 2). When true the request is routed to the
+    /// remote `/agents/{address}/run` endpoint so the agent runs fully
+    /// server-side (its own model + context + tools) and only text deltas
+    /// stream back. When false an `.osaurus` provider is used as a plain
+    /// OpenAI-compatible inference backend (`/chat/completions`, Mode 1). Not
+    /// decoded from OpenAI JSON and not forwarded to remote providers.
+    var runAsRemoteAgent: Bool = false
+    /// Local-only: the remote agent's live effective model (the model the peer
+    /// will actually run), carried purely so the Insights log records *that*
+    /// instead of the local prefixed fallback (e.g. `coco/foundation`) the
+    /// picker pinned when the agent's real model isn't in the device catalog.
+    /// Only meaningful for Mode 2 (`runAsRemoteAgent`); over the wire Mode 2
+    /// omits `model` entirely (the peer resolves its own effective model).
+    /// Not decoded from OpenAI JSON and not forwarded to remote providers.
+    var remoteAgentLogModel: String? = nil
+    /// Local-only: the `RemoteProvider` id of the remote agent this Mode 2 run
+    /// targets. With `runAsRemoteAgent`, `ChatEngine` routes directly to this
+    /// provider's service instead of by model string, so a stale `selectedModel`
+    /// (e.g. a leftover prefix like `fugu/...`) can't redirect an agent run to a
+    /// different provider. Not decoded from OpenAI JSON, not sent to providers.
+    var remoteAgentProviderId: UUID? = nil
 
     /// Resolved max tokens, preferring max_tokens then max_completion_tokens.
     var resolvedMaxTokens: Int? { max_tokens ?? max_completion_tokens }
@@ -747,6 +812,9 @@ struct ChatCompletionRequest: Codable, Sendable {
         copy.samplingParametersAreImplicit = samplingParametersAreImplicit
         copy.isAgentRequest = isAgentRequest
         copy.idempotencyKey = idempotencyKey
+        copy.runAsRemoteAgent = runAsRemoteAgent
+        copy.remoteAgentLogModel = remoteAgentLogModel
+        copy.remoteAgentProviderId = remoteAgentProviderId
         return copy
     }
 
@@ -783,6 +851,9 @@ struct ChatCompletionRequest: Codable, Sendable {
         copy.samplingParametersAreImplicit = samplingParametersAreImplicit
         copy.isAgentRequest = isAgentRequest
         copy.idempotencyKey = idempotencyKey
+        copy.runAsRemoteAgent = runAsRemoteAgent
+        copy.remoteAgentLogModel = remoteAgentLogModel
+        copy.remoteAgentProviderId = remoteAgentProviderId
         return copy
     }
 }

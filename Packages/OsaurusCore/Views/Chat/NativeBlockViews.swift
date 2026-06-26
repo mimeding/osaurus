@@ -314,7 +314,7 @@ final class NativeTypingIndicatorView: NSView {
     }
 
     private func configureMemoryViews() {
-        memoryIcon.image = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)
+        memoryIcon.image = SymbolImageCache.image("memorychip", accessibilityDescription: nil)
         memoryIcon.contentTintColor = .orange
         memoryIcon.translatesAutoresizingMaskIntoConstraints = false
         memoryIcon.widthAnchor.constraint(equalToConstant: 12).isActive = true
@@ -450,13 +450,16 @@ final class NativePendingToolCallView: NSView {
         argSize: Int,
         theme: any ThemeProtocol
     ) {
-        // Running node: accent-colored circle + category glyph.
+        // Running node: accent-colored circle + category glyph. Sub-agent tools
+        // take their glyph from the capability registry (SSOT) instead of the
+        // generic gear the substring categorizer would assign.
         let category = ToolCategory.from(toolName: toolName)
+        let glyph = SubagentCapabilityRegistry.iconName(forToolName: toolName) ?? category.icon
         let accent = NSColor(theme.accentColor)
         node.layer?.backgroundColor = accent.withAlphaComponent(0.14).cgColor
         node.layer?.borderColor = accent.withAlphaComponent(0.55).cgColor
         let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-        categoryIcon.image = NSImage(systemSymbolName: category.icon, accessibilityDescription: nil)?
+        categoryIcon.image = SymbolImageCache.image(glyph, accessibilityDescription: nil)?
             .withSymbolConfiguration(cfg)
         categoryIcon.contentTintColor = accent
 
@@ -629,7 +632,7 @@ final class NativeCodeBlockView: NSView {
 
         copyButton.translatesAutoresizingMaskIntoConstraints = false
         copyButton.title = ""
-        copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+        copyButton.image = SymbolImageCache.image("doc.on.doc", accessibilityDescription: nil)
         copyButton.isBordered = false
         copyButton.alphaValue = 1  // Ensure it's visible
         copyButton.target = self
@@ -763,12 +766,12 @@ final class NativeCodeBlockView: NSView {
     @objc private func copyCode() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lastCode, forType: .string)
-        copyButton.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
+        copyButton.image = SymbolImageCache.image("checkmark", accessibilityDescription: nil)
         copyButton.contentTintColor = .systemGreen
         copyResetTask?.cancel()
         copyResetTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            self.copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+            self.copyButton.image = SymbolImageCache.image("doc.on.doc", accessibilityDescription: nil)
             self.copyButton.contentTintColor = nil
         }
     }

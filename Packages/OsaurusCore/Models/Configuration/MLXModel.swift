@@ -130,6 +130,34 @@ struct MLXModel: Identifiable, Codable {
         )
     }
 
+    /// A jargon-light version of `name` for first-run surfaces (the onboarding
+    /// model chooser). The HF-derived `name` carries technical tokens —
+    /// instruction-tuned (`it`), quant/precision (`MXFP8`, `MXFP4`, `qat`,
+    /// `4bit`, `bf16`, `JANGTQ`, `JANG_4M`), MoE active-params (`A1B`/`A4B`),
+    /// and speculative-decode (`MTP`) — which make the title read like a
+    /// filename. Stripping them yields a product-style title ("Gemma 4 12B").
+    /// The dropped precision is re-surfaced as a separate chip in the chooser so
+    /// same-size variants stay distinguishable. Falls back to `name` when
+    /// stripping would leave nothing.
+    var simplifiedName: String {
+        func isJargon(_ token: String) -> Bool {
+            let t = token.lowercased()
+            if t == "it" || t == "qat" || t == "mtp" { return true }
+            // Precision / quantization tokens.
+            if t.range(of: #"^mxfp\d+$"#, options: .regularExpression) != nil { return true }
+            if t.range(of: #"^\d+-?bit$"#, options: .regularExpression) != nil { return true }
+            if t == "fp16" || t == "bf16" || t == "fp32" { return true }
+            if t.range(of: #"^jangtq\d*$"#, options: .regularExpression) != nil { return true }
+            if t.range(of: #"^jang_?\d+[a-z]?$"#, options: .regularExpression) != nil { return true }
+            // MoE active-parameter token (e.g. "A1B", "A4B", "A3B").
+            if t.range(of: #"^a\d+b$"#, options: .regularExpression) != nil { return true }
+            return false
+        }
+        let kept = name.split(separator: " ").map(String.init).filter { !isJargon($0) }
+        let result = kept.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return result.isEmpty ? name : result
+    }
+
     /// Formatted download size string (e.g., "3.9 GB").
     ///
     /// Uses the value-type `ByteCountFormatStyle` rather than allocating a
@@ -276,7 +304,30 @@ struct MLXModel: Identifiable, Codable {
 
     /// Approximate download timestamp based on directory creation/modification time
     /// Newer downloads should have more recent dates.
+    ///
+    /// Hits the same id-keyed process cache as `isDownloaded` (invalidated on
+    /// `.localModelsChanged`). Read straight from SwiftUI body getters, the
+    /// underlying `resourceValues` stat is enough to trip the main-thread hang
+    /// watchdog on a cold or slow disk when the Models grid renders many rows.
     var downloadedAt: Date? {
+        // Bypass the shared cache for pinned (`rootDirectory`) and external
+        // (`bundleDirectory`) bundles so a same-id Osaurus entry can't shadow
+        // their on-disk timestamp — mirrors `isDownloaded`.
+        let usesSharedCache = rootDirectory == nil && bundleDirectory == nil
+        if usesSharedCache {
+            let cached = MLXModelDownloadCache.cachedDate(for: id)
+            if cached.hit { return cached.value }
+        }
+        let value = computeDownloadedAtFromDisk()
+        if usesSharedCache {
+            MLXModelDownloadCache.setDate(value, for: id)
+        }
+        return value
+    }
+
+    /// Direct disk stat used by `downloadedAt`. Exposed so callers needing a
+    /// freshness guarantee can bypass the cache.
+    func computeDownloadedAtFromDisk() -> Date? {
         let directory = localDirectory
         let values = try? directory.resourceValues(forKeys: [
             .creationDateKey, .contentModificationDateKey,
@@ -293,6 +344,24 @@ struct MLXModel: Identifiable, Codable {
     /// For downloaded models, checks vision_config in config.json.
     /// For undownloaded models, checks modelType against VLMTypeRegistry.
     var isVLM: Bool {
+        // Memoize: the `isDownloaded` branch below reads `config.json` off
+        // disk, which trips the main-thread hang watchdog when the grid
+        // evaluates this per row. Bypass the shared cache for pinned
+        // (`rootDirectory`) and external (`bundleDirectory`) bundles, matching
+        // `isDownloaded`, so a same-id Osaurus entry can't shadow their state.
+        let usesSharedCache = rootDirectory == nil && bundleDirectory == nil
+        if usesSharedCache, let cached = MLXModelDownloadCache.cachedVLM(for: id) {
+            return cached
+        }
+        let value = computeIsVLM()
+        if usesSharedCache {
+            MLXModelDownloadCache.setVLM(value, for: id)
+        }
+        return value
+    }
+
+    /// Direct (uncached) VLM detection used by `isVLM`.
+    func computeIsVLM() -> Bool {
         if ModelFamilyNames.isStepFamily(id) || ModelFamilyNames.isStepFamily(name) {
             // Step 3.7 bundles can carry upstream vision metadata, but this
             // Osaurus/vMLX path is the Step text runtime. Keep picker
@@ -316,6 +385,22 @@ struct MLXModel: Identifiable, Codable {
         if isDownloaded { return VLMDetection.isVLM(at: localDirectory) }
         if let mt = modelType { return VLMDetection.isVLM(modelType: mt) }
         return VLMDetection.isVLM(modelId: id)
+    }
+
+    /// Whether the on-disk bundle is in MLX format and therefore loadable by
+    /// the local engine (vmlx). Catalog entries that aren't on disk yet return
+    /// `true` — they're curated MLX builds and there's nothing to inspect; the
+    /// check only matters for downloaded/external bundles co-mingled in a
+    /// shared model store. Verdict is cached per directory by
+    /// `ModelFormatDetection` (dropped on `.localModelsChanged`), so reading it
+    /// per row stays cheap.
+    var isMLXFormat: Bool {
+        guard isDownloaded else { return true }
+        // First-party OsaurusAI bundles are always MLX by construction. Trust
+        // provenance unconditionally so a pipeline that omits the `format: mlx`
+        // tag (e.g. an unquantized first-party build) can never be greyed out.
+        if id.lowercased().hasPrefix("osaurusai/") { return true }
+        return ModelFormatDetection.isMLXFormat(at: localDirectory)
     }
 
     /// Whether this bundle is an embedding/encoder-only model (BERT family,
@@ -398,10 +483,7 @@ struct MLXModel: Identifiable, Codable {
 
     /// Numeric parameter count in billions (e.g. "7B" -> 7.0, "270M" -> 0.27)
     var parameterCountBillions: Double? {
-        guard let params = parameterCount else { return nil }
-        let text = params.uppercased()
-        guard let num = Double(text.dropLast()) else { return nil }
-        return text.hasSuffix("M") ? num / 1000.0 : num
+        ModelMetadataParser.parameterCountBillions(from: id)
     }
 
     /// Bytes per parameter based on the quantization extracted from the model name.

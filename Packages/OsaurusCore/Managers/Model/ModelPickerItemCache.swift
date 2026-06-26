@@ -136,15 +136,27 @@ final class ModelPickerItemCache: ObservableObject {
             // main actor, like the `isVLM` warm-up below.
             let models = ModelManager.discoverLocalModels()
                 .filter { !$0.isEmbedding }
-            // Warm the memoized VLM verdicts while still off the main actor:
-            // `fromMLXModel` below reads `isVLM` on the MainActor, and a cold
-            // cache would otherwise fault one config.json read per model there.
-            for model in models { _ = model.isVLM }
+            // Warm the memoized VLM + MLX-format verdicts while still off the
+            // main actor: `fromMLXModel` below reads both `isVLM` and
+            // `isMLXFormat` on the MainActor, and a cold cache would otherwise
+            // fault config.json / safetensors-header reads per model there.
+            for model in models {
+                _ = model.isVLM
+                _ = model.isMLXFormat
+            }
             return models
         }.value
 
         for model in localModels {
             options.append(.fromMLXModel(model))
+        }
+
+        // On-device image-generation models (vMLXFlux). Only surface bundles
+        // that are fully staged/loadable; incomplete ones stay hidden until
+        // their weights are present.
+        let imageModels = (try? await ImageGenerationService.shared.availableModels()) ?? []
+        for model in imageModels where model.ready {
+            options.append(.fromImageModel(model))
         }
 
         let manager = RemoteProviderManager.shared
