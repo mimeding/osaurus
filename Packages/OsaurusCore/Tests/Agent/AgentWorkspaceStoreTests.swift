@@ -70,6 +70,48 @@ struct AgentWorkspaceStoreTests {
         }
     }
 
+    @Test func concurrentAttachPathsPreserveAllSources() async throws {
+        try await StoragePathsTestLock.shared.run {
+            let root = try makeTempDirectory()
+            let previousRoot = OsaurusPaths.overrideRoot
+            OsaurusPaths.overrideRoot = root
+            defer {
+                OsaurusPaths.overrideRoot = previousRoot
+                try? FileManager.default.removeItem(at: root)
+            }
+
+            let agentId = UUID()
+            let workspace = try AgentWorkspaceStore.create(
+                agentId: agentId,
+                name: "Concurrent Notes",
+                sourceAuthorization: .trustedLocal
+            )
+            let sourcePaths = try (0..<12).map { index in
+                let url = root.appendingPathComponent("note-\(index).md")
+                try "Note \(index).".write(to: url, atomically: true, encoding: .utf8)
+                return url.path
+            }
+
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for path in sourcePaths {
+                    group.addTask {
+                        _ = try AgentWorkspaceStore.attachPaths(
+                            agentId: agentId,
+                            workspaceId: workspace.id,
+                            paths: [path],
+                            sourceAuthorization: .trustedLocal
+                        )
+                    }
+                }
+                try await group.waitForAll()
+            }
+
+            let reloaded = try #require(AgentWorkspaceStore.load(agentId: agentId, workspaceId: workspace.id))
+            #expect(reloaded.sources.count == sourcePaths.count)
+            #expect(Set(reloaded.sources.map(\.path)) == Set(sourcePaths))
+        }
+    }
+
     @Test func sourceInspectionRequiresAuthorization() async throws {
         try await StoragePathsTestLock.shared.run {
             let root = try makeTempDirectory()

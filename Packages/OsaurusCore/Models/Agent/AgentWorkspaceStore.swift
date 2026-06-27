@@ -55,7 +55,15 @@ public enum AgentWorkspaceStore {
     public static let defaultFileSummaryLimit = 1_500
     public static let defaultFolderEntryLimit = 40
 
+    private static let storageLock = NSLock()
+
     public static func loadAll(agentId: UUID) -> [AgentWorkspace] {
+        storageLock.withLock {
+            loadAllUnlocked(agentId: agentId)
+        }
+    }
+
+    private static func loadAllUnlocked(agentId: UUID) -> [AgentWorkspace] {
         let directory = OsaurusPaths.agentWorkspacesDirectory(for: agentId)
         OsaurusPaths.ensureExistsSilent(directory)
 
@@ -93,6 +101,12 @@ public enum AgentWorkspaceStore {
     }
 
     public static func load(agentId: UUID, workspaceId: UUID) -> AgentWorkspace? {
+        storageLock.withLock {
+            loadUnlocked(agentId: agentId, workspaceId: workspaceId)
+        }
+    }
+
+    private static func loadUnlocked(agentId: UUID, workspaceId: UUID) -> AgentWorkspace? {
         let url = OsaurusPaths.agentWorkspaceFile(agentId: agentId, workspaceId: workspaceId)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
 
@@ -119,17 +133,19 @@ public enum AgentWorkspaceStore {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { throw AgentWorkspaceStoreError.emptyName }
 
-        let now = Date()
-        var workspace = AgentWorkspace(
-            agentId: agentId,
-            name: trimmedName,
-            description: description.trimmingCharacters(in: .whitespacesAndNewlines),
-            createdAt: now,
-            updatedAt: now
-        )
-        workspace.sources = paths.map { inspectSource(path: $0, authorization: sourceAuthorization) }
-        save(workspace)
-        return workspace
+        return storageLock.withLock {
+            let now = Date()
+            var workspace = AgentWorkspace(
+                agentId: agentId,
+                name: trimmedName,
+                description: description.trimmingCharacters(in: .whitespacesAndNewlines),
+                createdAt: now,
+                updatedAt: now
+            )
+            workspace.sources = paths.map { inspectSource(path: $0, authorization: sourceAuthorization) }
+            saveUnlocked(workspace)
+            return workspace
+        }
     }
 
     @discardableResult
@@ -139,32 +155,40 @@ public enum AgentWorkspaceStore {
         paths: [String],
         sourceAuthorization: AgentWorkspaceSourceAuthorization = .denied
     ) throws -> AgentWorkspace {
-        guard var workspace = load(agentId: agentId, workspaceId: workspaceId) else {
-            throw AgentWorkspaceStoreError.workspaceNotFound(workspaceId)
+        try storageLock.withLock {
+            guard var workspace = loadUnlocked(agentId: agentId, workspaceId: workspaceId) else {
+                throw AgentWorkspaceStoreError.workspaceNotFound(workspaceId)
+            }
+            workspace.sources.append(contentsOf: paths.map {
+                inspectSource(path: $0, authorization: sourceAuthorization)
+            })
+            workspace.updatedAt = Date()
+            saveUnlocked(workspace)
+            return workspace
         }
-        workspace.sources.append(contentsOf: paths.map { inspectSource(path: $0, authorization: sourceAuthorization) })
-        workspace.updatedAt = Date()
-        save(workspace)
-        return workspace
     }
 
     @discardableResult
     public static func delete(agentId: UUID, workspaceId: UUID) -> Bool {
-        let url = OsaurusPaths.agentWorkspaceFile(agentId: agentId, workspaceId: workspaceId)
-        guard FileManager.default.fileExists(atPath: url.path) else { return false }
-        do {
-            try FileManager.default.removeItem(at: url)
-            return true
-        } catch {
-            print("[Osaurus] Failed to delete agent workspace \(workspaceId): \(error)")
-            return false
+        storageLock.withLock {
+            let url = OsaurusPaths.agentWorkspaceFile(agentId: agentId, workspaceId: workspaceId)
+            guard FileManager.default.fileExists(atPath: url.path) else { return false }
+            do {
+                try FileManager.default.removeItem(at: url)
+                return true
+            } catch {
+                print("[Osaurus] Failed to delete agent workspace \(workspaceId): \(error)")
+                return false
+            }
         }
     }
 
     public static func deleteAll(for agentId: UUID) throws {
-        let directory = OsaurusPaths.agentWorkspacesDirectory(for: agentId)
-        guard FileManager.default.fileExists(atPath: directory.path) else { return }
-        try FileManager.default.removeItem(at: directory)
+        try storageLock.withLock {
+            let directory = OsaurusPaths.agentWorkspacesDirectory(for: agentId)
+            guard FileManager.default.fileExists(atPath: directory.path) else { return }
+            try FileManager.default.removeItem(at: directory)
+        }
     }
 
     public static func promptSummary(
@@ -268,7 +292,7 @@ public enum AgentWorkspaceStore {
         )
     }
 
-    private static func save(_ workspace: AgentWorkspace) {
+    private static func saveUnlocked(_ workspace: AgentWorkspace) {
         let url = OsaurusPaths.agentWorkspaceFile(agentId: workspace.agentId, workspaceId: workspace.id)
         OsaurusPaths.ensureExistsSilent(url.deletingLastPathComponent())
 
