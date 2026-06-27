@@ -110,6 +110,183 @@ struct AgentTaskBoardStoreTests {
     }
 
     @Test
+    func createRejectsInvalidInitialStatuses() throws {
+        let store = try openInMemory()
+        defer { store.close() }
+
+        for status in [AgentTaskStatus.running, .blocked, .review, .done, .archived] {
+            #expect(throws: AgentTaskBoardError.self) {
+                try store.createTask(
+                    AgentTaskCreateRequest(title: "Invalid \(status.rawValue)", status: status),
+                    now: fixedDate()
+                )
+            }
+        }
+
+        #expect(throws: AgentTaskBoardError.self) {
+            try store.createTask(
+                AgentTaskCreateRequest(title: "Missing schedule", status: .scheduled),
+                now: fixedDate()
+            )
+        }
+
+        let scheduled = try store.createTask(
+            AgentTaskCreateRequest(
+                title: "Scheduled",
+                status: .scheduled,
+                scheduledAt: fixedDate(60)
+            ),
+            now: fixedDate()
+        )
+        #expect(scheduled.status == .scheduled)
+    }
+
+    @Test
+    func updateFromRunningToReadyOrReviewFinishesRunAndClearsLease() throws {
+        let store = try openInMemory()
+        defer { store.close() }
+
+        let readyTarget = try store.createTask(
+            AgentTaskCreateRequest(title: "Return to ready", status: .ready),
+            now: fixedDate()
+        )
+        let readyClaim = try #require(
+            try store.claimTask(
+                id: readyTarget.id,
+                workerId: "worker-a",
+                leaseTTL: 60,
+                now: fixedDate(1)
+            )
+        )
+        try store.setActiveRunForTesting(
+            taskId: readyTarget.id,
+            activeRunId: nil,
+            leaseOwner: "worker-a",
+            leaseExpiresAt: fixedDate(61)
+        )
+
+        let returned = try store.updateTask(
+            id: readyTarget.id,
+            update: AgentTaskUpdate(status: .ready),
+            now: fixedDate(2),
+            message: "manual requeue"
+        )
+        #expect(returned.status == .ready)
+        #expect(returned.activeRunId == nil)
+        #expect(returned.leaseOwner == nil)
+        #expect(returned.leaseExpiresAt == nil)
+        #expect(try store.runs(taskId: readyTarget.id).map(\.status) == [.abandoned])
+        #expect(try store.events(taskId: readyTarget.id).last?.runId == readyClaim.run.id)
+
+        let reviewTarget = try store.createTask(
+            AgentTaskCreateRequest(title: "Move to review", status: .ready),
+            now: fixedDate(3)
+        )
+        let reviewClaim = try #require(
+            try store.claimTask(
+                id: reviewTarget.id,
+                workerId: "worker-b",
+                leaseTTL: 60,
+                now: fixedDate(4)
+            )
+        )
+
+        let reviewed = try store.updateTask(
+            id: reviewTarget.id,
+            update: AgentTaskUpdate(status: .review),
+            now: fixedDate(5),
+            message: "ready for review"
+        )
+        #expect(reviewed.status == .review)
+        #expect(reviewed.activeRunId == nil)
+        #expect(reviewed.leaseOwner == nil)
+        #expect(reviewed.leaseExpiresAt == nil)
+        #expect(try store.runs(taskId: reviewTarget.id).map(\.status) == [.completed])
+        #expect(try store.events(taskId: reviewTarget.id).last?.runId == reviewClaim.run.id)
+    }
+
+    @Test
+    func updateToClaimableStatusRejectsNonRunningTaskWithActiveRunOrLease() throws {
+        let store = try openInMemory()
+        defer { store.close() }
+
+        let staleRun = try store.createTask(
+            AgentTaskCreateRequest(title: "Stale active run", status: .todo),
+            now: fixedDate()
+        )
+        try store.setActiveRunForTesting(
+            taskId: staleRun.id,
+            activeRunId: UUID(),
+            leaseOwner: "stale-worker",
+            leaseExpiresAt: fixedDate(60)
+        )
+
+        #expect(throws: AgentTaskBoardError.self) {
+            try store.updateTask(
+                id: staleRun.id,
+                update: AgentTaskUpdate(status: .ready),
+                now: fixedDate(1)
+            )
+        }
+        #expect(try store.task(id: staleRun.id)?.status == .todo)
+        #expect(try store.task(id: staleRun.id)?.activeRunId != nil)
+
+        let staleLease = try store.createTask(
+            AgentTaskCreateRequest(title: "Stale lease", status: .todo),
+            now: fixedDate(2)
+        )
+        try store.setActiveRunForTesting(
+            taskId: staleLease.id,
+            activeRunId: nil,
+            leaseOwner: "stale-worker",
+            leaseExpiresAt: fixedDate(62)
+        )
+
+        #expect(throws: AgentTaskBoardError.self) {
+            try store.updateTask(
+                id: staleLease.id,
+                update: AgentTaskUpdate(status: .ready),
+                now: fixedDate(3)
+            )
+        }
+        #expect(try store.task(id: staleLease.id)?.status == .todo)
+        #expect(try store.task(id: staleLease.id)?.leaseOwner == "stale-worker")
+    }
+
+    @Test
+    func claimNextSkipsReadyRowsWithActiveRunId() throws {
+        let store = try openInMemory()
+        defer { store.close() }
+
+        let orphaned = try store.createTask(
+            AgentTaskCreateRequest(title: "Stale active row", status: .ready, priority: 100),
+            now: fixedDate()
+        )
+        let claimable = try store.createTask(
+            AgentTaskCreateRequest(title: "Claimable row", status: .ready, priority: 1),
+            now: fixedDate(1)
+        )
+        try store.setActiveRunForTesting(
+            taskId: orphaned.id,
+            activeRunId: UUID(),
+            leaseOwner: "stale-worker",
+            leaseExpiresAt: fixedDate(120)
+        )
+
+        let claim = try #require(
+            try store.claimNext(
+                workerId: "worker-next",
+                leaseTTL: 60,
+                now: fixedDate(2)
+            )
+        )
+
+        #expect(claim.task.id == claimable.id)
+        #expect(try store.task(id: orphaned.id)?.status == .ready)
+        #expect(try store.task(id: orphaned.id)?.activeRunId != nil)
+    }
+
+    @Test
     func dependencyInsertRejectsCycles() throws {
         let store = try openInMemory()
         defer { store.close() }

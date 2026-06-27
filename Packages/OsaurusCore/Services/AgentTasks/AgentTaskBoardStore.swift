@@ -69,7 +69,10 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
     public func open() throws {
         StorageMutationGate.blockingAwaitNotMutating()
         try queue.sync {
-            guard db == nil else { return }
+            guard db == nil else {
+                registerMaintenanceHandleIfNeededLocked()
+                return
+            }
             OsaurusPaths.ensureExistsSilent(OsaurusPaths.agentTasks())
             do {
                 db = try EncryptedSQLiteOpener.open(
@@ -83,10 +86,7 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
             } catch {
                 throw AgentTaskBoardError.failedToOpen(error.localizedDescription)
             }
-        }
-        if !registeredMaintenanceHandle {
-            OsaurusDatabaseHandle.register(maintenanceHandle)
-            registeredMaintenanceHandle = true
+            registerMaintenanceHandleIfNeededLocked()
         }
     }
 
@@ -110,11 +110,11 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
     }
 
     public func close() {
-        if registeredMaintenanceHandle {
-            OsaurusDatabaseHandle.deregister(name: "agent-task-board")
-            registeredMaintenanceHandle = false
-        }
         queue.sync {
+            if registeredMaintenanceHandle {
+                OsaurusDatabaseHandle.deregister(name: "agent-task-board")
+                registeredMaintenanceHandle = false
+            }
             guard let connection = db else { return }
             try? executeRaw("PRAGMA optimize")
             sqlite3_close(connection)
@@ -135,6 +135,12 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
         closer: { [weak self] in self?.close() },
         reopener: { [weak self] in try? self?.open() }
     )
+
+    private func registerMaintenanceHandleIfNeededLocked() {
+        guard !registeredMaintenanceHandle else { return }
+        OsaurusDatabaseHandle.register(maintenanceHandle)
+        registeredMaintenanceHandle = true
+    }
 
     // MARK: - Schema
 
@@ -256,6 +262,11 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
         now: Date = Date()
     ) throws -> AgentTask {
         try Self.validateTitle(request.title)
+        guard Self.validInitialStatuses.contains(request.status) else {
+            throw AgentTaskBoardError.invalidInput(
+                "\(request.status.rawValue) is not a valid initial task status"
+            )
+        }
         if request.status == .scheduled, request.scheduledAt == nil {
             throw AgentTaskBoardError.invalidInput("scheduled tasks require scheduledAt")
         }
@@ -328,6 +339,7 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
                 throw AgentTaskBoardError.invalidTransition(from: .archived, to: update.status ?? .archived)
             }
             let fromStatus = task.status
+            var clearedRunId: UUID?
 
             if let title = update.title {
                 try Self.validateTitle(title)
@@ -362,6 +374,17 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
                 if next == .scheduled, task.scheduledAt == nil {
                     throw AgentTaskBoardError.invalidInput("scheduled tasks require scheduledAt")
                 }
+                if task.status == .running, [.ready, .review].contains(next) {
+                    clearedRunId = try finishActiveRunForManualTransitionLocked(
+                        task: &task,
+                        to: next,
+                        now: now
+                    )
+                } else if [.ready, .review].contains(next), Self.hasActiveRunOrLease(task) {
+                    throw AgentTaskBoardError.invalidInput(
+                        "cannot move task with an active run or lease to \(next.rawValue)"
+                    )
+                }
                 task.status = next
                 if next != .blocked { task.blockedReason = nil }
                 if next != .archived { task.archivedAt = nil }
@@ -377,6 +400,7 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
                     taskId: task.id,
                     kind: .update,
                     createdAt: now,
+                    runId: clearedRunId,
                     fromStatus: fromStatus,
                     toStatus: task.status,
                     message: message
@@ -785,6 +809,21 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
         }
     }
 
+    func setActiveRunForTesting(
+        taskId: UUID,
+        activeRunId: UUID?,
+        leaseOwner: String? = nil,
+        leaseExpiresAt: Date? = nil
+    ) throws {
+        try inImmediateTransaction {
+            var task = try requireTaskLocked(id: taskId)
+            task.activeRunId = activeRunId
+            task.leaseOwner = leaseOwner
+            task.leaseExpiresAt = leaseExpiresAt
+            try updateTaskLocked(task)
+        }
+    }
+
     // MARK: - Claim internals
 
     private func claimTaskLocked(
@@ -846,6 +885,7 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
                         AND t.scheduled_at <= ?1
                     )
                 )
+                AND t.active_run_id IS NULL
                 AND NOT EXISTS (
                     SELECT 1
                     FROM task_links AS l
@@ -959,6 +999,60 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
                 "run \(runId.uuidString) does not own task \(task.id.uuidString)"
             )
         }
+    }
+
+    private func finishActiveRunForManualTransitionLocked(
+        task: inout AgentTask,
+        to next: AgentTaskStatus,
+        now: Date
+    ) throws -> UUID? {
+        let runId: UUID?
+        if let activeRunId = task.activeRunId {
+            runId = activeRunId
+        } else {
+            runId = try runningRunIdForTaskLocked(taskId: task.id)
+        }
+        guard let runId else {
+            throw AgentTaskBoardError.invalidInput(
+                "cannot move running task to \(next.rawValue) without an active run to finish"
+            )
+        }
+        let runStatus: AgentTaskRunStatus = next == .review ? .completed : .abandoned
+        let error = next == .review ? nil : "task returned to ready"
+        try finishRunLocked(
+            id: runId,
+            status: runStatus,
+            completedAt: now,
+            error: error
+        )
+        task.activeRunId = nil
+        task.leaseOwner = nil
+        task.leaseExpiresAt = nil
+        return runId
+    }
+
+    private func runningRunIdForTaskLocked(taskId: UUID) throws -> UUID? {
+        var runId: UUID?
+        try prepareAndStep(
+            """
+                SELECT id
+                FROM task_runs
+                WHERE task_id = ?1 AND status = 'running'
+                ORDER BY claimed_at DESC
+                LIMIT 1
+            """
+        ) { stmt in
+            Self.bindText(stmt, index: 1, value: taskId.uuidString)
+        } process: { stmt in
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                runId = Self.uuidColumn(stmt, 0)
+            }
+        }
+        return runId
+    }
+
+    private static func hasActiveRunOrLease(_ task: AgentTask) -> Bool {
+        task.activeRunId != nil || task.leaseOwner != nil || task.leaseExpiresAt != nil
     }
 
     // MARK: - Dependency internals
@@ -1311,6 +1405,8 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
             throw AgentTaskBoardError.failedToExecute("\(context): \(message)")
         }
     }
+
+    private static let validInitialStatuses: Set<AgentTaskStatus> = [.triage, .todo, .scheduled, .ready]
 
     private static func bindTask(_ task: AgentTask, stmt: OpaquePointer) {
         bindText(stmt, index: 1, value: task.id.uuidString)
