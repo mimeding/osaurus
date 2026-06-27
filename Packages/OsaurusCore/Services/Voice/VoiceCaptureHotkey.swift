@@ -154,6 +154,11 @@ public enum VoiceCaptureHotkeyPolicy {
         readiness: VoiceCaptureHotkeyReadiness
     ) -> VoiceCaptureStartDecision {
         var blockers = readiness.registrationBlockers + readiness.captureBlockers
+        if source == .button {
+            blockers.removeAll { blocker in
+                blocker == .transcriptionDisabled || blocker == .missingHotkey
+            }
+        }
         if source == .background {
             blockers.append(.backgroundActivation)
         }

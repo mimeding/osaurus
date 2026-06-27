@@ -106,6 +106,20 @@ struct TranscriptionModeSettingsTab: View {
         )
     }
 
+    private var canShowTestArea: Bool {
+        modelManager.downloadedModelsCount > 0 && modelManager.selectedModel != nil
+    }
+
+    private var buttonCaptureReadiness: VoiceCaptureHotkeyReadiness {
+        VoiceCaptureHotkeyPolicy.readiness(
+            configuration: TranscriptionConfiguration(
+                transcriptionModeEnabled: true,
+                hotkey: VoiceCaptureHotkeyPolicy.defaultHotkey
+            ),
+            requirements: captureRequirements
+        )
+    }
+
     private var captureControlState: VoiceCaptureControlState {
         switch transcriptionService.state {
         case .transcribing:
@@ -113,10 +127,14 @@ struct TranscriptionModeSettingsTab: View {
         case .starting, .stopping:
             return .processing
         case .idle, .error:
-            if hotkeyReadiness.canStartCapture && speechService.isModelLoaded {
+            let readiness = buttonCaptureReadiness
+            if readiness.canStartCapture {
                 return .idle
             }
-            return .unavailable(hotkeyReadiness.firstBlockerMessage ?? L("Voice capture is not ready"))
+            if readiness.captureBlockers.allSatisfy({ $0 != .speechModel }) {
+                return .idle
+            }
+            return .unavailable(readiness.firstBlockerMessage ?? L("Voice capture is not ready"))
         }
     }
 
@@ -143,7 +161,7 @@ struct TranscriptionModeSettingsTab: View {
                 transcriptionBehaviorCard
 
                 // Test Area Card
-                if canEnableTranscription && transcriptionEnabled {
+                if canShowTestArea {
                     testAreaCard
                 }
 

@@ -279,10 +279,9 @@ public final class TTSService: ObservableObject {
 
     private static func pocketTtsModelsExistOnDisk() -> Bool {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let repoDir = pocketTtsRepositoryDirectory(homeDirectory: home)
-        let required = ModelNames.PocketTTS.requiredModels
         let fm = FileManager.default
-        return required.allSatisfy { fm.fileExists(atPath: repoDir.appendingPathComponent($0).path) }
+        return pocketTtsRequiredModelPaths(homeDirectory: home)
+            .allSatisfy { fm.fileExists(atPath: $0.path) }
     }
 
     nonisolated static func pocketTtsRepositoryDirectory(homeDirectory: URL) -> URL {
@@ -291,6 +290,13 @@ public final class TTSService: ObservableObject {
             .appendingPathComponent("fluidaudio", isDirectory: true)
             .appendingPathComponent("Models", isDirectory: true)
             .appendingPathComponent("pocket-tts-coreml", isDirectory: true)
+    }
+
+    nonisolated static func pocketTtsRequiredModelPaths(homeDirectory: URL) -> [URL] {
+        let repoDir = pocketTtsRepositoryDirectory(homeDirectory: homeDirectory)
+        return ModelNames.PocketTTS.requiredModels
+            .sorted()
+            .map { repoDir.appendingPathComponent($0) }
     }
 
     // MARK: - Playback

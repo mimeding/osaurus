@@ -79,6 +79,49 @@ struct VoiceInputOutputPolicyTests {
         )
     }
 
+    @Test("test button capture does not require global transcription or hotkey")
+    func testButtonCaptureDoesNotRequireGlobalTranscriptionOrHotkey() {
+        let config = TranscriptionConfiguration(
+            transcriptionModeEnabled: false,
+            hotkey: nil
+        )
+        let readiness = VoiceCaptureHotkeyPolicy.readiness(
+            configuration: config,
+            requirements: VoiceCaptureRuntimeRequirements(
+                accessibilityPermissionGranted: true,
+                microphonePermissionGranted: true,
+                speechModelAvailable: true
+            )
+        )
+
+        #expect(VoiceCaptureHotkeyPolicy.startDecision(source: .button, readiness: readiness) == .allowed)
+        #expect(
+            VoiceCaptureHotkeyPolicy.startDecision(source: .explicitHotkey, readiness: readiness)
+                == .denied([.transcriptionDisabled, .missingHotkey])
+        )
+    }
+
+    @Test("test button capture still surfaces runtime permission blockers")
+    func testButtonCaptureStillSurfacesRuntimePermissionBlockers() {
+        let config = TranscriptionConfiguration(
+            transcriptionModeEnabled: false,
+            hotkey: nil
+        )
+        let readiness = VoiceCaptureHotkeyPolicy.readiness(
+            configuration: config,
+            requirements: VoiceCaptureRuntimeRequirements(
+                accessibilityPermissionGranted: true,
+                microphonePermissionGranted: false,
+                speechModelAvailable: true
+            )
+        )
+
+        #expect(
+            VoiceCaptureHotkeyPolicy.startDecision(source: .button, readiness: readiness)
+                == .denied([.microphonePermission])
+        )
+    }
+
     @Test("speech-output policy selects the next complete assistant turn")
     func speechOutputSelectsNextAssistantTurn() {
         let user = SpeechOutputConversationTurn(id: UUID(), role: .user, text: "Question")
@@ -125,10 +168,15 @@ struct VoiceInputOutputPolicyTests {
     @Test("PocketTTS cache probe uses FluidAudio CoreML repository folder")
     func pocketTtsCacheProbeUsesFluidAudioCoreMLFolder() {
         let home = URL(fileURLWithPath: "/tmp/osaurus-voice-home", isDirectory: true)
+        let repo = TTSService.pocketTtsRepositoryDirectory(homeDirectory: home)
+        let required = TTSService.pocketTtsRequiredModelPaths(homeDirectory: home).map(\.path)
 
-        #expect(
-            TTSService.pocketTtsRepositoryDirectory(homeDirectory: home).path
-                == "/tmp/osaurus-voice-home/.cache/fluidaudio/Models/pocket-tts-coreml"
-        )
+        #expect(repo.path == "/tmp/osaurus-voice-home/.cache/fluidaudio/Models/pocket-tts-coreml")
+        #expect(required.contains(repo.appendingPathComponent("cond_step.mlmodelc").path))
+        #expect(required.contains(repo.appendingPathComponent("flowlm_step.mlmodelc").path))
+        #expect(required.contains(repo.appendingPathComponent("flow_decoder.mlmodelc").path))
+        #expect(required.contains(repo.appendingPathComponent("mimi_decoder_v2.mlmodelc").path))
+        #expect(required.contains(repo.appendingPathComponent("constants_bin").path))
+        #expect(!required.contains(repo.appendingPathComponent("mimi_encoder.mlmodelc").path))
     }
 }
