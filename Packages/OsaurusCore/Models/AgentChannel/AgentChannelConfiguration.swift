@@ -232,6 +232,7 @@ struct AgentChannelInboundAuthorizationPolicy: Codable, Equatable, Sendable {
 struct AgentChannelInboundMessageAuthorizationRequest: Equatable, Sendable {
     var connectionId: String?
     var providerEventId: String?
+    var providerMessageId: String?
     var spaceId: String?
     var roomId: String
     var senderId: String?
@@ -241,6 +242,7 @@ struct AgentChannelInboundMessageAuthorizationRequest: Equatable, Sendable {
     init(
         connectionId: String? = nil,
         providerEventId: String? = nil,
+        providerMessageId: String? = nil,
         spaceId: String? = nil,
         roomId: String,
         senderId: String? = nil,
@@ -249,6 +251,7 @@ struct AgentChannelInboundMessageAuthorizationRequest: Equatable, Sendable {
     ) {
         self.connectionId = connectionId.map(AgentChannelConnection.normalizedId)
         self.providerEventId = providerEventId.map(AgentChannelConnection.normalizedId)
+        self.providerMessageId = providerMessageId.map(AgentChannelConnection.normalizedId)
         self.spaceId = spaceId.map(AgentChannelConnection.normalizedId)
         self.roomId = AgentChannelConnection.normalizedId(roomId)
         self.senderId = senderId.map(AgentChannelConnection.normalizedId)
@@ -257,22 +260,50 @@ struct AgentChannelInboundMessageAuthorizationRequest: Equatable, Sendable {
     }
 }
 
-enum AgentChannelInboundAuthorizationDecisionValue: String, Codable, Equatable, Sendable {
+public enum AgentChannelInboundAuthorizationDecisionValue: String, Codable, Equatable, Sendable {
     case allow
     case deny
     case duplicate
 }
 
-struct AgentChannelInboundAuthorizationDecision: Equatable, Sendable {
+public struct AgentChannelInboundAuthorizationDecision: Equatable, Sendable {
     var decision: AgentChannelInboundAuthorizationDecisionValue
     var shouldDispatch: Bool
     var reason: String
     var auditDecisionReason: String
     var connectionId: String
     var providerEventId: String?
+    var providerMessageId: String?
     var spaceId: String?
     var roomId: String
     var senderId: String?
+    var details: [String: String]
+
+    init(
+        decision: AgentChannelInboundAuthorizationDecisionValue,
+        shouldDispatch: Bool,
+        reason: String,
+        auditDecisionReason: String,
+        connectionId: String,
+        providerEventId: String? = nil,
+        providerMessageId: String? = nil,
+        spaceId: String? = nil,
+        roomId: String,
+        senderId: String? = nil,
+        details: [String: String] = [:]
+    ) {
+        self.decision = decision
+        self.shouldDispatch = shouldDispatch
+        self.reason = reason
+        self.auditDecisionReason = auditDecisionReason
+        self.connectionId = AgentChannelConnection.normalizedId(connectionId)
+        self.providerEventId = providerEventId.map(AgentChannelConnection.normalizedId)
+        self.providerMessageId = providerMessageId.map(AgentChannelConnection.normalizedId)
+        self.spaceId = spaceId.map(AgentChannelConnection.normalizedId)
+        self.roomId = AgentChannelConnection.normalizedId(roomId)
+        self.senderId = senderId.map(AgentChannelConnection.normalizedId)
+        self.details = details
+    }
 
     var dictionary: [String: Any] {
         var row: [String: Any] = [
@@ -286,11 +317,17 @@ struct AgentChannelInboundAuthorizationDecision: Equatable, Sendable {
         if let providerEventId {
             row["provider_event_id"] = providerEventId
         }
+        if let providerMessageId {
+            row["provider_message_id"] = providerMessageId
+        }
         if let spaceId {
             row["space_id"] = spaceId
         }
         if let senderId {
             row["sender_id"] = senderId
+        }
+        if !details.isEmpty {
+            row["details"] = details
         }
         return row
     }

@@ -265,6 +265,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
     ) throws -> AgentChannelInboundAuthorizationDecision {
         let requestedConnectionId = request.connectionId.flatMap(Self.normalizedOptionalId)
         let providerEventId = request.providerEventId.flatMap(Self.normalizedOptionalId)
+        let providerMessageId = request.providerMessageId.flatMap(Self.normalizedOptionalId)
         let spaceId = request.spaceId.flatMap(Self.normalizedOptionalId)
         let roomId = Self.normalizedId(request.roomId)
         let senderId = request.senderId.flatMap(Self.normalizedOptionalId)
@@ -273,6 +274,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                 reason: "connection_id_required",
                 connectionId: "",
                 providerEventId: providerEventId,
+                providerMessageId: providerMessageId,
                 spaceId: spaceId,
                 roomId: roomId,
                 senderId: senderId
@@ -287,6 +289,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                 reason: "connection_not_found",
                 connectionId: requestedConnectionId,
                 providerEventId: providerEventId,
+                providerMessageId: providerMessageId,
                 spaceId: spaceId,
                 roomId: roomId,
                 senderId: senderId
@@ -297,7 +300,8 @@ final class AgentChannelConnectionService: @unchecked Sendable {
 
         func deny(
             _ reason: String,
-            decision: AgentChannelInboundAuthorizationDecisionValue = .deny
+            decision: AgentChannelInboundAuthorizationDecisionValue = .deny,
+            details: [String: String] = [:]
         ) -> AgentChannelInboundAuthorizationDecision {
             AgentChannelInboundAuthorizationDecision(
                 decision: decision,
@@ -306,9 +310,11 @@ final class AgentChannelConnectionService: @unchecked Sendable {
                 auditDecisionReason: policy.auditDecisionReason,
                 connectionId: connection.id,
                 providerEventId: providerEventId,
+                providerMessageId: providerMessageId,
                 spaceId: spaceId,
                 roomId: roomId,
-                senderId: senderId
+                senderId: senderId,
+                details: details
             )
         }
 
@@ -317,6 +323,9 @@ final class AgentChannelConnectionService: @unchecked Sendable {
         }
         guard !policy.requireProviderEventId || providerEventId != nil else {
             return deny("provider_event_id_required")
+        }
+        guard policy.requireProviderEventId || providerMessageId != nil else {
+            return deny("provider_message_id_required_for_receive_recording")
         }
         if !connection.spaceAllowlist.isEmpty {
             guard let spaceId, connection.spaceAllowlist.contains(spaceId) else {
@@ -344,9 +353,16 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             guard let messageStore else {
                 return deny("message_store_required_for_replay_check")
             }
-            if let providerEventId,
-               try messageStore.isEventSeen(connectionId: connection.id, providerEventId: providerEventId) {
-                return deny("duplicate_event_\(policy.duplicateBehavior)", decision: .duplicate)
+            do {
+                if let providerEventId,
+                   try messageStore.isEventSeen(connectionId: connection.id, providerEventId: providerEventId) {
+                    return deny("duplicate_event_\(policy.duplicateBehavior)", decision: .duplicate)
+                }
+            } catch {
+                return deny(
+                    "authorization_store_error",
+                    details: ["store_error": error.localizedDescription]
+                )
             }
         }
 
@@ -357,6 +373,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             auditDecisionReason: policy.auditDecisionReason,
             connectionId: connection.id,
             providerEventId: providerEventId,
+            providerMessageId: providerMessageId,
             spaceId: spaceId,
             roomId: roomId,
             senderId: senderId
@@ -524,12 +541,14 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             return AgentChannelRelayReceivePolicy(
                 status: .disabled,
                 reason: "Connection is disabled.",
+                providerEventIdRequired: connection.inboundAuthorization.requireProviderEventId,
                 inboundAuthorization: connection.inboundAuthorization
             )
         }
         return AgentChannelRelayReceivePolicy(
             status: .unsupported,
             reason: "No live receive relay is registered for this connection.",
+            providerEventIdRequired: connection.inboundAuthorization.requireProviderEventId,
             inboundAuthorization: connection.inboundAuthorization
         )
     }
@@ -558,6 +577,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
         reason: String,
         connectionId: String,
         providerEventId: String?,
+        providerMessageId: String?,
         spaceId: String?,
         roomId: String,
         senderId: String?
@@ -569,6 +589,7 @@ final class AgentChannelConnectionService: @unchecked Sendable {
             auditDecisionReason: AgentChannelInboundAuthorizationPolicy.defaultAuditDecisionReason,
             connectionId: connectionId,
             providerEventId: providerEventId,
+            providerMessageId: providerMessageId,
             spaceId: spaceId,
             roomId: roomId,
             senderId: senderId

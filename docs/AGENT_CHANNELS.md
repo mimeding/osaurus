@@ -33,10 +33,10 @@ Each connection also reports provider-neutral action policy metadata in
   honor.
 
 Relay receive is reported separately as `relay_receive_policy` because there is
-not yet a model-facing receive tool. The standard relay policy requires a
-stable provider event id, acknowledges duplicates without dispatching the same
-event again, persists a normalized external message snapshot, and treats cursor
-updates as optional.
+not yet a model-facing receive tool. The standard relay policy reports whether
+the connection requires a stable provider event id, acknowledges duplicates
+without dispatching the same event again, persists a normalized external
+message snapshot, and treats cursor updates as optional.
 
 Relay receive also reports `inbound_authorization`. This is the provider-neutral
 pre-dispatch gate an adapter must apply before external content reaches agent
@@ -172,22 +172,30 @@ plugin pattern:
 1. Verify the provider secret/signature before parsing user-visible content.
 2. Build a stable provider event id, such as a Telegram update id, Discord
    message snowflake id, or Slack event id. Do not use session-scoped sequence
-   numbers that can change when a provider replays the same logical message.
+   numbers that can change when a provider replays the same logical message. If
+   a connection explicitly opts out of provider event ids, the authorization
+   request must carry the stable provider message id instead.
 3. Run the connection's inbound authorization gate before adding message text
    to agent context or tool input. Unauthorized groups/spaces, rooms, senders,
    bot messages, self messages, duplicate events, and missing replay state must
    be acknowledged or dropped according to the decision reason without
    dispatching to an agent.
-4. Call `recordReceiveEvent(connectionId:providerEventId:message:cursor:)`.
-   A result with `shouldDispatch == false` means the event was already
-   processed and should be acknowledged without another agent dispatch.
+4. Call
+   `recordReceiveEvent(connectionId:providerEventId:authorization:message:cursor:)`
+   with the authorization decision from step 3. The store enforces that the
+   decision is an `allow` decision for the same connection, event or provider
+   message id, room, and sender before writing any receive state. A result with
+   `disposition == denied` or `shouldDispatch == false` must be acknowledged or
+   dropped without agent dispatch.
 5. Dispatch only the normalized stored snapshot as untrusted external data.
 6. Preserve the cursor returned by the provider when one exists.
 
 The helper performs the event dedupe insert, normalized inbound message
 snapshot write, per-room pruning, and optional cursor update in one transaction.
-Adapters should not dispatch before this call succeeds because the
-`provider_event_id` is the durable idempotency key.
+Adapters should not dispatch before this call succeeds. When a connection opts
+out of provider event ids, the helper still requires an allow decision and uses
+the normalized provider message id, bound into that allow decision, to suppress
+duplicate dispatch for the same message snapshot.
 
 This PR does not add a live Discord receive relay. It adds the durable message
 and duplicate-filtering foundation that a relay, webhook receiver, Slack

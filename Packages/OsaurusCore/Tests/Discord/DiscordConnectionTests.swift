@@ -273,17 +273,28 @@ struct DiscordConnectionTests {
         let first = try store.recordReceiveEvent(
             connectionId: " discord ",
             providerEventId: " gateway-seq-42 ",
+            authorization: allowedInboundAuthorization(
+                providerEventId: "gateway-seq-42",
+                roomId: "222222222222222222",
+                senderId: "555555555555555555"
+            ),
             message: message,
             cursor: "after-9001"
         )
         let duplicate = try store.recordReceiveEvent(
             connectionId: "discord",
             providerEventId: "gateway-seq-42",
+            authorization: allowedInboundAuthorization(
+                providerEventId: "gateway-seq-42",
+                roomId: "222222222222222222",
+                senderId: "555555555555555555"
+            ),
             message: AgentChannelStoredMessage(
                 connectionId: "discord",
                 roomId: "222222222222222222",
                 providerMessageId: "9002",
                 direction: .inbound,
+                authorId: "555555555555555555",
                 content: "should not dispatch"
             ),
             cursor: "after-9002"
@@ -326,6 +337,11 @@ struct DiscordConnectionTests {
         let result = try store.recordReceiveEvent(
             connectionId: "discord",
             providerEventId: "gateway-seq-43",
+            authorization: allowedInboundAuthorization(
+                providerEventId: "gateway-seq-43",
+                roomId: "222222222222222222",
+                senderId: "external-user"
+            ),
             message: AgentChannelStoredMessage(
                 connectionId: "discord",
                 roomId: "222222222222222222",
@@ -359,6 +375,10 @@ struct DiscordConnectionTests {
         let first = try store.recordReceiveEvent(
             connectionId: "discord",
             providerEventId: "message-9003",
+            authorization: allowedInboundAuthorization(
+                providerEventId: "message-9003",
+                roomId: "222222222222222222"
+            ),
             message: AgentChannelStoredMessage(
                 connectionId: "discord",
                 roomId: "222222222222222222",
@@ -370,6 +390,10 @@ struct DiscordConnectionTests {
         let redelivery = try store.recordReceiveEvent(
             connectionId: "discord",
             providerEventId: "message-9003-redelivery",
+            authorization: allowedInboundAuthorization(
+                providerEventId: "message-9003-redelivery",
+                roomId: "222222222222222222"
+            ),
             message: AgentChannelStoredMessage(
                 connectionId: "discord",
                 roomId: "222222222222222222",
@@ -388,25 +412,91 @@ struct DiscordConnectionTests {
         #expect(try store.messageCount(connectionId: "discord", roomId: "222222222222222222") == 1)
     }
 
-    @Test func receiveEventRequiresStableProviderEventId() throws {
+    @Test func receiveEventDeniesWithoutMatchingAuthorization() throws {
         let store = AgentChannelMessageStore()
         try store.openInMemory()
         defer { store.close() }
 
-        #expect(throws: AgentChannelMessageStoreError.invalidReceiveEvent("provider_event_id is required")) {
-            try store.recordReceiveEvent(
+        let denied = try store.recordReceiveEvent(
+            connectionId: "discord",
+            providerEventId: "evt-denied",
+            authorization: deniedInboundAuthorization(
+                reason: "room_not_allowlisted",
+                providerEventId: "evt-denied",
+                roomId: "222222222222222222"
+            ),
+            message: AgentChannelStoredMessage(
                 connectionId: "discord",
-                providerEventId: " ",
-                message: AgentChannelStoredMessage(
-                    connectionId: "discord",
-                    roomId: "222222222222222222",
-                    providerMessageId: "9001",
-                    direction: .inbound,
-                    content: "ignored"
-                )
+                roomId: "222222222222222222",
+                providerMessageId: "9001",
+                direction: .inbound,
+                content: "ignored"
             )
-        }
+        )
+        let mismatch = try store.recordReceiveEvent(
+            connectionId: "discord",
+            providerEventId: "evt-actual",
+            authorization: allowedInboundAuthorization(
+                providerEventId: "evt-authorized",
+                roomId: "222222222222222222"
+            ),
+            message: AgentChannelStoredMessage(
+                connectionId: "discord",
+                roomId: "222222222222222222",
+                providerMessageId: "9002",
+                direction: .inbound,
+                content: "ignored"
+            )
+        )
+
+        #expect(denied.disposition == .denied)
+        #expect(denied.authorizationReason == "room_not_allowlisted")
+        #expect(!denied.shouldDispatch)
+        #expect(mismatch.disposition == .denied)
+        #expect(mismatch.authorizationReason == "provider_event_id_authorization_mismatch")
         #expect(try store.messageCount() == 0)
+        #expect(try store.isEventSeen(connectionId: "discord", providerEventId: "evt-denied") == false)
+    }
+
+    @Test func receiveEventWithoutProviderEventIdUsesMessageDuplicateWhenAuthorized() throws {
+        let store = AgentChannelMessageStore()
+        try store.openInMemory()
+        defer { store.close() }
+
+        let authorization = allowedInboundAuthorization(
+            providerEventId: nil,
+            providerMessageId: "9001",
+            roomId: "222222222222222222"
+        )
+        let first = try store.recordReceiveEvent(
+            connectionId: "discord",
+            authorization: authorization,
+            message: AgentChannelStoredMessage(
+                connectionId: "discord",
+                roomId: "222222222222222222",
+                providerMessageId: "9001",
+                direction: .inbound,
+                content: "first"
+            )
+        )
+        let duplicate = try store.recordReceiveEvent(
+            connectionId: "discord",
+            authorization: authorization,
+            message: AgentChannelStoredMessage(
+                connectionId: "discord",
+                roomId: "222222222222222222",
+                providerMessageId: "9001",
+                direction: .inbound,
+                content: "duplicate"
+            )
+        )
+
+        #expect(first.disposition == .accepted)
+        #expect(first.shouldDispatch)
+        #expect(first.providerEventId == nil)
+        #expect(duplicate.disposition == .duplicate)
+        #expect(!duplicate.shouldDispatch)
+        #expect(try store.messageCount(connectionId: "discord", roomId: "222222222222222222") == 1)
     }
 
     @Test func readChannelRecordsFetchedMessagesInAgentChannelStore() async throws {
@@ -840,6 +930,22 @@ struct DiscordConnectionTests {
             #expect(!missingStore.shouldDispatch)
             #expect(missingStore.reason == "message_store_required_for_replay_check")
 
+            let closedStore = AgentChannelMessageStore()
+            let storeFailure = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "ops-webhook",
+                    providerEventId: "evt-store-failure",
+                    spaceId: "ops",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                ),
+                messageStore: closedStore
+            )
+            #expect(storeFailure.decision == .deny)
+            #expect(!storeFailure.shouldDispatch)
+            #expect(storeFailure.reason == "authorization_store_error")
+            #expect(storeFailure.details["store_error"]?.contains("not open") == true)
+
             let store = AgentChannelMessageStore()
             try store.openInMemory()
             defer { store.close() }
@@ -1112,6 +1218,71 @@ struct DiscordConnectionTests {
             )
             #expect(unscopedAllowed.decision == .allow)
             #expect(unscopedAllowed.shouldDispatch)
+        }
+    }
+
+    @Test func inboundAuthorizationProviderEventIdOptOutDoesNotRequireStoreAndPolicyMatches() async throws {
+        try await withIsolatedDiscordStores { credentials in
+            try AgentChannelConfigurationStore.save(
+                AgentChannelConfiguration(
+                    connections: [
+                        AgentChannelConnection(
+                            id: "no-event-id-channel",
+                            name: "No Event Id Channel",
+                            kind: .customHTTP,
+                            supportedActions: [.diagnostics],
+                            customHTTP: AgentChannelCustomHTTPConfiguration(
+                                baseURL: "https://hooks.example.test"
+                            ),
+                            inboundAuthorization: AgentChannelInboundAuthorizationPolicy(
+                                senderAllowlist: ["user-1"],
+                                roomAllowlist: ["alerts"],
+                                allowUnscopedSpaces: true,
+                                requireProviderEventId: false
+                            )
+                        ),
+                    ]
+                )
+            )
+            let service = AgentChannelConnectionService(
+                discordService: DiscordConnectionService(
+                    client: FakeDiscordAPIClient(),
+                    credentialStore: credentials
+                )
+            )
+
+            let decision = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "no-event-id-channel",
+                    providerMessageId: "9001",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(decision.decision == .allow)
+            #expect(decision.providerEventId == nil)
+            #expect(decision.providerMessageId == "9001")
+            #expect(decision.shouldDispatch)
+
+            let missingMessageId = try service.authorizeInboundMessage(
+                AgentChannelInboundMessageAuthorizationRequest(
+                    connectionId: "no-event-id-channel",
+                    roomId: "alerts",
+                    senderId: "user-1"
+                )
+            )
+            #expect(missingMessageId.decision == .deny)
+            #expect(missingMessageId.reason == "provider_message_id_required_for_receive_recording")
+
+            let row = try #require(
+                service.listConnections().first { $0["id"] as? String == "no-event-id-channel" }
+            )
+            let relayPolicy = try #require(row["relay_receive_policy"] as? [String: Any])
+            #expect(relayPolicy["provider_event_id_required"] as? Bool == false)
+            let inboundAuthorization = try #require(
+                relayPolicy["inbound_authorization"] as? [String: Any]
+            )
+            #expect(inboundAuthorization["provider_event_id_required"] as? Bool == false)
         }
     }
 
@@ -1595,6 +1766,47 @@ struct DiscordConnectionTests {
 
     private func policy(named action: String, in policies: [[String: Any]]) -> [String: Any]? {
         policies.first { $0["action"] as? String == action }
+    }
+
+    private func allowedInboundAuthorization(
+        connectionId: String = "discord",
+        providerEventId: String? = "evt-1",
+        providerMessageId: String? = nil,
+        roomId: String,
+        senderId: String? = nil
+    ) -> AgentChannelInboundAuthorizationDecision {
+        AgentChannelInboundAuthorizationDecision(
+            decision: .allow,
+            shouldDispatch: true,
+            reason: "allowed",
+            auditDecisionReason: "test_receive_authorization",
+            connectionId: connectionId,
+            providerEventId: providerEventId,
+            providerMessageId: providerMessageId,
+            roomId: roomId,
+            senderId: senderId
+        )
+    }
+
+    private func deniedInboundAuthorization(
+        reason: String,
+        connectionId: String = "discord",
+        providerEventId: String? = "evt-1",
+        providerMessageId: String? = nil,
+        roomId: String,
+        senderId: String? = nil
+    ) -> AgentChannelInboundAuthorizationDecision {
+        AgentChannelInboundAuthorizationDecision(
+            decision: .deny,
+            shouldDispatch: false,
+            reason: reason,
+            auditDecisionReason: "test_receive_authorization",
+            connectionId: connectionId,
+            providerEventId: providerEventId,
+            providerMessageId: providerMessageId,
+            roomId: roomId,
+            senderId: senderId
+        )
     }
 }
 
