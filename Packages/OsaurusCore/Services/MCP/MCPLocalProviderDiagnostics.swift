@@ -41,13 +41,17 @@ public enum MCPLocalProviderDiagnostics {
         }
 
         let result = snapshot.lastProbe
+        let redactedTransportSummary = MCPProviderProbeRedactor.safeDiagnosticFragment(
+            snapshot.transportSummary,
+            maxLength: 500
+        )
         return ProviderDiagnosticRow(
             id: "local-health",
             title: L("Last probe"),
             value: result.reasonCode.rawValue,
             severity: result.succeeded ? .ok : .blocked,
             detail: result.succeeded
-                ? L("\(result.toolCount) tool(s) discovered via \(snapshot.transportSummary).")
+                ? L("\(result.toolCount) tool(s) discovered via \(redactedTransportSummary).")
                 : result.redactedMessage,
             action: result.redactedAction
         )
