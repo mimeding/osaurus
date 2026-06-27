@@ -694,8 +694,10 @@ public enum ComputerUseLoop {
                     let destResolution = TargetResolver.resolve(action.to, view: view, snapshot: snapshot)
                     switch destResolution {
                     case .resolved(_, let element, _):
+                        metrics.recordResolveAttempt(success: true)
                         destinationElement = element
                     case .ambiguous(let reason, let candidates):
+                        metrics.recordResolveAttempt(success: false)
                         metrics.ambiguousTargets += 1
                         toolResult =
                             "Couldn't resolve the drag destination: \(reason)\n"
@@ -703,6 +705,7 @@ public enum ComputerUseLoop {
                             + "\nRetry with one exact destination `mark`."
                         advancedStep = false
                     case .reobserve(let reason), .deadEnd(let reason):
+                        metrics.recordResolveAttempt(success: false)
                         toolResult = "Couldn't resolve the drag destination: \(reason)"
                         advancedStep = false
                     }

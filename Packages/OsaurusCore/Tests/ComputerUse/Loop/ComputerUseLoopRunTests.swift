@@ -203,6 +203,8 @@ final class ComputerUseLoopRunTests: XCTestCase {
 
         XCTAssertTrue(result.outcome.isSuccess, "Expected recovery via mark; got \(result.outcome)")
         XCTAssertEqual(result.metrics.ambiguousTargets, 1)
+        XCTAssertEqual(result.metrics.targetResolveAttempts, 2)
+        XCTAssertEqual(result.metrics.targetResolveSuccesses, 1)
         XCTAssertEqual(result.metrics.maxTier, .ax, "Ambiguity should ask for a mark, not escalate capture")
         let clicks = await d.elementActions
         XCTAssertEqual(clicks.count, 1, "Only the disambiguated click should reach the driver")
@@ -365,6 +367,30 @@ final class ComputerUseLoopRunTests: XCTestCase {
         }
         let coords = await d.coordinateActions
         XCTAssertTrue(coords.isEmpty, "An unresolved drag destination must never reach the driver")
+    }
+
+    func testDragWithAmbiguousDestinationRecordsFailedResolutionAndDoesNotDrive() async {
+        let d = driver([
+            el("card", "cell", "Card"),
+            el("trash-left", "button", "Trash"),
+            el("trash-right", "button", "Trash"),
+        ])
+        let result = await run(
+            d,
+            provider: ComputerUseLoop.scriptedProvider([
+                AgentAction(verb: .drag, target: AgentTarget(mark: 1), to: AgentTarget(describe: "Trash")),
+                AgentAction(verb: .giveUp, reason: "ambiguous destination"),
+            ]),
+            limits: RunLimits(maxSteps: 10, wallClockSeconds: 30)
+        )
+        guard case .gaveUp = result.outcome else {
+            return XCTFail("Expected gaveUp after ambiguous destination feedback; got \(result.outcome)")
+        }
+        XCTAssertEqual(result.metrics.ambiguousTargets, 1)
+        XCTAssertEqual(result.metrics.targetResolveAttempts, 2)
+        XCTAssertEqual(result.metrics.targetResolveSuccesses, 1)
+        let coords = await d.coordinateActions
+        XCTAssertTrue(coords.isEmpty, "An ambiguous drag destination must never reach the driver")
     }
 
     // MARK: - Loop robustness (Phase 3)

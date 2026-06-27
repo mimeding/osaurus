@@ -189,11 +189,13 @@ public enum TargetResolver {
         }
 
         if matches.count > 1 {
-            let marks = matches.prefix(6).map { "\($0.item.mark)" }.joined(separator: ", ")
+            let candidates = Array(matches.prefix(6))
+            let marks = candidates.map { "\($0.item.mark)" }.joined(separator: ", ")
+            let capNote = matches.count > candidates.count ? " Showing top \(candidates.count)." : ""
             return .ambiguous(
-                reason: "\"\(describe)\" matches \(matches.count) elements (marks \(marks)). "
+                reason: "\"\(describe)\" matches \(matches.count) elements (marks \(marks)).\(capNote) "
                     + "Pick one by `mark`.",
-                candidates: matches.prefix(6).map {
+                candidates: candidates.map {
                     candidate(from: $0.item, confidence: $0.confidence, reason: $0.reason)
                 }
             )

@@ -156,6 +156,35 @@ final class TargetResolverTests: XCTestCase {
         )
     }
 
+    func testExactValueResolvesWithEvidence() {
+        let (view, snap) = make([el("a", "textfield", "Status", value: "Submitted")])
+        assertResolved(
+            TargetResolver.resolve(AgentTarget(describe: "Submitted"), view: view, snapshot: snap),
+            id: "a",
+            strategy: .exactValue,
+            minimumConfidence: 0.9
+        )
+    }
+
+    func testStaleScoredMatchReobserves() {
+        let (view, _) = make([el("a", "textfield", "Status", value: "Submitted")])
+        let liveSnap = CUSnapshot(
+            snapshotId: 2,
+            pid: 1,
+            app: "App",
+            focusedWindow: nil,
+            tier: .ax,
+            truncated: false,
+            windows: [],
+            elements: [el("z", "textfield", "Other", value: "Submitted")],
+            image: nil
+        )
+        let reason = reobserveReason(
+            TargetResolver.resolve(AgentTarget(describe: "Submitted"), view: view, snapshot: liveSnap)
+        )
+        XCTAssertTrue(reason?.localizedCaseInsensitiveContains("went stale") ?? false, "got: \(reason ?? "nil")")
+    }
+
     func testAmbiguousDescribeReturnsCandidates() {
         let (view, snap) = make([
             el("a", "button", "Reply to all"),
@@ -168,6 +197,21 @@ final class TargetResolverTests: XCTestCase {
         XCTAssertTrue(reason.localizedCaseInsensitiveContains("matches 2"), "got: \(reason)")
         XCTAssertEqual(candidates.map(\.mark), [1, 2])
         XCTAssertTrue(candidates.allSatisfy { $0.confidence > 0 })
+    }
+
+    func testAmbiguousDescribeCapsCandidatesAndNamesTopList() {
+        let elements = (1 ... 7).map { index in
+            el("reply-\(index)", "button", "Reply option \(index)")
+        }
+        let (view, snap) = make(elements)
+        let result = TargetResolver.resolve(AgentTarget(describe: "reply"), view: view, snapshot: snap)
+        guard case .ambiguous(let reason, let candidates) = result else {
+            return XCTFail("Expected ambiguity; got \(result)")
+        }
+        XCTAssertTrue(reason.localizedCaseInsensitiveContains("matches 7"), "got: \(reason)")
+        XCTAssertTrue(reason.localizedCaseInsensitiveContains("top 6"), "got: \(reason)")
+        XCTAssertEqual(candidates.count, 6)
+        XCTAssertEqual(candidates.map(\.mark), [1, 2, 3, 4, 5, 6])
     }
 
     func testDuplicateExactLabelsAreAmbiguous() {
