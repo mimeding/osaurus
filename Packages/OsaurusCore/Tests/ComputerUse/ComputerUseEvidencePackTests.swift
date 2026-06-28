@@ -177,7 +177,7 @@ final class ComputerUseEvidencePackTests: XCTestCase {
                 email: "ops@example.com",
                 justification: "Automate a repetitive access request.",
                 termsAccepted: true,
-                status: "Submitted request for Synthetic Platform Team"
+                status: "Submitted"
             ),
             browserFormSnapshot(
                 snapshotId: 7,
@@ -186,7 +186,7 @@ final class ComputerUseEvidencePackTests: XCTestCase {
                 email: "ops@example.com",
                 justification: "Automate a repetitive access request.",
                 termsAccepted: true,
-                status: "Submitted request for Synthetic Platform Team"
+                status: "Submitted"
             ),
         ]
         let driver = MockMacDriver(
@@ -259,11 +259,11 @@ final class ComputerUseEvidencePackTests: XCTestCase {
 
         let actions = await driver.elementActions
         XCTAssertEqual(
-            actionTrace(actions),
+            privacySafeActionTrace(actions),
             [
-                "setValue:team=Synthetic Platform Team",
-                "setValue:email=ops@example.com",
-                "setValue:justification=Automate a repetitive access request.",
+                "setValue:team:length=23",
+                "setValue:email:length=15",
+                "setValue:justification:length=37",
                 "click:terms",
                 "click:submit",
             ]
@@ -272,11 +272,50 @@ final class ComputerUseEvidencePackTests: XCTestCase {
         XCTAssertTrue(coordinateActions.isEmpty, "Resolved AX form controls should not need coordinate fallback.")
 
         let finalSnapshot = await driver.capture(pid: pid, tier: .ax)
-        XCTAssertEqual(value(in: finalSnapshot, id: "team"), "Synthetic Platform Team")
-        XCTAssertEqual(value(in: finalSnapshot, id: "email"), "ops@example.com")
-        XCTAssertEqual(value(in: finalSnapshot, id: "justification"), "Automate a repetitive access request.")
-        XCTAssertEqual(value(in: finalSnapshot, id: "terms"), "checked")
-        XCTAssertEqual(value(in: finalSnapshot, id: "status"), "Submitted request for Synthetic Platform Team")
+        XCTAssertTrue(value(in: finalSnapshot, id: "team") == "Synthetic Platform Team", "Team field did not match.")
+        XCTAssertTrue(value(in: finalSnapshot, id: "email") == "ops@example.com", "Email field did not match.")
+        XCTAssertTrue(
+            value(in: finalSnapshot, id: "justification") == "Automate a repetitive access request.",
+            "Justification field did not match."
+        )
+        XCTAssertTrue(value(in: finalSnapshot, id: "terms") == "checked", "Terms checkbox did not stay checked.")
+        XCTAssertTrue(value(in: finalSnapshot, id: "status") == "Submitted", "Status field did not match.")
+    }
+
+    func testWebFormFixtureIsLocalOnlyAndMatchesProofControls() throws {
+        let request = try String(contentsOf: webFormFixtureFile("request.html"), encoding: .utf8)
+        let submitted = try String(contentsOf: webFormFixtureFile("submitted.html"), encoding: .utf8)
+        let combined = request + "\n" + submitted
+
+        XCTAssertTrue(request.contains(#"action="./submitted.html""#))
+        XCTAssertTrue(request.contains(#"autocomplete="off""#))
+        XCTAssertTrue(request.contains(#"method="post""#))
+        XCTAssertTrue(request.contains("form-action 'self'"))
+        XCTAssertTrue(submitted.contains(#"href="./request.html""#))
+
+        for forbidden in ["http://", "https://", "fetch(", "XMLHttpRequest", "sendBeacon", "src="] {
+            XCTAssertFalse(
+                combined.localizedCaseInsensitiveContains(forbidden),
+                "The local web-form fixture must not reference external resources: \(forbidden)"
+            )
+        }
+        for rawValue in ["Synthetic Platform Team", "ops@example.com", "Automate a repetitive access request."] {
+            XCTAssertFalse(
+                combined.contains(rawValue),
+                "The fixture page should not contain proof-run typed contents."
+            )
+        }
+
+        let requiredControls = [
+            #"id="team""#,
+            #"id="email""#,
+            #"id="justification""#,
+            #"id="terms""#,
+            ">Submit request<",
+        ]
+        for control in requiredControls {
+            XCTAssertTrue(request.contains(control), "Missing expected form control marker: \(control)")
+        }
     }
 
     func testDangerousAppConfirmGuardrailCannotBeBypassedByAutonomousPreset() async {
@@ -449,6 +488,13 @@ final class ComputerUseEvidencePackTests: XCTestCase {
         )
     }
 
+    private func webFormFixtureFile(_ name: String) -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/WebForm", isDirectory: true)
+            .appendingPathComponent(name)
+    }
+
     private func browserFormSnapshot(
         snapshotId: Int,
         pid: Int32,
@@ -552,15 +598,15 @@ final class ComputerUseEvidencePackTests: XCTestCase {
         )
     }
 
-    private func actionTrace(_ actions: [CUElementAction]) -> [String] {
+    private func privacySafeActionTrace(_ actions: [CUElementAction]) -> [String] {
         actions.map { action in
             switch action {
             case .click(let id, _, _):
                 return "click:\(id)"
             case .setValue(let id, let value):
-                return "setValue:\(id)=\(value)"
+                return "setValue:\(id):length=\(value.count)"
             case .typeText(let id, _, let text, let replace):
-                return "typeText:\(id ?? "pid")=\(text):replace=\(replace)"
+                return "typeText:\(id ?? "pid"):length=\(text.count):replace=\(replace)"
             case .pressKey(_, let key, let modifiers):
                 return "pressKey:\((modifiers + [key]).joined(separator: "+"))"
             case .clearField(let id):
