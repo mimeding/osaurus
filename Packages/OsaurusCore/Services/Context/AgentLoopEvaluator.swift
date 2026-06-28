@@ -342,9 +342,10 @@ public enum AgentLoopEvaluator {
             additionalToolNames: []
         )
         let systemPrompt = composed.prompt
-        // Frozen for the whole run (deferred-schema policy, production
-        // parity): `capabilities_load` never patches the request schema.
-        let toolSpecs = composed.tools
+        // Each agent-loop iteration is a fresh provider request. A successful
+        // `capabilities_load` may merge validated schemas into this array so
+        // the next request in the same run can call the loaded tool.
+        var toolSpecs = composed.tools
 
         // Shared loop budget wiring (same as chat/HTTP/plugin) with a
         // run-scoped sticky watermark.
@@ -358,7 +359,7 @@ public enum AgentLoopEvaluator {
             maxTokens
             ?? ChatConfigurationStore.load().maxTokens
             ?? 2_048
-        let budgetManager = AgentLoopBudget.makeBudgetManager(
+        var budgetManager = AgentLoopBudget.makeBudgetManager(
             contextWindow: contextWindow,
             systemPromptChars: systemPrompt.count,
             toolTokens: composed.toolTokens,
@@ -388,7 +389,7 @@ public enum AgentLoopEvaluator {
         var firstStepPrefillTps: Double?
         var sawAnyModelStep = false
         // Deterministic context-cost accounting, accumulated per model step
-        // from the exact composed prompt + frozen tool schema. Unlike the
+        // from the exact composed prompt + active tool schema. Unlike the
         // runtime-only decode/completion counters above, this does not depend
         // on a streaming stats hint, so it is populated for remote frontier
         // runs too — the optimization loop's provider-independent "tokens per
@@ -419,7 +420,7 @@ public enum AgentLoopEvaluator {
                 iterations: iterations,
                 exit: exit,
                 systemPrompt: systemPrompt,
-                toolSchemaNames: composed.tools.map { $0.function.name },
+                toolSchemaNames: toolSpecs.map { $0.function.name },
                 loopDurationMs: loopMs,
                 notices: noticesSeen,
                 compacted: watermark.hasCompacted,
@@ -452,6 +453,10 @@ public enum AgentLoopEvaluator {
                 tool_choice: toolSpecs.isEmpty ? nil : .auto,
                 session_id: sessionId
             )
+        }
+
+        func activeToolTokens() -> Int {
+            ToolRegistry.shared.totalEstimatedTokens(for: toolSpecs)
         }
 
         /// Append the assistant turn carrying this step's tool calls.
@@ -527,15 +532,20 @@ public enum AgentLoopEvaluator {
         ) async -> AgentLoopToolExecution {
             var result = rawResult
             let isError = ToolEnvelope.isError(result)
-            // Deferred-schema policy (production parity): drain the load
-            // buffer — tools loaded via `capabilities_load` are callable
-            // immediately through the registry — but the request schema
-            // stays FROZEN for the whole run; the model is told via the
-            // result note instead of a mid-run `<tools>` rewrite.
             if inv.toolName == "capabilities_load" {
                 let drained = await CapabilityLoadBuffer.shared.drain()
                 if !drained.isEmpty, !isError {
-                    result += AgentToolLoop.deferredSchemaNotice
+                    let activation = await AgentToolLoop.activateCapabilitySchemas(
+                        loadedTools: drained,
+                        currentTools: toolSpecs,
+                        mode: .sameTurnNextRequest
+                    )
+                    toolSpecs = activation.tools
+                    budgetManager.reserve(.tools, tokens: activeToolTokens())
+                    result = AgentToolLoop.annotateCapabilityLoadResult(
+                        result,
+                        activation: activation.report
+                    )
                 }
             }
             history.append(
@@ -599,12 +609,12 @@ public enum AgentLoopEvaluator {
             },
             modelStep: { effective, _ in
                 // Context-cost accounting: estimate the INPUT tokens for THIS
-                // step (the exact messages the loop composed + the run's
-                // frozen tool schema) before the model call. Deterministic and
+                // step (the exact messages the loop composed + the active tool
+                // schema) before the model call. Deterministic and
                 // provider-independent, so it is captured even when the run
                 // surfaces no runtime stats hint (remote / non-streaming).
                 let stepInputTokens =
-                    ContextBudgetManager.estimateTokens(for: effective) + composed.toolTokens
+                    ContextBudgetManager.estimateTokens(for: effective) + activeToolTokens()
                 promptTokensTotal += stepInputTokens
                 peakContextTokens = max(peakContextTokens, stepInputTokens)
                 modelStepCount += 1

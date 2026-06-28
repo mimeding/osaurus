@@ -91,6 +91,27 @@ private func loopTestTool(_ name: String) -> Tool {
     )
 }
 
+private func loopMCPProviderTool(_ name: String) -> Tool {
+    Tool(
+        type: "function",
+        function: ToolFunction(
+            name: name,
+            description: "Remote provider tool \(name)",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "query": .object([
+                        "type": .string("string"),
+                        "description": .string("Search query"),
+                    ]),
+                ]),
+                "required": .array([.string("query")]),
+                "additionalProperties": .bool(false),
+            ])
+        )
+    )
+}
+
 private func parsedJSONObject(_ json: String) throws -> [String: Any] {
     let data = try #require(json.data(using: .utf8))
     return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -203,6 +224,69 @@ struct AgentToolLoopTests {
         #expect(activation["status"] as? String == "activated_for_same_turn_next_request")
         #expect(activation["schema_visible_on_next_agent_loop_request"] as? Bool == true)
         #expect((activation["activated_tool_names"] as? [String]) == ["miyo_search"])
+        #expect(!loadResult.contains(AgentToolLoop.deferredSchemaNotice))
+    }
+
+    @Test func capabilitiesLoadActivatesBufferedMCPProviderSchemaForSameTurnUse() async throws {
+        let providerTool = loopMCPProviderTool("mcp_provider_search")
+        var activeTools = [loopTestTool("capabilities_load")]
+        var schemaNamesSeen: [[String]] = []
+        var loadResult = ""
+
+        _ = await CapabilityLoadBuffer.shared.drain()
+
+        let surface = ScriptedLoopSurface(steps: [
+            .toolCalls([inv("capabilities_load", #"{"ids":["tool/mcp_provider_search"]}"#)]),
+            .toolCalls([inv("mcp_provider_search", #"{"query":"same turn"}"#)]),
+            .finalResponse,
+        ])
+        var hooks = surface.makeHooks()
+        hooks.buildMessages = { notices in
+            surface.builtNotices.append(notices)
+            schemaNamesSeen.append(activeTools.map { $0.function.name })
+            return AgentLoopIterationInput(messages: [ChatMessage(role: "user", content: "task")])
+        }
+        hooks.executeTool = { inv, callId in
+            surface.executedCalls.append((inv.toolName, inv.jsonArguments, callId))
+            if inv.toolName == "capabilities_load" {
+                if let diagnostic = await CapabilityLoadBuffer.shared.add(providerTool) {
+                    Issue.record("Provider tool schema should buffer cleanly: \(diagnostic.message)")
+                }
+                let drained = await CapabilityLoadBuffer.shared.drain()
+                let activation = AgentToolLoop.activateCapabilitySchemas(
+                    loadedTools: drained,
+                    currentTools: activeTools,
+                    mode: .sameTurnNextRequest
+                )
+                activeTools = activation.tools
+                loadResult = AgentToolLoop.annotateCapabilityLoadResult(
+                    ToolEnvelope.success(tool: inv.toolName, text: "Tool 'mcp_provider_search' loaded."),
+                    activation: activation.report
+                )
+                return AgentLoopToolExecution(result: loadResult)
+            }
+            return AgentLoopToolExecution(result: ToolEnvelope.success(tool: inv.toolName, text: "ran"))
+        }
+
+        let result = try await AgentToolLoop.run(
+            policy: chatPolicy(maxIterations: 4),
+            state: AgentTaskState(),
+            hooks: hooks
+        )
+
+        #expect(result.exit == .finalResponse)
+        #expect(surface.executedCalls.map(\.name) == ["capabilities_load", "mcp_provider_search"])
+        #expect(schemaNamesSeen.first == ["capabilities_load"])
+        #expect(schemaNamesSeen.dropFirst().first?.contains("mcp_provider_search") == true)
+
+        let envelope = try parsedJSONObject(loadResult)
+        let payload = try #require(envelope["result"] as? [String: Any])
+        let activation = try #require(payload["activation"] as? [String: Any])
+        let continuation = try #require(activation["continuation"] as? [String: Any])
+        #expect(activation["status"] as? String == "activated_for_same_turn_next_request")
+        #expect(activation["schema_visible_on_next_agent_loop_request"] as? Bool == true)
+        #expect((activation["activated_tool_names"] as? [String]) == ["mcp_provider_search"])
+        #expect(continuation["required"] as? Bool == false)
         #expect(!loadResult.contains(AgentToolLoop.deferredSchemaNotice))
     }
 
