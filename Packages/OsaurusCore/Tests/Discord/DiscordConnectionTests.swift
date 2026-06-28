@@ -458,6 +458,118 @@ struct DiscordConnectionTests {
         #expect(try store.isEventSeen(connectionId: "discord", providerEventId: "evt-denied") == false)
     }
 
+    @Test func receiveEventRejectsAuthorizationIdentityMismatches() throws {
+        struct MismatchCase {
+            let name: String
+            let connectionId: String
+            let providerEventId: String?
+            let authorization: AgentChannelInboundAuthorizationDecision
+            let message: AgentChannelStoredMessage
+            let expectedReason: String
+        }
+
+        func inboundMessage(
+            connectionId: String = "discord",
+            roomId: String = "222222222222222222",
+            providerMessageId: String = "9001",
+            authorId: String? = "external-user"
+        ) -> AgentChannelStoredMessage {
+            AgentChannelStoredMessage(
+                connectionId: connectionId,
+                roomId: roomId,
+                providerMessageId: providerMessageId,
+                direction: .inbound,
+                authorId: authorId,
+                content: "relay payload"
+            )
+        }
+
+        let cases = [
+            MismatchCase(
+                name: "connection id",
+                connectionId: "discord",
+                providerEventId: "evt-connection",
+                authorization: allowedInboundAuthorization(
+                    connectionId: "slack",
+                    providerEventId: "evt-connection",
+                    roomId: "222222222222222222",
+                    senderId: "external-user"
+                ),
+                message: inboundMessage(),
+                expectedReason: "connection_id_authorization_mismatch"
+            ),
+            MismatchCase(
+                name: "provider message id",
+                connectionId: "discord",
+                providerEventId: "evt-message",
+                authorization: allowedInboundAuthorization(
+                    providerEventId: "evt-message",
+                    providerMessageId: "authorized-message",
+                    roomId: "222222222222222222",
+                    senderId: "external-user"
+                ),
+                message: inboundMessage(providerMessageId: "actual-message"),
+                expectedReason: "provider_message_id_authorization_mismatch"
+            ),
+            MismatchCase(
+                name: "provider message id without provider event id",
+                connectionId: "discord",
+                providerEventId: nil,
+                authorization: allowedInboundAuthorization(
+                    providerEventId: nil,
+                    providerMessageId: "authorized-message",
+                    roomId: "222222222222222222",
+                    senderId: "external-user"
+                ),
+                message: inboundMessage(providerMessageId: "actual-message"),
+                expectedReason: "provider_message_id_authorization_mismatch"
+            ),
+            MismatchCase(
+                name: "room id",
+                connectionId: "discord",
+                providerEventId: "evt-room",
+                authorization: allowedInboundAuthorization(
+                    providerEventId: "evt-room",
+                    roomId: "111111111111111111",
+                    senderId: "external-user"
+                ),
+                message: inboundMessage(roomId: "222222222222222222"),
+                expectedReason: "room_id_authorization_mismatch"
+            ),
+            MismatchCase(
+                name: "sender id",
+                connectionId: "discord",
+                providerEventId: "evt-sender",
+                authorization: allowedInboundAuthorization(
+                    providerEventId: "evt-sender",
+                    roomId: "222222222222222222",
+                    senderId: "authorized-user"
+                ),
+                message: inboundMessage(authorId: "external-user"),
+                expectedReason: "sender_id_authorization_mismatch"
+            ),
+        ]
+
+        for testCase in cases {
+            let store = AgentChannelMessageStore()
+            try store.openInMemory()
+            defer { store.close() }
+
+            let result = try store.recordReceiveEvent(
+                connectionId: testCase.connectionId,
+                providerEventId: testCase.providerEventId,
+                authorization: testCase.authorization,
+                message: testCase.message
+            )
+
+            #expect(result.disposition == .denied, "Expected denied disposition for \(testCase.name)")
+            #expect(!result.shouldDispatch, "Expected no dispatch for \(testCase.name)")
+            #expect(!result.messageInserted, "Expected no insert for \(testCase.name)")
+            #expect(result.authorizationReason == testCase.expectedReason)
+            #expect(try store.messageCount() == 0)
+        }
+    }
+
     @Test func receiveEventWithoutProviderEventIdUsesMessageDuplicateWhenAuthorized() throws {
         let store = AgentChannelMessageStore()
         try store.openInMemory()
