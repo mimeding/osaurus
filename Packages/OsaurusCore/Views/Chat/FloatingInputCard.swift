@@ -935,6 +935,23 @@ extension FloatingInputCard {
             return
         }
 
+        let readiness = VoiceCaptureHotkeyPolicy.readiness(
+            configuration: TranscriptionConfiguration(transcriptionModeEnabled: false, hotkey: nil),
+            requirements: VoiceCaptureRuntimeRequirements(
+                accessibilityPermissionRequired: false,
+                accessibilityPermissionGranted: false,
+                microphonePermissionGranted: true,
+                speechModelAvailable: isVoiceAvailable || SpeechModelManager.shared.selectedModel != nil
+            )
+        )
+        if case .denied(let blockers) = VoiceCaptureHotkeyPolicy.startDecision(source: .button, readiness: readiness) {
+            if blockers.contains(.speechModel), let model = SpeechModelManager.shared.selectedModel,
+                !speechService.isLoadingModel {
+                Task { try? await speechService.loadModel(model.id) }
+            }
+            return
+        }
+
         guard isVoiceAvailable else {
             print(
                 "[VoiceDebug] startVoiceInput called but isVoiceAvailable=false — triggering emergency load if possible"

@@ -1159,7 +1159,7 @@ All three search services use VecturaKit (hybrid BM25 + vector search):
 **Features:**
 
 - **Global Hotkey** — Configurable hotkey to trigger transcription from anywhere
-- **Default Function Key** — New configurations start with `F8`, while clearing the hotkey disables registration
+- **Default Hotkey** — New configurations start with `⌃⌥D`, while clearing the hotkey disables registration
 - **Live Typing** — Transcribed text is typed directly into the focused text field
 - **Accessibility Integration** — Uses macOS accessibility APIs (requires permission)
 - **Minimal Overlay** — Sleek floating UI shows recording status with waveform

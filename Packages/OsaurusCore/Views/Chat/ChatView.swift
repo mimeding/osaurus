@@ -6066,17 +6066,14 @@ extension ChatView {
     /// TTSService posts a notification that opens the TTS settings tab.
     private func speakTurnContent(turnId: UUID) {
         guard let turn = session.turns.first(where: { $0.id == turnId }) else { return }
-        guard !turn.contentIsBlank else { return }
-        let isStartingPlayback = TTSService.shared.playingMessageId != turnId
-        if isStartingPlayback && !session.hasAskedAutoSpeak {
+        let decision = TTSService.shared.toggleConversationPlayback(
+            turn: speechOutputTurn(from: turn),
+            voiceOverride: agentTTSVoiceOverride()
+        )
+        if case .speak = decision, !session.hasAskedAutoSpeak {
             session.hasAskedAutoSpeak = true
             showAutoSpeakPrompt = true
         }
-        TTSService.shared.toggleSpeak(
-            text: turn.visibleContent,
-            messageId: turnId,
-            voiceOverride: agentTTSVoiceOverride()
-        )
     }
 
     /// Auto-speak the just-finished assistant turn when the per-session
@@ -6085,17 +6082,36 @@ extension ChatView {
     private func handleAssistantTurnCompleted(turnId: UUID?) {
         guard let turnId else { return }
         guard session.autoSpeakAssistant else { return }
-        guard TTSConfigurationStore.load().enabled else { return }
-        guard TTSService.shared.isModelReady else { return }
-        guard TTSService.shared.playingMessageId == nil else { return }
-        guard let turn = session.turns.first(where: { $0.id == turnId }),
-            !turn.contentIsBlank
-        else { return }
-        TTSService.shared.toggleSpeak(
-            text: turn.visibleContent,
-            messageId: turnId,
+        guard let turn = session.turns.first(where: { $0.id == turnId }) else { return }
+        _ = TTSService.shared.startConversationPlayback(
+            turns: [speechOutputTurn(from: turn, forceComplete: true)],
             voiceOverride: agentTTSVoiceOverride()
         )
+    }
+
+    private func speechOutputTurn(
+        from turn: ChatTurn,
+        forceComplete: Bool = false
+    ) -> SpeechOutputConversationTurn {
+        SpeechOutputConversationTurn(
+            id: turn.id,
+            role: speechOutputRole(for: turn.role),
+            text: turn.visibleContent,
+            isComplete: forceComplete || turn.completedAt != nil || !session.isStreaming
+        )
+    }
+
+    private func speechOutputRole(for role: MessageRole) -> SpeechOutputConversationRole {
+        switch role {
+        case .system:
+            return .system
+        case .user:
+            return .user
+        case .assistant:
+            return .assistant
+        case .tool:
+            return .tool
+        }
     }
 
     /// active agent's voice override, or nil to use the global voice.

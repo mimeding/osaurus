@@ -254,7 +254,7 @@ Transcription Mode allows you to dictate text directly into any application usin
 2. Navigate to the **Transcription** tab
 3. Grant **Accessibility permission** (required for keyboard simulation)
 4. Toggle "Enable Transcription Mode" on
-5. Use the default `F8` hotkey or configure your preferred shortcut
+5. Use the default `⌃⌥D` hotkey or configure your preferred shortcut
 
 ### How It Works
 
@@ -297,7 +297,7 @@ granted.
 | Setting                   | Description                        | Default |
 | ------------------------- | ---------------------------------- | ------- |
 | **Transcription Enabled** | Master toggle for the feature      | Off     |
-| **Activation Hotkey**     | Global hotkey to trigger dictation | F8      |
+| **Activation Hotkey**     | Global hotkey to trigger dictation | ⌃⌥D     |
 
 ### Using Transcription Mode
 

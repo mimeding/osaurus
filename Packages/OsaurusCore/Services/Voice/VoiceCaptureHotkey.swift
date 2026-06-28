@@ -50,15 +50,18 @@ public enum VoiceCaptureHotkeyBlocker: String, Codable, Equatable, Sendable {
 }
 
 public struct VoiceCaptureRuntimeRequirements: Equatable, Sendable {
+    public var accessibilityPermissionRequired: Bool
     public var accessibilityPermissionGranted: Bool
     public var microphonePermissionGranted: Bool
     public var speechModelAvailable: Bool
 
     public init(
+        accessibilityPermissionRequired: Bool = true,
         accessibilityPermissionGranted: Bool,
         microphonePermissionGranted: Bool,
         speechModelAvailable: Bool
     ) {
+        self.accessibilityPermissionRequired = accessibilityPermissionRequired
         self.accessibilityPermissionGranted = accessibilityPermissionGranted
         self.microphonePermissionGranted = microphonePermissionGranted
         self.speechModelAvailable = speechModelAvailable
@@ -103,9 +106,9 @@ public enum VoiceCaptureStartDecision: Equatable, Sendable {
 
 public enum VoiceCaptureHotkeyPolicy {
     public static let defaultHotkey = Hotkey(
-        keyCode: UInt32(kVK_F8),
-        carbonModifiers: 0,
-        displayString: "F8"
+        keyCode: UInt32(kVK_ANSI_D),
+        carbonModifiers: UInt32(controlKey | optionKey),
+        displayString: "⌃⌥D"
     )
 
     public static func readiness(
@@ -132,7 +135,7 @@ public enum VoiceCaptureHotkeyPolicy {
             registrationBlockers.append(.invalidDisplayName)
         }
 
-        if !requirements.accessibilityPermissionGranted {
+        if requirements.accessibilityPermissionRequired && !requirements.accessibilityPermissionGranted {
             captureBlockers.append(.accessibilityPermission)
         }
         if !requirements.microphonePermissionGranted {

@@ -422,7 +422,7 @@ struct TranscriptionModeSettingsTab: View {
                         Button {
                             hotkey = VoiceCaptureHotkeyPolicy.defaultHotkey
                         } label: {
-                            Text("Use F8", bundle: .module)
+                            Text("Use default hotkey", bundle: .module)
                         }
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(theme.accentColor)

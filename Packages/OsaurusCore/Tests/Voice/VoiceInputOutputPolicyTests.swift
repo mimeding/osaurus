@@ -11,12 +11,13 @@ import Testing
 
 @Suite("Voice input and speech output policy")
 struct VoiceInputOutputPolicyTests {
-    @Test("default transcription configuration uses a function-key hotkey without enabling capture")
-    func defaultTranscriptionConfigurationUsesFunctionKeyHotkey() {
+    @Test("default transcription configuration uses a modifier hotkey without enabling capture")
+    func defaultTranscriptionConfigurationUsesModifierHotkey() {
         let config = TranscriptionConfiguration.default
 
         #expect(config.transcriptionModeEnabled == false)
         #expect(config.hotkey == VoiceCaptureHotkeyPolicy.defaultHotkey)
+        #expect(config.hotkey?.displayString == "⌃⌥D")
         #expect(VoiceCaptureHotkeyPolicy.validate(config.hotkey) == .valid(VoiceCaptureHotkeyPolicy.defaultHotkey))
     }
 
@@ -119,6 +120,29 @@ struct VoiceInputOutputPolicyTests {
         #expect(
             VoiceCaptureHotkeyPolicy.startDecision(source: .button, readiness: readiness)
                 == .denied([.microphonePermission])
+        )
+    }
+
+    @Test("in-app button capture can skip accessibility while preserving microphone and model blockers")
+    func inAppButtonCaptureCanSkipAccessibilityRequirement() {
+        let config = TranscriptionConfiguration(
+            transcriptionModeEnabled: false,
+            hotkey: nil
+        )
+        let readiness = VoiceCaptureHotkeyPolicy.readiness(
+            configuration: config,
+            requirements: VoiceCaptureRuntimeRequirements(
+                accessibilityPermissionRequired: false,
+                accessibilityPermissionGranted: false,
+                microphonePermissionGranted: true,
+                speechModelAvailable: true
+            )
+        )
+
+        #expect(VoiceCaptureHotkeyPolicy.startDecision(source: .button, readiness: readiness) == .allowed)
+        #expect(
+            VoiceCaptureHotkeyPolicy.startDecision(source: .explicitHotkey, readiness: readiness)
+                == .denied([.transcriptionDisabled, .missingHotkey])
         )
     }
 

@@ -92602,6 +92602,28 @@
         }
       }
     },
+    "Use default hotkey" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Standard-Hotkey verwenden"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "기본 단축키 사용"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "使用默认热键"
+          }
+        }
+      }
+    },
     "Use default Hugging Face cache locations" : {
       "localizations" : {
         "de" : {
