@@ -393,6 +393,9 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
             if task.status == .archived, task.archivedAt == nil {
                 task.archivedAt = now
             }
+            if task.status == .scheduled, task.scheduledAt == nil {
+                throw AgentTaskBoardError.invalidInput("scheduled tasks require scheduledAt")
+            }
 
             try updateTaskLocked(task)
             try insertEventLocked(
@@ -598,14 +601,15 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
         now: Date = Date(),
         message: String? = nil
     ) throws -> AgentTask {
-        try inImmediateTransaction {
+        if let workerId { try Self.validateWorker(workerId) }
+        return try inImmediateTransaction {
             var task = try requireTaskLocked(id: id)
             let fromStatus = task.status
             let runForEvent = runId ?? task.activeRunId
             guard task.status.canTransition(to: .done) else {
                 throw AgentTaskBoardError.invalidTransition(from: task.status, to: .done)
             }
-            try validateActiveRunIfPresentLocked(task: task, runId: runId)
+            try validateActiveRunIfPresentLocked(task: task, runId: runId, workerId: workerId, now: now)
 
             if let activeRunId = task.activeRunId {
                 try finishRunLocked(
@@ -649,6 +653,7 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
         guard !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AgentTaskBoardError.invalidInput("block reason cannot be empty")
         }
+        if let workerId { try Self.validateWorker(workerId) }
         return try inImmediateTransaction {
             var task = try requireTaskLocked(id: id)
             let fromStatus = task.status
@@ -656,7 +661,7 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
             guard task.status.canTransition(to: .blocked) else {
                 throw AgentTaskBoardError.invalidTransition(from: task.status, to: .blocked)
             }
-            try validateActiveRunIfPresentLocked(task: task, runId: runId)
+            try validateActiveRunIfPresentLocked(task: task, runId: runId, workerId: workerId, now: now)
 
             if let activeRunId = task.activeRunId {
                 try finishRunLocked(
@@ -992,11 +997,30 @@ public final class AgentTaskBoardStore: @unchecked Sendable {
         return count == 0
     }
 
-    private func validateActiveRunIfPresentLocked(task: AgentTask, runId: UUID?) throws {
+    private func validateActiveRunIfPresentLocked(
+        task: AgentTask,
+        runId: UUID?,
+        workerId: String?,
+        now: Date
+    ) throws {
         guard let activeRunId = task.activeRunId else { return }
         if let runId, runId != activeRunId {
             throw AgentTaskBoardError.invalidInput(
                 "run \(runId.uuidString) does not own task \(task.id.uuidString)"
+            )
+        }
+        guard task.status == .running else { return }
+        guard let leaseOwner = task.leaseOwner,
+            let workerId,
+            workerId == leaseOwner
+        else {
+            throw AgentTaskBoardError.invalidInput(
+                "worker does not own the active lease for task \(task.id.uuidString)"
+            )
+        }
+        if let leaseExpiresAt = task.leaseExpiresAt, leaseExpiresAt <= now {
+            throw AgentTaskBoardError.invalidInput(
+                "active lease for task \(task.id.uuidString) has expired"
             )
         }
     }

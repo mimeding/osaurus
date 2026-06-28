@@ -142,6 +142,33 @@ struct AgentTaskBoardStoreTests {
     }
 
     @Test
+    func updateCannotStrandScheduledTaskWithoutScheduledAt() throws {
+        let store = try openInMemory()
+        defer { store.close() }
+
+        let scheduled = try store.createTask(
+            AgentTaskCreateRequest(
+                title: "Scheduled",
+                status: .scheduled,
+                scheduledAt: fixedDate(60)
+            ),
+            now: fixedDate()
+        )
+
+        #expect(throws: AgentTaskBoardError.self) {
+            try store.updateTask(
+                id: scheduled.id,
+                update: AgentTaskUpdate(clearScheduledAt: true),
+                now: fixedDate(1)
+            )
+        }
+
+        let reloaded = try #require(try store.task(id: scheduled.id))
+        #expect(reloaded.status == .scheduled)
+        #expect(reloaded.scheduledAt == fixedDate(60))
+    }
+
+    @Test
     func updateFromRunningToReadyOrReviewFinishesRunAndClearsLease() throws {
         let store = try openInMemory()
         defer { store.close() }
@@ -436,6 +463,167 @@ struct AgentTaskBoardStoreTests {
         let runs = try store.runs(taskId: task.id)
         #expect(runs.map(\.status) == [.expired, .running])
         #expect(try store.events(taskId: task.id).map(\.kind) == [.create, .claim, .update, .claim])
+    }
+
+    @Test
+    func leaseRenewalRequiresCurrentOwnerRunAndUnexpiredLease() throws {
+        let store = try openInMemory()
+        defer { store.close() }
+
+        let task = try store.createTask(
+            AgentTaskCreateRequest(title: "Renew me", status: .ready),
+            now: fixedDate()
+        )
+        let claim = try #require(
+            try store.claimTask(
+                id: task.id,
+                workerId: "worker-a",
+                leaseTTL: 10,
+                now: fixedDate(1)
+            )
+        )
+
+        #expect(
+            try store.renewLease(
+                taskId: task.id,
+                runId: claim.run.id,
+                workerId: "worker-b",
+                leaseTTL: 20,
+                now: fixedDate(5)
+            ) == nil
+        )
+        #expect(
+            try store.renewLease(
+                taskId: task.id,
+                runId: UUID(),
+                workerId: "worker-a",
+                leaseTTL: 20,
+                now: fixedDate(5)
+            ) == nil
+        )
+
+        let renewed = try #require(
+            try store.renewLease(
+                taskId: task.id,
+                runId: claim.run.id,
+                workerId: "worker-a",
+                leaseTTL: 20,
+                now: fixedDate(5)
+            )
+        )
+        #expect(renewed.leaseExpiresAt == fixedDate(25))
+        #expect(renewed.lastHeartbeatAt == fixedDate(5))
+        #expect(try store.task(id: task.id)?.leaseExpiresAt == fixedDate(25))
+
+        #expect(
+            try store.renewLease(
+                taskId: task.id,
+                runId: claim.run.id,
+                workerId: "worker-a",
+                leaseTTL: 20,
+                now: fixedDate(26)
+            ) == nil
+        )
+        #expect(try store.task(id: task.id)?.leaseExpiresAt == fixedDate(25))
+    }
+
+    @Test
+    func completeAndBlockRequireCurrentLeaseOwnerForRunningTasks() throws {
+        let store = try openInMemory()
+        defer { store.close() }
+
+        let completable = try store.createTask(
+            AgentTaskCreateRequest(title: "Complete me", status: .ready),
+            now: fixedDate()
+        )
+        let completeClaim = try #require(
+            try store.claimTask(
+                id: completable.id,
+                workerId: "worker-a",
+                leaseTTL: 60,
+                now: fixedDate(1)
+            )
+        )
+
+        #expect(throws: AgentTaskBoardError.self) {
+            try store.completeTask(
+                id: completable.id,
+                runId: completeClaim.run.id,
+                workerId: "worker-b",
+                now: fixedDate(2)
+            )
+        }
+        #expect(try store.task(id: completable.id)?.status == .running)
+        #expect(try store.runs(taskId: completable.id).map(\.status) == [.running])
+
+        let completed = try store.completeTask(
+            id: completable.id,
+            runId: completeClaim.run.id,
+            workerId: "worker-a",
+            now: fixedDate(3)
+        )
+        #expect(completed.status == .done)
+        #expect(try store.runs(taskId: completable.id).map(\.status) == [.completed])
+
+        let blockable = try store.createTask(
+            AgentTaskCreateRequest(title: "Block me", status: .ready),
+            now: fixedDate(4)
+        )
+        let blockClaim = try #require(
+            try store.claimTask(
+                id: blockable.id,
+                workerId: "worker-c",
+                leaseTTL: 60,
+                now: fixedDate(5)
+            )
+        )
+
+        #expect(throws: AgentTaskBoardError.self) {
+            try store.blockTask(
+                id: blockable.id,
+                reason: "needs human input",
+                runId: blockClaim.run.id,
+                workerId: "worker-d",
+                now: fixedDate(6)
+            )
+        }
+        #expect(try store.task(id: blockable.id)?.status == .running)
+        #expect(try store.runs(taskId: blockable.id).map(\.status) == [.running])
+
+        let blocked = try store.blockTask(
+            id: blockable.id,
+            reason: "needs human input",
+            runId: blockClaim.run.id,
+            workerId: "worker-c",
+            now: fixedDate(7)
+        )
+        #expect(blocked.status == .blocked)
+        #expect(blocked.blockedReason == "needs human input")
+        #expect(try store.runs(taskId: blockable.id).map(\.status) == [.blocked])
+
+        let expired = try store.createTask(
+            AgentTaskCreateRequest(title: "Expired lease", status: .ready),
+            now: fixedDate(8)
+        )
+        let expiredClaim = try #require(
+            try store.claimTask(
+                id: expired.id,
+                workerId: "worker-e",
+                leaseTTL: 5,
+                now: fixedDate(9)
+            )
+        )
+
+        #expect(throws: AgentTaskBoardError.self) {
+            try store.completeTask(
+                id: expired.id,
+                runId: expiredClaim.run.id,
+                workerId: "worker-e",
+                now: fixedDate(15)
+            )
+        }
+        #expect(try store.task(id: expired.id)?.status == .running)
+        #expect(try store.runs(taskId: expired.id).map(\.status) == [.running])
     }
 
     @Test
