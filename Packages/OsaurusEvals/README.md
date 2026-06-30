@@ -148,6 +148,8 @@ and frontier lanes. It writes `build/evals/pr-report/<timestamp>/` unless
 - `summary.md` — maintainer-readable totals, failures, skips, regressions, and
   the exact commands used.
 - `summary.json` — machine-readable aggregate summary.
+- `evidence-registry.json` — unified evidence registry snapshot pointing at
+  the report `summary.json` artifact.
 - `reports/<model>/<suite>.json` — raw `EvalReport` output for each lane.
 - `compare.md` / `compare.json` — baseline-vs-current diff when a baseline is
   supplied.
@@ -195,11 +197,14 @@ make evals-watcher-report \
 Each run stores a report bundle under
 `build/evals/watcher/<channel>/<timestamp>/report/` and refreshes
 `build/evals/watcher/<channel>/scoreboard/latest/scoreboard.json` plus
-`scoreboard.md`. The manifest carries the artifact ID, and the scoreboard
-summarizes the latest release-candidate run, local/frontier model presets,
-baseline comparison counts, and the no-regression threshold
+`scoreboard.md`. Report and scoreboard directories also write
+`evidence-registry.json`; the scoreboard rebuild discovers eval report bundles
+through those registry snapshots and then reads their registered `summary.json`
+artifacts. The manifest carries the artifact ID, and the scoreboard summarizes
+the latest release-candidate run, local/frontier model presets, baseline
+comparison counts, and the no-regression threshold
 (`EVALS_MAX_REGRESSIONS`, default `0`). The scoreboard can also be rebuilt from
-existing bundles without running a model:
+existing registry-backed bundles without running a model:
 
 ```bash
 make evals-scoreboard \

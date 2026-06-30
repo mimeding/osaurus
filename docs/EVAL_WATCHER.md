@@ -52,6 +52,7 @@ release-candidate needs a durable comparison against main.
 Each watcher run writes:
 
 - `build/evals/watcher/<channel>/<timestamp>/report/manifest.json`
+- `build/evals/watcher/<channel>/<timestamp>/report/evidence-registry.json`
 - `build/evals/watcher/<channel>/<timestamp>/report/summary.json`
 - `build/evals/watcher/<channel>/<timestamp>/report/summary.md`
 - `build/evals/watcher/<channel>/<timestamp>/report/reports/<model>/<suite>.json`
@@ -61,6 +62,7 @@ Each watcher run writes:
 The scoreboard refresh writes:
 
 - `build/evals/watcher/<channel>/scoreboard/latest/scoreboard.json`
+- `build/evals/watcher/<channel>/scoreboard/latest/evidence-registry.json`
 - `build/evals/watcher/<channel>/scoreboard/latest/scoreboard.md`
 
 To rebuild a scoreboard without running models:
@@ -71,6 +73,12 @@ make evals-scoreboard \
   EVALS_SCOREBOARD_OUT=build/evals/scoreboard/main \
   EVALS_MAX_REGRESSIONS=0
 ```
+
+Scoreboard rebuilds use the unified evidence registry snapshots as the report
+discovery layer. `summary.json` remains the eval report artifact payload, but a
+bundle is not consumed by the watcher scoreboard unless its
+`evidence-registry.json` registers that artifact with the eval review report
+source.
 
 The scoreboard includes:
 
@@ -92,7 +100,7 @@ make evals-watcher-report \
 ```
 
 This reads existing `EvalReport` JSON, builds the same report bundle shape, and
-refreshes the same scoreboard files.
+refreshes the same registry-backed scoreboard files.
 
 ## Stop and Cancel
 
