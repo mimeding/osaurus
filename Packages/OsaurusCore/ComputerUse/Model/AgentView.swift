@@ -112,9 +112,11 @@ public struct AgentView: Sendable, Equatable {
         items.reserveCapacity(snapshot.elements.count)
         var consumed: [String: Int] = [:]  // how many of each key we've matched
 
+        let publicMarks = SnapshotIdFormat.publicMarks(for: snapshot.elements.map(\.id))
         for (index, element) in snapshot.elements.enumerated() {
             let key = matchKey(role: element.role, label: element.label)
             let visibleValue = visibleValue(for: element)
+            let mark = publicMarks[index]
             let changed: Bool
             if previous == nil {
                 changed = false
@@ -134,7 +136,7 @@ public struct AgentView: Sendable, Equatable {
 
             items.append(
                 AgentViewItem(
-                    mark: index + 1,
+                    mark: mark,
                     elementId: element.id,
                     role: element.role,
                     label: element.label,

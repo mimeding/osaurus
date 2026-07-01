@@ -65,8 +65,8 @@ struct ScreenshotOptions: Decodable {
     /// If specified, save screenshot to this file path in addition to returning bytes.
     var savePath: String?
 
-    /// If true, overlay element IDs from the most recent snapshot (matched by pid).
-    /// Useful for vision-augmented agents to reference IDs straight from the image.
+    /// If true, overlay public marks from the most recent snapshot (matched by pid).
+    /// Useful for vision-augmented agents to reference `target.mark` from the image.
     /// Requires `pid` to be set, and that get_ui_elements has been called for that pid.
     var annotate: Bool?
 
@@ -451,16 +451,12 @@ struct SOMOverlayMark: Sendable, Equatable {
 }
 
 enum SOMOverlayRenderer {
-    /// Convert cached snapshot ids (`s<snapshot>-<element>`) into public marks.
-    /// Sorting by the encoded element number makes the overlay match
-    /// `AgentView`/`SOMResult` mark order even though the cache is dictionary
-    /// backed.
+    /// Convert cached snapshot ids (`s<snapshot>-<element>`) into the same
+    /// public marks used by `AgentView` and `SOMResult`.
     static func publicMarks(from elements: [(id: String, frame: CGRect)]) -> [SOMOverlayMark] {
-        elements.compactMap { element -> SOMOverlayMark? in
-            guard let parsed = SnapshotIdFormat.parse(element.id), parsed.element > 0 else {
-                return nil
-            }
-            return SOMOverlayMark(mark: parsed.element, frame: element.frame)
+        let marks = SnapshotIdFormat.publicMarks(for: elements.map(\.id))
+        return zip(elements, marks).map { element, mark in
+            SOMOverlayMark(mark: mark, frame: element.frame)
         }
         .sorted { lhs, rhs in lhs.mark < rhs.mark }
     }
