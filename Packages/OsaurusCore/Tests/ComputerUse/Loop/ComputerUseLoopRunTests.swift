@@ -530,6 +530,34 @@ final class ComputerUseLoopRunTests: XCTestCase {
         XCTAssertEqual(choices, [])
     }
 
+    func testPreGrantedCloudVisionReportsPersistentScopeWithoutPrompt() async {
+        let recorder = ConsentPersistenceRecorder()
+        let d = emptyThenPopulated(
+            screenRecording: true,
+            image: renderLoopCUImage(text: "Visible account number 1234")
+        )
+        let result = await run(
+            d,
+            provider: ComputerUseLoop.scriptedProvider([AgentAction(verb: .done, reason: "ok")]),
+            requestCloudVisionConsent: { XCTFail("Pre-granted cloud vision should not prompt"); return .deny },
+            persistCloudVisionConsent: { choice in await recorder.record(choice) },
+            vision: VisionContext(
+                modelAcceptsImages: true,
+                modelIsLocal: false,
+                cloudConsent: true,
+                cloudScrubMode: .allText
+            )
+        )
+
+        XCTAssertTrue(result.outcome.isSuccess)
+        XCTAssertFalse(result.metrics.cloudVisionConsentPrompted)
+        XCTAssertFalse(result.metrics.cloudVisionConsentGranted)
+        XCTAssertTrue(result.metrics.cloudVisionConsentPersistent)
+        XCTAssertTrue(result.metrics.cloudVisionUsed)
+        let choices = await recorder.choices()
+        XCTAssertEqual(choices, [])
+    }
+
     func testCloudVisionAllowAlwaysUsesPersistentGrantHook() async {
         let recorder = ConsentPersistenceRecorder()
         let d = emptyThenPopulated(

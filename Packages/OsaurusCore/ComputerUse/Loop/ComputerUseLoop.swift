@@ -263,7 +263,11 @@ public enum ComputerUseLoop {
         var imageTokensInContext = 0
         // Cloud-vision consent state for THIS run. Seeded from the snapshot taken
         // at run start; a just-in-time prompt can flip `granted` true mid-run.
-        var runConsent = RunCloudVisionConsent(granted: vision.cloudConsent, asked: false)
+        var runConsent = RunCloudVisionConsent(
+            granted: vision.cloudConsent,
+            asked: false,
+            persistent: vision.cloudConsent
+        )
 
         // Initial perception so the model's first turn has something to act on.
         // An empty AX tree (Electron, custom-drawn UI) escalates ax→som→vision
@@ -1420,6 +1424,7 @@ public enum ComputerUseLoop {
     private struct RunCloudVisionConsent {
         var granted: Bool
         var asked: Bool
+        var persistent: Bool
     }
 
     /// Attach a freshly captured frame to the model conversation when the
@@ -1484,6 +1489,7 @@ public enum ComputerUseLoop {
                 availability: availability,
                 messages: &messages,
                 imageTokensInContext: &imageTokensInContext,
+                persistentConsent: consent.persistent,
                 metrics: &metrics,
                 feed: feed,
                 step: step
@@ -1541,12 +1547,13 @@ public enum ComputerUseLoop {
             return
         case .allowOnce:
             consent.granted = true
+            consent.persistent = false
             metrics.cloudVisionConsentGranted = true
         case .allowAlways:
             await persistConsent(.allowAlways)
             consent.granted = true
+            consent.persistent = true
             metrics.cloudVisionConsentGranted = true
-            metrics.cloudVisionConsentPersistent = true
         }
         guard
             case .needsScrubForCloud(let img) = VisionAttachment.decide(
@@ -1561,6 +1568,7 @@ public enum ComputerUseLoop {
             availability: availability,
             messages: &messages,
             imageTokensInContext: &imageTokensInContext,
+            persistentConsent: consent.persistent,
             metrics: &metrics,
             feed: feed,
             step: step
@@ -1577,6 +1585,7 @@ public enum ComputerUseLoop {
         availability: MacDriverAvailability,
         messages: inout [ChatMessage],
         imageTokensInContext: inout Int,
+        persistentConsent: Bool,
         metrics: inout ComputerUseRunMetrics,
         feed: SubagentFeed,
         step: Int
@@ -1603,6 +1612,9 @@ public enum ComputerUseLoop {
             imageTokensInContext: &imageTokensInContext
         )
         metrics.cloudVisionUsed = true
+        if persistentConsent {
+            metrics.cloudVisionConsentPersistent = true
+        }
         feed.emit(
             SubagentActivityEvent(
                 step: step,

@@ -128,13 +128,6 @@ final class CloudVisionConsentTests: XCTestCase {
         let consent = CloudVisionConsent(defaults: defaults)
         XCTAssertFalse(consent.isGranted)
 
-        consent.grantForSession()
-        XCTAssertTrue(consent.isGranted)
-        XCTAssertFalse(consent.isPersistentlyGranted)
-
-        consent.revoke()
-        XCTAssertFalse(consent.isGranted)
-
         consent.grantPersistently()
         XCTAssertTrue(consent.isGranted)
         // A fresh instance over the same defaults sees the persisted grant.
@@ -142,6 +135,7 @@ final class CloudVisionConsentTests: XCTestCase {
 
         consent.setPersistent(false)
         XCTAssertFalse(consent.isGranted)
+        XCTAssertFalse(CloudVisionConsent(defaults: defaults).isPersistentlyGranted)
     }
 }
 

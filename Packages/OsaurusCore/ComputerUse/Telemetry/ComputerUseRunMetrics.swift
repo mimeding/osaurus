@@ -53,9 +53,9 @@ public struct ComputerUseRunMetrics: Sendable, Equatable {
     public var cloudVisionUsed = false
     /// Whether the run displayed the just-in-time cloud-vision consent prompt.
     public var cloudVisionConsentPrompted = false
-    /// Whether the user granted cloud vision for this run.
+    /// Whether a just-in-time prompt granted cloud vision for this run.
     public var cloudVisionConsentGranted = false
-    /// Whether the grant was persisted beyond this run.
+    /// Whether a used cloud-vision route was backed by persisted consent.
     public var cloudVisionConsentPersistent = false
     /// Effect-class distribution of gated actions.
     public var effectCounts: [EffectClass: Int] = [:]
